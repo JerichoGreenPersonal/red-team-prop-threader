@@ -15,7 +15,7 @@ The Slack app is named **RED Team Prop Threader** and exposes `/create-prop-thre
 - Handle duplicate asset threads, partial failures, retries, and post-creation edits safely.
 - Support local Windows development and later deployment to approved internal HTTPS hosting.
 - Provide an importable Slack app manifest and a detailed administrator setup runbook.
-- Replace in-repository template and `rspn-production-tool` identifiers with `red-team-prop-threader`, including package metadata, IDE/workspace files, and documentation.
+- Rename the local checkout folder to `red-team-prop-threader` and replace in-repository template and `rspn-production-tool` identifiers, including package metadata, IDE/workspace files, and documentation.
 
 ## Non-goals
 
@@ -222,7 +222,7 @@ Canvas entries that predate the bot remain unmanaged and are never rewritten aut
 
 The Python 3.11+ project is initialized as `red-team-prop-threader`, with import package `red_team_prop_threader`.
 
-Initialization renames all in-repository template and `rspn-production-tool` identifiers to the new project name. This includes generated package metadata, IDE/workspace files, documentation, and configuration references. The local checkout directory and GitHub repository are not renamed.
+Before application scripts are created, initialization renames the local checkout directory to `red-team-prop-threader`, after which the user reopens that folder in Cursor. It also renames all in-repository template and `rspn-production-tool` identifiers, including generated package metadata, IDE/workspace files, documentation, and configuration references. The GitHub repository is not renamed.
 
 The backend is divided into bounded components:
 
@@ -369,7 +369,7 @@ The feature is ready for production review when:
 9. A 10-minute stale lease recovers safely.
 10. The manifest and runbook pass EA IT review.
 11. The full automated suite and development-channel pilot pass.
-12. No active in-repository package, workspace, or documentation identifier retains a template or `rspn-production-tool` project name unless it is part of migration history.
+12. The local checkout is named `red-team-prop-threader`, and no active in-repository package, workspace, or documentation identifier retains a template or `rspn-production-tool` project name unless it is part of migration history.
 
 ## Deferred decisions
 
