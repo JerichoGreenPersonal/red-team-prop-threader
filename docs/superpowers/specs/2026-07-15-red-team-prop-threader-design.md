@@ -34,10 +34,12 @@ The Slack app is named **RED Team Prop Threader** and exposes `/create-prop-thre
 - A dedicated read-only ShotGrid script account is available.
 - EA IT approves and installs the Slack app from its manifest.
 - The bot is invited to each private channel where it will be used.
-- Development has an approved configurable HTTPS tunnel.
+- Development has an approved configurable HTTPS tunnel with a stable hostname.
 - Production has approved internal HTTPS hosting and PostgreSQL.
 
 The development pilot channel is `C0B4GJSA1G8`. The production channel ID must be recorded during setup rather than inferred from a channel name.
+
+ShotGrid page `23280` is documented as an optional pilot input. It is not hard-coded, selected by default, or copied into automated test fixtures.
 
 ## User workflow
 
@@ -62,14 +64,15 @@ Canvas preflight happens before ShotGrid import or data entry so permission and 
 7. It constructs each individual asset URL from the configured host, entity type, and stable Entity ID.
 8. It preserves exported row order throughout the form, message creation, and canvas updates.
 
-Imported asset names, IDs, and links are read-only. Users may exclude individual assets before submission.
+Imported asset names, IDs, and links are read-only. Users may exclude individual assets before submission. At least one asset must remain included.
 
 ### Group-title inference
 
-- If all selected asset titles share one `S<number>` token, the app proposes `SEASON <number> PROP REQUEST THREADS:`.
+- If all included asset titles share one `S<number>` token, the app proposes `SEASON <number> PROP REQUEST THREADS:`.
 - The proposed title is editable.
 - If inference finds no common season or finds multiple seasons, the title is blank and required.
 - Canvas heading matching ignores letter case, surrounding whitespace, and an optional trailing colon. When an existing heading matches, its displayed formatting is preserved.
+- Inference is recomputed after asset exclusions.
 
 ### Data-entry wizard
 
@@ -91,6 +94,10 @@ Asset fields:
 Supporting-link labels must be nonempty and URLs must use HTTPS. Duplicate labels are allowed. Every selected person must be a current member of the target channel.
 
 **Next** and **Back** save each screen into a server-side draft. One private draft is retained per user and channel for 24 hours. A later invocation offers **Resume** or **Start Over**.
+
+A resumed draft uses the original imported snapshot and displays its import timestamp. It does not silently re-export or reconcile ShotGrid changes. **Start Over** fetches a fresh export.
+
+People are deduplicated by Slack user ID when group and asset selections overlap. The asset-specific role takes precedence, and Animator takes precedence over Additional People. Supporting links are deduplicated by normalized URL when group and asset links overlap; the asset-level label takes precedence.
 
 ### Confirmation and processing
 
@@ -128,6 +135,8 @@ The app posts the group summary before all asset roots so the batch remains visu
 
 After processing, the app updates the summary with completion and failure counts and a link to the channel canvas.
 
+If the summary cannot be posted, processing stops before any asset roots are created and offers **Retry Failed**.
+
 ### Asset root
 
 The app posts one root message per included asset in ShotGrid row order. A separate starter reply is not created.
@@ -154,6 +163,8 @@ Any current EA-workspace member of the channel may use the edit buttons. As with
 - **Edit details** changes asset Animator, Additional People, and supporting links.
 - **Edit group details** changes group people and supporting links.
 - Group edits update the canvas group summary and the current `Latest` root for every asset in the group.
+- Only the current `Latest` group summary may edit group details. An interaction with an older summary is refused and links to the current summary.
+- Only the current `Latest` asset root may edit asset details. An interaction with an older root is refused and links to the current root.
 - Historical roots remain snapshots.
 - Edits do not send new notifications.
 - Edited roots display the last editor and a Slack-localized update timestamp.
@@ -175,6 +186,10 @@ Each asset subsection contains:
 - One or more timestamped Slack thread links.
 - Exactly one entry marked `Latest`.
 
+New group sections are inserted at the top of the canvas. An existing group is updated in place rather than moved. New asset subsections appear first within an existing group in ShotGrid row order, and each asset's newest thread link appears first.
+
+Slack root messages use viewer-localized timestamps. Canvas timestamps use the `America/Los_Angeles` timezone and include the applicable timezone abbreviation.
+
 When a new thread is created for an asset already in the index:
 
 1. The new root and canvas entry receive their creation timestamp and `Latest`.
@@ -182,6 +197,8 @@ When a new thread is created for an asset already in the index:
 3. The prior canvas entry loses `Latest`.
 
 Users may manually edit generated canvas content. The app uses narrow section lookup and replacement rather than replacing a whole group or canvas. If manual changes prevent a precise update, the app preserves surrounding content, appends the new entry, and warns the submitter which prior marker needs manual cleanup.
+
+Canvas entries that predate the bot remain unmanaged and are never rewritten automatically. New bot-created entries establish managed history from that point forward.
 
 ## Duplicate and idempotency rules
 
@@ -280,6 +297,7 @@ The exact scope list must be verified against the Slack methods used during impl
 - Python 3.11+ and repository-managed `uv`.
 - SQLite.
 - Configurable external HTTPS tunnel command.
+- Stable approved development tunnel hostname.
 - PowerShell launcher as the maintained implementation.
 - Thin `.bat` wrapper for double-click startup.
 - Launcher checks dependencies, stops prior owned processes safely, optionally runs tests, starts the web process and worker, starts or validates the configured tunnel, retains readable logs, and displays the Slack request URL.
@@ -305,15 +323,18 @@ Automated tests cover:
 - Entity-ID deduplication and stable order.
 - Season inference and normalized heading matching.
 - Supporting-link parsing and validation.
+- Overlapping people and supporting-link deduplication.
 - Channel-member validation.
-- Modal pagination, back navigation, draft resume, and draft expiry.
+- Modal pagination, back navigation, snapshot-based draft resume, and draft expiry.
 - Deterministic summary and root rendering.
 - Duplicate `Latest` transitions.
+- Historical summary/root edit guards.
 - Idempotent retries after each possible partial side effect.
 - Lease acquisition, renewal, expiry, and channel isolation.
 - Retention cleanup.
 - Slack signature verification and authorization checks.
-- Manual canvas-edit conflict behavior.
+- Manual canvas-edit conflict behavior and preservation of pre-bot entries.
+- Canvas group/asset insertion order and Pacific-time labels.
 - Post-completion asset and group edits.
 
 Contract tests use fake Slack and ShotGrid adapters and recorded, sanitized response shapes. PostgreSQL integration tests verify behavior that differs from SQLite.
