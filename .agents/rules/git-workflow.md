@@ -1,3 +1,7 @@
+---
+description: Git branching model and workflow rules
+alwaysApply: true
+---
 # Git Workflow
 
 Merges to `main` trigger production deploys. Branch hygiene is not optional.

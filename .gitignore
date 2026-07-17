@@ -120,3 +120,8 @@ settings.local.json
 
 
 *.local.code-workspace
+
+# Local Cursor projections of canonical agent configuration
+.cursor/agents/
+.cursor/rules/
+.cursor/skills/
