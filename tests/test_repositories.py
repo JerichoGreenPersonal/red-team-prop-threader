@@ -6,18 +6,21 @@ import uuid
 from typing import TYPE_CHECKING
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
+import threading
 
 import pytest
-from sqlalchemy import text, event, inspect, create_engine
+from sqlalchemy import text, event, select, inspect, create_engine
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from red_team_prop_threader.tables import Base
+from red_team_prop_threader.tables import Base, Draft, Message, BatchAsset, UtcDateTime
 from red_team_prop_threader.repositories import BatchStatus, DraftRecord, MessageKind, Repositories, BatchRepository, NewMessageInput, OperationStatus
 
 
 if TYPE_CHECKING:
     from collections.abc import Generator
 
+    from conftest import FakeClock
     from sqlalchemy import Engine
 
     from red_team_prop_threader.repositories import BatchRecord, GroupRecord
@@ -26,22 +29,6 @@ if TYPE_CHECKING:
 # ---------------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------------
-
-
-class FakeClock:
-    """deterministic clock for tests."""
-
-    def __init__(self, start: datetime | None = None) -> None:
-        """Initialize the clock at start, defaulting to 2025-01-01T12:00:00Z."""
-        self._now: datetime = start or datetime(2025, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
-
-    def now(self) -> datetime:
-        """Return current fake time."""
-        return self._now
-
-    def advance(self, *, days: int = 0, hours: int = 0, minutes: int = 0, seconds: int = 0) -> None:
-        """Advance the clock by the specified duration."""
-        self._now += timedelta(days=days, hours=hours, minutes=minutes, seconds=seconds)
 
 
 def sample_draft(*, created_at: datetime, workspace_id: str = "W1", channel_id: str = "C1", user_id: str = "U1") -> DraftRecord:
@@ -115,12 +102,6 @@ def repositories(session: Session) -> Repositories:
     return Repositories.from_session(session)
 
 
-@pytest.fixture
-def clock() -> FakeClock:
-    """Deterministic fake clock starting at a fixed UTC time."""
-    return FakeClock()
-
-
 # ---------------------------------------------------------------------------
 # migration tests
 # ---------------------------------------------------------------------------
@@ -136,18 +117,24 @@ def test_migration_upgrade_and_downgrade(tmp_path: Path) -> None:
 
     root = Path(__file__).parent.parent
     cfg = Config(str(root / "alembic.ini"))
-    cfg.set_main_option("sqlalchemy.url", db_url)
+    cfg.attributes["database_url_override"] = db_url
 
+    assert cfg.attributes["database_url_override"] == db_url
     command.upgrade(cfg, "head")
 
     eng = create_engine(db_url)
     insp = inspect(eng)
     tables_after_upgrade = set(insp.get_table_names())
+    batch_asset_checks = {constraint["name"] for constraint in insp.get_check_constraints("batch_assets")}
+    message_indexes = {index["name"] for index in insp.get_indexes("messages")}
     eng.dispose()
 
     for expected in ("drafts", "groups", "batches", "batch_assets", "messages", "operations", "channel_leases"):
         assert expected in tables_after_upgrade, f"table {expected!r} missing after upgrade"
+    assert "ck_batch_asset_entity_id_positive" in batch_asset_checks
+    assert {"uq_message_latest_group_summary", "uq_message_latest_asset_root"} <= message_indexes
 
+    assert cfg.attributes["database_url_override"] == db_url
     command.downgrade(cfg, "base")
 
     eng = create_engine(db_url)
@@ -155,6 +142,15 @@ def test_migration_upgrade_and_downgrade(tmp_path: Path) -> None:
     app_tables = [t for t in insp.get_table_names() if t != "alembic_version"]
     eng.dispose()
     assert app_tables == [], f"expected no app tables after downgrade, got {app_tables}"
+
+
+def test_explicit_migration_url_outranks_database_url(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An explicit migration target wins even when DATABASE_URL is populated."""
+    from red_team_prop_threader.db import resolve_migration_url
+
+    monkeypatch.setenv("DATABASE_URL", "postgresql://example.invalid/production")
+    explicit = "postgresql://example.invalid/disposable_test"
+    assert resolve_migration_url(explicit_override=explicit, configured_url="sqlite:///default.db") == explicit
 
 
 # ---------------------------------------------------------------------------
@@ -229,6 +225,21 @@ def test_utc_awareness_reads_are_utc_aware(repositories: Repositories, session: 
     assert record.imported_at.tzinfo is not None
 
 
+def test_utc_datetime_bind_is_dialect_specific() -> None:
+    """SQLite receives naive UTC while PostgreSQL receives aware UTC."""
+    from sqlalchemy.dialects import sqlite, postgresql
+
+    value = datetime(2025, 1, 1, 7, 0, tzinfo=timezone(timedelta(hours=-5)))
+    type_ = UtcDateTime()
+
+    sqlite_value = type_.process_bind_param(value, sqlite.dialect())
+    postgres_value = type_.process_bind_param(value, postgresql.dialect())
+
+    assert sqlite_value == datetime(2025, 1, 1, 12, 0)
+    assert sqlite_value.tzinfo is None
+    assert postgres_value == datetime(2025, 1, 1, 12, 0, tzinfo=timezone.utc)
+
+
 # ---------------------------------------------------------------------------
 # draft repository
 # ---------------------------------------------------------------------------
@@ -279,6 +290,85 @@ def test_draft_upsert_replaces_prior(repositories: Repositories, clock: FakeCloc
     result = repositories.drafts.get_for_user_channel("U1", "C1", clock.now())
     assert result is not None
     assert result.snapshot == {"items": [{"id": 1}]}
+
+
+def test_draft_upsert_preserves_id_and_created_at_across_sessions(engine: Engine, clock: FakeClock) -> None:
+    """Conflict-safe draft upsert preserves durable identity and original creation time."""
+    first = sample_draft(created_at=clock.now())
+    with Session(engine) as first_session:
+        Repositories.from_session(first_session).drafts.save(first)
+        first_session.commit()
+
+    with Session(engine) as read_session:
+        original = read_session.execute(select(Draft)).scalar_one()
+        original_id = original.id
+        original_created_at = original.created_at
+
+    clock.advance(hours=1)
+    replacement = DraftRecord(
+        workspace_id="W1",
+        channel_id="C1",
+        user_id="U1",
+        snapshot={"writer": 2},
+        imported_at=clock.now(),
+        created_at=clock.now(),
+        updated_at=clock.now(),
+        expires_at=clock.now() + timedelta(hours=24),
+    )
+    with Session(engine) as second_session:
+        Repositories.from_session(second_session).drafts.save(replacement)
+        second_session.commit()
+
+    with Session(engine) as verify:
+        rows = verify.execute(select(Draft)).scalars().all()
+        assert len(rows) == 1
+        assert rows[0].id == original_id
+        assert rows[0].created_at == original_created_at
+        assert rows[0].snapshot_json == {"writer": 2}
+
+
+def test_draft_upsert_is_conflict_safe_under_contention(tmp_path: Path, clock: FakeClock) -> None:
+    """Concurrent separate-session saves commit one durable draft row."""
+    from red_team_prop_threader.db import build_engine
+
+    engine = build_engine(f"sqlite:///{tmp_path / 'draft-contention.db'}")
+    Base.metadata.create_all(engine)
+    barrier = threading.Barrier(2)
+    errors: list[Exception] = []
+
+    def _writer(writer: int) -> None:
+        with Session(engine) as writer_session:
+            try:
+                barrier.wait()
+                record = sample_draft(created_at=clock.now())
+                Repositories.from_session(writer_session).drafts.save(
+                    DraftRecord(
+                        workspace_id=record.workspace_id,
+                        channel_id=record.channel_id,
+                        user_id=record.user_id,
+                        snapshot={"writer": writer},
+                        imported_at=record.imported_at,
+                        created_at=record.created_at,
+                        updated_at=record.updated_at,
+                        expires_at=record.expires_at,
+                    )
+                )
+                writer_session.commit()
+            except Exception as exc:
+                errors.append(exc)
+
+    threads = [threading.Thread(target=_writer, args=(writer,)) for writer in (1, 2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=10)
+
+    assert not errors
+    with Session(engine) as verify:
+        rows = verify.execute(select(Draft)).scalars().all()
+        assert len(rows) == 1
+        assert rows[0].snapshot_json in ({"writer": 1}, {"writer": 2})
+    engine.dispose()
 
 
 def test_draft_isolation_across_users(repositories: Repositories, clock: FakeClock) -> None:
@@ -366,6 +456,20 @@ def test_batch_stale_cas_returns_false(repositories: Repositories, session: Sess
     assert result is False
 
 
+def test_batch_transition_is_atomic_across_sessions(engine: Engine, clock: FakeClock) -> None:
+    """Only one session can win the same expected-status transition."""
+    with Session(engine) as setup:
+        group = _make_group(setup, clock)
+        batch = _make_batch(setup, clock, group.id)
+        setup.commit()
+
+    with Session(engine) as first, Session(engine) as stale:
+        assert BatchRepository(stale).get(batch.id) is not None
+        assert BatchRepository(first).transition(batch.id, BatchStatus.PENDING, BatchStatus.RUNNING, now=clock.now())
+        first.commit()
+        assert not BatchRepository(stale).transition(batch.id, BatchStatus.PENDING, BatchStatus.RUNNING, now=clock.now())
+
+
 def test_batch_update_payload(repositories: Repositories, session: Session, clock: FakeClock) -> None:
     """update_payload replaces the batch's payload json."""
     group = _make_group(session, clock)
@@ -439,6 +543,70 @@ def test_operation_add_planned_different_assets(repositories: Repositories, sess
     assert op1.id != op2.id
 
 
+def test_operation_add_planned_asset_zero_is_idempotent_across_sessions(engine: Engine, clock: FakeClock) -> None:
+    """Batch-level operation key zero remains valid and conflict-safe."""
+    from red_team_prop_threader.domain import OperationKind
+
+    with Session(engine) as setup:
+        group = _make_group(setup, clock)
+        batch = _make_batch(setup, clock, group.id)
+        setup.commit()
+
+    with Session(engine) as first:
+        op1 = Repositories.from_session(first).operations.add_planned(
+            batch_id=batch.id, kind=OperationKind.POST_SUMMARY, asset_entity_id=0, idempotency_key="first", now=clock.now()
+        )
+        first.commit()
+    with Session(engine) as second:
+        op2 = Repositories.from_session(second).operations.add_planned(
+            batch_id=batch.id, kind=OperationKind.POST_SUMMARY, asset_entity_id=0, idempotency_key="second", now=clock.now()
+        )
+        second.commit()
+
+    assert op1.id == op2.id
+    assert op2.idempotency_key == "first"
+
+
+def test_operation_add_planned_is_idempotent_under_contention(tmp_path: Path, clock: FakeClock) -> None:
+    """Concurrent separate-session planners return the same operation."""
+    from red_team_prop_threader.db import build_engine
+    from red_team_prop_threader.domain import OperationKind
+
+    engine = build_engine(f"sqlite:///{tmp_path / 'operation-contention.db'}")
+    Base.metadata.create_all(engine)
+    with Session(engine) as setup:
+        group = _make_group(setup, clock)
+        batch = _make_batch(setup, clock, group.id)
+        setup.commit()
+
+    barrier = threading.Barrier(2)
+    operation_ids: list[str] = []
+    errors: list[Exception] = []
+
+    def _planner(key: str) -> None:
+        with Session(engine) as planner:
+            try:
+                barrier.wait()
+                operation = Repositories.from_session(planner).operations.add_planned(
+                    batch_id=batch.id, kind=OperationKind.POST_SUMMARY, asset_entity_id=0, idempotency_key=key, now=clock.now()
+                )
+                planner.commit()
+                operation_ids.append(operation.id)
+            except Exception as exc:
+                errors.append(exc)
+
+    threads = [threading.Thread(target=_planner, args=(key,)) for key in ("first", "second")]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=10)
+
+    assert not errors
+    assert len(operation_ids) == 2
+    assert len(set(operation_ids)) == 1
+    engine.dispose()
+
+
 def test_operation_transition_pending_to_running(repositories: Repositories, session: Session, clock: FakeClock) -> None:
     """PENDING operation can transition to RUNNING."""
     from red_team_prop_threader.domain import OperationKind
@@ -505,6 +673,30 @@ def test_operation_stale_cas_returns_false(repositories: Repositories, session: 
     # currently PENDING; supply wrong expected_status
     ok = repositories.operations.transition(op.id, OperationStatus.RUNNING, OperationStatus.SUCCEEDED, now=clock.now())
     assert ok is False
+
+
+def test_operation_transition_is_atomic_across_sessions(engine: Engine, clock: FakeClock) -> None:
+    """A stale session cannot overwrite a transition committed by another session."""
+    from red_team_prop_threader.domain import OperationKind
+
+    with Session(engine) as setup:
+        group = _make_group(setup, clock)
+        batch = _make_batch(setup, clock, group.id)
+        op = Repositories.from_session(setup).operations.add_planned(
+            batch_id=batch.id, kind=OperationKind.POST_ASSET, asset_entity_id=1, idempotency_key="atomic", now=clock.now()
+        )
+        setup.commit()
+
+    with Session(engine) as first, Session(engine) as stale:
+        assert Repositories.from_session(stale).operations.get(op.id) is not None
+        assert Repositories.from_session(first).operations.transition(op.id, OperationStatus.PENDING, OperationStatus.RUNNING, attempts=1, now=clock.now())
+        first.commit()
+        assert not Repositories.from_session(stale).operations.transition(op.id, OperationStatus.PENDING, OperationStatus.RUNNING, attempts=99, now=clock.now())
+
+    with Session(engine) as verify:
+        current = Repositories.from_session(verify).operations.get(op.id)
+        assert current is not None
+        assert current.attempts == 1
 
 
 def test_operation_retry_selection(repositories: Repositories, session: Session, clock: FakeClock) -> None:
@@ -704,6 +896,111 @@ def test_history_retire_prior_latest(repositories: Repositories, session: Sessio
     assert latest.slack_ts == "2.0"
 
 
+def test_database_rejects_duplicate_latest_group_summaries(session: Session, clock: FakeClock) -> None:
+    """The partial unique index prevents two current group summaries."""
+    group = _make_group(session, clock)
+    values = {
+        "workspace_id": "W1",
+        "channel_id": "C1",
+        "group_id": group.id,
+        "batch_id": None,
+        "kind": MessageKind.GROUP_SUMMARY,
+        "asset_entity_id": None,
+        "permalink": "https://example.invalid/message",
+        "is_latest": True,
+        "canvas_metadata_json": None,
+        "created_at": clock.now(),
+        "updated_at": clock.now(),
+        "last_editor_id": None,
+        "last_edited_at": None,
+    }
+    session.add(Message(id=str(uuid.uuid4()), slack_ts="1", **values))
+    session.flush()
+    session.add(Message(id=str(uuid.uuid4()), slack_ts="2", **values))
+    with pytest.raises(IntegrityError):
+        session.flush()
+
+
+def test_database_rejects_duplicate_latest_asset_roots(session: Session, clock: FakeClock) -> None:
+    """The partial unique index prevents two current roots for one asset."""
+    group = _make_group(session, clock)
+    values = {
+        "workspace_id": "W1",
+        "channel_id": "C1",
+        "group_id": group.id,
+        "batch_id": None,
+        "kind": MessageKind.ASSET_ROOT,
+        "asset_entity_id": 42,
+        "permalink": "https://example.invalid/message",
+        "is_latest": True,
+        "canvas_metadata_json": None,
+        "created_at": clock.now(),
+        "updated_at": clock.now(),
+        "last_editor_id": None,
+        "last_edited_at": None,
+    }
+    session.add(Message(id=str(uuid.uuid4()), slack_ts="1", **values))
+    session.flush()
+    session.add(Message(id=str(uuid.uuid4()), slack_ts="2", **values))
+    with pytest.raises(IntegrityError):
+        session.flush()
+
+
+def test_concurrent_history_replacement_never_leaves_duplicate_latest(tmp_path: Path, clock: FakeClock) -> None:
+    """Concurrent repository writers leave exactly one current group summary."""
+    from red_team_prop_threader.db import build_engine
+
+    engine = build_engine(f"sqlite:///{tmp_path / 'history-contention.db'}")
+    Base.metadata.create_all(engine)
+    with Session(engine) as setup:
+        group = _make_group(setup, clock)
+        setup.commit()
+
+    barrier = threading.Barrier(2)
+    errors: list[Exception] = []
+
+    def _writer(sequence: int) -> None:
+        with Session(engine) as writer:
+            try:
+                barrier.wait()
+                Repositories.from_session(writer).history.record(
+                    NewMessageInput(
+                        workspace_id="W1",
+                        channel_id="C1",
+                        group_id=group.id,
+                        batch_id=None,
+                        kind=MessageKind.GROUP_SUMMARY,
+                        asset_entity_id=None,
+                        slack_ts=str(sequence),
+                        permalink=f"https://example.invalid/{sequence}",
+                        canvas_metadata=None,
+                        now=clock.now(),
+                    )
+                )
+                writer.commit()
+            except IntegrityError:
+                writer.rollback()
+            except Exception as exc:
+                errors.append(exc)
+
+    threads = [threading.Thread(target=_writer, args=(sequence,)) for sequence in (1, 2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=10)
+
+    assert not errors
+    with Session(engine) as verify:
+        current = (
+            verify
+            .execute(select(Message).where(Message.group_id == group.id, Message.kind == MessageKind.GROUP_SUMMARY, Message.is_latest.is_(True)))
+            .scalars()
+            .all()
+        )
+        assert len(current) == 1
+    engine.dispose()
+
+
 def test_history_preserved_after_payload_clear(repositories: Repositories, session: Session, clock: FakeClock) -> None:
     """Clearing batch payload does not delete associated message history."""
     group = _make_group(session, clock)
@@ -774,6 +1071,27 @@ def test_foreign_key_constraint_batch_requires_group(session: Session, clock: Fa
         submitter_user_id="U1",
         payload=None,
         now=clock.now(),
+    )
+    with pytest.raises(IntegrityError):
+        session.flush()
+
+
+@pytest.mark.parametrize("entity_id", [0, -1])
+def test_batch_asset_entity_id_must_be_positive(session: Session, clock: FakeClock, entity_id: int) -> None:
+    """Batch assets reject zero and negative ShotGrid IDs."""
+    group = _make_group(session, clock)
+    batch = _make_batch(session, clock, group.id)
+    session.add(
+        BatchAsset(
+            id=str(uuid.uuid4()),
+            batch_id=batch.id,
+            entity_id=entity_id,
+            name="Invalid",
+            url="https://example.invalid/asset",
+            source_index=0,
+            included=True,
+            asset_details_json=None,
+        )
     )
     with pytest.raises(IntegrityError):
         session.flush()

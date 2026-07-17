@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from typing import TYPE_CHECKING, Any
 import contextlib
 
@@ -15,9 +16,22 @@ if TYPE_CHECKING:
     from sqlalchemy import Engine
 
 
-__all__ = ("build_engine", "session_scope")
+__all__ = ("build_engine", "resolve_migration_url", "session_scope")
 
 _SQLITE_BUSY_TIMEOUT_MS = 5000
+
+
+def resolve_migration_url(*, explicit_override: str | None, configured_url: str) -> str:
+    """Resolve a migration URL with an explicit test/config target taking precedence.
+
+    Args:
+        explicit_override: Caller-supplied migration target, when present.
+        configured_url: URL from ``alembic.ini``.
+
+    Returns:
+        The selected URL. ``DATABASE_URL`` outranks only the ini default.
+    """
+    return explicit_override or os.environ.get("DATABASE_URL") or configured_url
 
 
 def build_engine(database_url: str) -> Engine:

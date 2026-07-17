@@ -50,6 +50,18 @@ def _skip_if_no_url() -> None:
         pytest.skip("TEST_POSTGRES_URL not set")
 
 
+def _assert_final_migration_url(cfg: object, expected_url: str) -> None:
+    """Validate the secret-safe resolved migration target immediately before a command."""
+    from alembic.config import Config
+
+    from red_team_prop_threader.db import resolve_migration_url
+
+    assert isinstance(cfg, Config)
+    resolved = resolve_migration_url(explicit_override=cfg.attributes.get("database_url_override"), configured_url=cfg.get_main_option("sqlalchemy.url"))
+    if resolved != expected_url:
+        raise RuntimeError("resolved migration target does not match the disposable test database")
+
+
 # ---------------------------------------------------------------------------
 # fixtures
 # ---------------------------------------------------------------------------
@@ -70,8 +82,9 @@ def pg_engine() -> Generator[Engine, None, None]:
 
     root = Path(__file__).parent.parent.parent
     cfg = Config(str(root / "alembic.ini"))
-    cfg.set_main_option("sqlalchemy.url", _POSTGRES_URL)
+    cfg.attributes["database_url_override"] = _POSTGRES_URL
 
+    _assert_final_migration_url(cfg, _POSTGRES_URL)
     command.upgrade(cfg, "head")
 
     engine = create_engine(_POSTGRES_URL)
@@ -79,6 +92,7 @@ def pg_engine() -> Generator[Engine, None, None]:
     engine.dispose()
 
     # downgrade to clean state
+    _assert_final_migration_url(cfg, _POSTGRES_URL)
     command.downgrade(cfg, "base")
 
 
@@ -98,6 +112,16 @@ def pg_session(pg_engine: Engine) -> Generator[object, None, None]:
 # ---------------------------------------------------------------------------
 
 
+def test_explicit_test_url_outranks_database_url(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A disposable explicit target wins over a populated production DATABASE_URL."""
+    from red_team_prop_threader.db import resolve_migration_url
+
+    monkeypatch.setenv("DATABASE_URL", "postgresql://example.invalid/production")
+    monkeypatch.setenv("TEST_POSTGRES_URL", "postgresql://example.invalid/disposable_test")
+    explicit = os.environ["TEST_POSTGRES_URL"]
+    assert resolve_migration_url(explicit_override=explicit, configured_url="sqlite:///default.db") == explicit
+
+
 def test_postgres_alembic_upgrade_creates_tables(pg_engine: Engine) -> None:
     """Alembic upgrade head creates the expected tables in postgresql."""
     from sqlalchemy import inspect
@@ -109,7 +133,7 @@ def test_postgres_alembic_upgrade_creates_tables(pg_engine: Engine) -> None:
 
 
 def test_postgres_utc_timestamps(pg_session: object, pg_engine: Engine) -> None:
-    """Datetime values stored and read from postgresql are UTC-aware."""
+    """A non-UTC offset round-trips as the exact UTC instant."""
     from sqlalchemy.orm import Session
 
     from red_team_prop_threader.repositories import DraftRecord, Repositories
@@ -117,7 +141,8 @@ def test_postgres_utc_timestamps(pg_session: object, pg_engine: Engine) -> None:
     session = pg_session  # type: ignore[assignment]
     assert isinstance(session, Session)
     repos = Repositories.from_session(session)
-    now = datetime(2025, 6, 1, 10, 0, 0, tzinfo=timezone.utc)
+    now = datetime(2025, 6, 1, 5, 30, 0, tzinfo=timezone(timedelta(hours=-4)))
+    expected_utc = datetime(2025, 6, 1, 9, 30, 0, tzinfo=timezone.utc)
     repos.drafts.save(
         DraftRecord(
             workspace_id="WPG1",
@@ -133,7 +158,7 @@ def test_postgres_utc_timestamps(pg_session: object, pg_engine: Engine) -> None:
     session.flush()  # type: ignore[union-attr]
     result = repos.drafts.get_for_user_channel("UPG1", "CPG1", now, workspace_id="WPG1")
     assert result is not None
-    assert result.created_at.tzinfo is not None
+    assert result.created_at == expected_utc
     assert result.expires_at.tzinfo is not None
 
 

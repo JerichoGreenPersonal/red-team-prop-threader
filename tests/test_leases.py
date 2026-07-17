@@ -17,6 +17,7 @@ from red_team_prop_threader.tables import Base
 if TYPE_CHECKING:
     from collections.abc import Generator
 
+    from conftest import FakeClock
     from sqlalchemy import Engine
 
     from red_team_prop_threader.leases import LeaseResult
@@ -25,22 +26,6 @@ if TYPE_CHECKING:
 # ---------------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------------
-
-
-class FakeClock:
-    """deterministic clock for tests."""
-
-    def __init__(self, start: datetime | None = None) -> None:
-        """Initialize the clock at start, defaulting to 2025-01-01T12:00:00Z."""
-        self._now: datetime = start or datetime(2025, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
-
-    def now(self) -> datetime:
-        """Return current fake time."""
-        return self._now
-
-    def advance(self, *, hours: int = 0, minutes: int = 0, seconds: int = 0) -> None:
-        """Advance the clock by the specified duration."""
-        self._now += timedelta(hours=hours, minutes=minutes, seconds=seconds)
 
 
 # ---------------------------------------------------------------------------
@@ -79,12 +64,6 @@ def session(engine: Engine) -> Generator[Session, None, None]:
 def leases(session: Session, engine: Engine) -> ChannelLeaseRepository:
     """Channel lease repository bound to the test session."""
     return ChannelLeaseRepository(session, engine)
-
-
-@pytest.fixture
-def clock() -> FakeClock:
-    """Deterministic fake clock."""
-    return FakeClock()
 
 
 # ---------------------------------------------------------------------------
@@ -199,6 +178,96 @@ def test_lease_renew_wrong_owner(leases: ChannelLeaseRepository, clock: FakeCloc
     assert r.token is not None
     result = leases.renew("C1", "U2", r.token, clock.now(), timedelta(minutes=10))
     assert result.acquired is False
+
+
+def test_lease_renew_expired_fails_without_resurrection(leases: ChannelLeaseRepository, clock: FakeClock) -> None:
+    """A strictly expired lease cannot be renewed by its former owner."""
+    acquired = leases.acquire("C1", "U1", clock.now(), timedelta(minutes=10))
+    assert acquired.token is not None
+    clock.advance(minutes=10, seconds=1)
+
+    renewed = leases.renew("C1", "U1", acquired.token, clock.now(), timedelta(minutes=10))
+
+    assert renewed.acquired is False
+    current = leases.get("C1")
+    assert current is not None
+    assert current.expires_at < clock.now()
+
+
+def test_lease_renew_at_exact_expiry_succeeds(leases: ChannelLeaseRepository, clock: FakeClock) -> None:
+    """Exact equality is active, so the current owner may renew."""
+    acquired = leases.acquire("C1", "U1", clock.now(), timedelta(minutes=10))
+    assert acquired.token is not None
+    clock.advance(minutes=10)
+
+    renewed = leases.renew("C1", "U1", acquired.token, clock.now(), timedelta(minutes=10))
+
+    assert renewed.acquired is True
+
+
+def test_lease_stale_token_cannot_renew_after_reacquire(leases: ChannelLeaseRepository, clock: FakeClock) -> None:
+    """Reacquisition rotates the token and makes the old token stale."""
+    first = leases.acquire("C1", "U1", clock.now(), timedelta(minutes=10))
+    assert first.token is not None
+    second = leases.acquire("C1", "U1", clock.now(), timedelta(minutes=10))
+    assert second.token is not None
+
+    stale = leases.renew("C1", "U1", first.token, clock.now(), timedelta(minutes=10))
+
+    assert stale.acquired is False
+    assert leases.renew("C1", "U1", second.token, clock.now(), timedelta(minutes=10)).acquired
+
+
+def test_expired_renew_loses_to_acquire_from_separate_session(tmp_path: object) -> None:
+    """A concurrent expired renewal cannot overwrite a replacement owner."""
+    from red_team_prop_threader.db import build_engine
+
+    db_url = f"sqlite:///{tmp_path / 'renew-acquire.db'}"  # type: ignore[operator]
+    engine = build_engine(db_url)
+    Base.metadata.create_all(engine)
+    now = datetime(2025, 1, 1, 12, 0, tzinfo=timezone.utc)
+
+    with Session(engine) as setup:
+        initial = ChannelLeaseRepository(setup, engine).acquire("C1", "U1", now, timedelta(minutes=10))
+        setup.commit()
+    assert initial.token is not None
+    expired_now = now + timedelta(minutes=10, seconds=1)
+    barrier = threading.Barrier(2)
+    results: dict[str, LeaseResult] = {}
+    errors: list[Exception] = []
+
+    def _acquire() -> None:
+        with Session(engine) as acquiring:
+            try:
+                barrier.wait()
+                results["acquire"] = ChannelLeaseRepository(acquiring, engine).acquire("C1", "U2", expired_now, timedelta(minutes=10))
+                acquiring.commit()
+            except Exception as exc:
+                errors.append(exc)
+
+    def _renew() -> None:
+        with Session(engine) as stale:
+            try:
+                barrier.wait()
+                results["renew"] = ChannelLeaseRepository(stale, engine).renew("C1", "U1", initial.token, expired_now, timedelta(minutes=10))
+                stale.commit()
+            except Exception as exc:
+                errors.append(exc)
+
+    threads = [threading.Thread(target=_acquire), threading.Thread(target=_renew)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=10)
+
+    assert not errors
+    assert results["acquire"].acquired is True
+    assert results["renew"].acquired is False
+    with Session(engine) as verify:
+        current = ChannelLeaseRepository(verify, engine).get("C1")
+        assert current is not None
+        assert current.owner_user_id == "U2"
+    engine.dispose()
 
 
 # ---------------------------------------------------------------------------

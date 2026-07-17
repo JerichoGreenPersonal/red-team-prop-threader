@@ -8,7 +8,7 @@
 from typing import Any
 from datetime import datetime, timezone
 
-from sqlalchemy import JSON, Index, String, Boolean, Integer, DateTime, ForeignKey, UniqueConstraint
+from sqlalchemy import JSON, Index, String, Boolean, Integer, DateTime, ForeignKey, CheckConstraint, UniqueConstraint, text
 from sqlalchemy.orm import Mapped, DeclarativeBase, mapped_column  # noqa: TC002
 from sqlalchemy.types import TypeDecorator
 
@@ -47,7 +47,10 @@ class UtcDateTime(TypeDecorator[datetime]):
             return None
         if value.tzinfo is None or value.tzinfo.utcoffset(value) is None:
             raise ValueError(f"naive datetime rejected; supply a UTC-aware datetime (e.g. datetime(..., tzinfo=timezone.utc)), got {value!r}")
-        return value.astimezone(timezone.utc).replace(tzinfo=None)
+        normalized = value.astimezone(timezone.utc)
+        if getattr(dialect, "name", None) == "sqlite":
+            return normalized.replace(tzinfo=None)
+        return normalized
 
     def process_result_value(self, value: datetime | None, dialect: object) -> datetime | None:
         """Rehydrate stored datetime as UTC-aware.
@@ -139,7 +142,11 @@ class BatchAsset(Base):
     included: Mapped[bool] = mapped_column(Boolean, nullable=False)
     asset_details_json: Mapped[Any] = mapped_column(JSON, nullable=True)
 
-    __table_args__ = (UniqueConstraint("batch_id", "entity_id", name="uq_batch_asset_entity"), Index("ix_batch_asset_batch", "batch_id"))
+    __table_args__ = (
+        UniqueConstraint("batch_id", "entity_id", name="uq_batch_asset_entity"),
+        CheckConstraint("entity_id > 0", name="ck_batch_asset_entity_id_positive"),
+        Index("ix_batch_asset_batch", "batch_id"),
+    )
 
 
 class Message(Base):
@@ -166,6 +173,22 @@ class Message(Base):
     __table_args__ = (
         Index("ix_message_latest_group_summary", "group_id", "kind", "is_latest"),
         Index("ix_message_latest_asset_root", "workspace_id", "channel_id", "asset_entity_id", "kind", "is_latest"),
+        Index(
+            "uq_message_latest_group_summary",
+            "group_id",
+            unique=True,
+            sqlite_where=text("kind = 'group_summary' AND is_latest = 1"),
+            postgresql_where=text("kind = 'group_summary' AND is_latest = true"),
+        ),
+        Index(
+            "uq_message_latest_asset_root",
+            "workspace_id",
+            "channel_id",
+            "asset_entity_id",
+            unique=True,
+            sqlite_where=text("kind = 'asset_root' AND is_latest = 1"),
+            postgresql_where=text("kind = 'asset_root' AND is_latest = true"),
+        ),
     )
 
 

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 from logging.config import fileConfig
 
 from sqlalchemy import engine_from_config, pool
@@ -11,6 +10,7 @@ from alembic import context
 
 # import application metadata so alembic can compare against it
 from red_team_prop_threader.tables import Base
+from red_team_prop_threader.db import resolve_migration_url
 
 config = context.config
 
@@ -22,11 +22,14 @@ target_metadata = Base.metadata
 
 
 def _get_url() -> str:
-    """resolve the database URL from config or DATABASE_URL environment variable."""
-    env_url = os.environ.get("DATABASE_URL")
-    if env_url:
-        return env_url
-    return config.get_main_option("sqlalchemy.url", "sqlite:///local/prop-threader.db")
+    """Resolve the URL without allowing DATABASE_URL to override an explicit target."""
+    override = config.attributes.get("database_url_override")
+    if override is not None and not isinstance(override, str):
+        raise TypeError("database_url_override must be a string")
+    return resolve_migration_url(
+        explicit_override=override,
+        configured_url=config.get_main_option("sqlalchemy.url", "sqlite:///local/prop-threader.db"),
+    )
 
 
 def run_migrations_offline() -> None:

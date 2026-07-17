@@ -4,14 +4,11 @@ from __future__ import annotations
 
 from enum import StrEnum
 import uuid
-from typing import (
-    TYPE_CHECKING,
-    Any,
-    cast as _cast,
-)
+from typing import TYPE_CHECKING, Any, cast
 from dataclasses import dataclass
 
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, insert, select, update
+from sqlalchemy.exc import IntegrityError
 
 from red_team_prop_threader.domain import OperationKind
 from red_team_prop_threader.tables import Batch, Draft, Group, Message, Operation
@@ -20,6 +17,7 @@ from red_team_prop_threader.tables import Batch, Draft, Group, Message, Operatio
 if TYPE_CHECKING:
     from datetime import datetime
 
+    from sqlalchemy import Table
     from sqlalchemy.orm import Session
     from sqlalchemy.engine import CursorResult
 
@@ -336,29 +334,52 @@ class DraftRepository:
         _require_aware(record.imported_at, "imported_at")
         _require_aware(record.expires_at, "expires_at")
 
-        existing = self._session.execute(
-            select(Draft).where(Draft.workspace_id == record.workspace_id, Draft.channel_id == record.channel_id, Draft.user_id == record.user_id)
-        ).scalar_one_or_none()
-
-        if existing is not None:
-            existing.snapshot_json = record.snapshot
-            existing.imported_at = record.imported_at
-            existing.updated_at = record.updated_at
-            existing.expires_at = record.expires_at
+        values = {
+            "id": _new_id(),
+            "workspace_id": record.workspace_id,
+            "channel_id": record.channel_id,
+            "user_id": record.user_id,
+            "snapshot_json": record.snapshot,
+            "imported_at": record.imported_at,
+            "created_at": record.created_at,
+            "updated_at": record.updated_at,
+            "expires_at": record.expires_at,
+        }
+        table = cast("Table", Draft.__table__)
+        dialect = self._session.get_bind().dialect.name
+        if dialect == "sqlite":
+            from sqlalchemy.dialects.sqlite import insert as dialect_insert
+        elif dialect == "postgresql":
+            from sqlalchemy.dialects.postgresql import insert as dialect_insert
         else:
-            self._session.add(
-                Draft(
-                    id=_new_id(),
-                    workspace_id=record.workspace_id,
-                    channel_id=record.channel_id,
-                    user_id=record.user_id,
-                    snapshot_json=record.snapshot,
-                    imported_at=record.imported_at,
-                    created_at=record.created_at,
-                    updated_at=record.updated_at,
-                    expires_at=record.expires_at,
-                )
-            )
+            self._save_generic(values)
+            return
+
+        statement = dialect_insert(table).values(**values)
+        statement = statement.on_conflict_do_update(
+            index_elements=["workspace_id", "channel_id", "user_id"],
+            set_={
+                "snapshot_json": statement.excluded.snapshot_json,
+                "imported_at": statement.excluded.imported_at,
+                "updated_at": statement.excluded.updated_at,
+                "expires_at": statement.excluded.expires_at,
+            },
+        )
+        self._session.execute(statement)
+
+    def _save_generic(self, values: dict[str, Any]) -> None:
+        """Use a savepoint-backed conflict fallback for other SQL dialects."""
+        try:
+            with self._session.begin_nested():
+                self._session.execute(insert(Draft).values(**values))
+            return
+        except IntegrityError:
+            pass
+        self._session.execute(
+            update(Draft)
+            .where(Draft.workspace_id == values["workspace_id"], Draft.channel_id == values["channel_id"], Draft.user_id == values["user_id"])
+            .values(snapshot_json=values["snapshot_json"], imported_at=values["imported_at"], updated_at=values["updated_at"], expires_at=values["expires_at"])
+        )
 
     def get_for_user_channel(self, user_id: str, channel_id: str, now: datetime, *, workspace_id: str = "W1") -> DraftRecord | None:
         """Return a non-expired draft for the given user and channel, or None.
@@ -400,7 +421,7 @@ class DraftRepository:
             ValueError: if now is naive.
         """
         _require_aware(now, "now")
-        dml = _cast("CursorResult[Any]", self._session.execute(delete(Draft).where(Draft.expires_at < now)))
+        dml = cast("CursorResult[Any]", self._session.execute(delete(Draft).where(Draft.expires_at < now)))
         return dml.rowcount
 
 
@@ -530,19 +551,20 @@ class BatchRepository:
         if new_status not in allowed:
             raise ValueError(f"illegal batch transition {expected_status!r} -> {new_status!r}")
 
-        row = self._session.get(Batch, batch_id)
-        if row is None:
-            raise LookupError(f"batch {batch_id!r} not found")
-
-        if row.status != expected_status:
-            return False
-
-        row.status = new_status
-        row.updated_at = now
+        values: dict[str, Any] = {"status": new_status, "updated_at": now}
         if new_status in (BatchStatus.SUCCEEDED, BatchStatus.FAILED, BatchStatus.CANCELLED):
-            row.completed_at = now
-
-        return True
+            values["completed_at"] = now
+        result = cast(
+            "CursorResult[Any]",
+            self._session.execute(
+                update(Batch).where(Batch.id == batch_id, Batch.status == expected_status).values(**values).execution_options(synchronize_session=False)
+            ),
+        )
+        if result.rowcount:
+            return True
+        if self._session.execute(select(Batch.id).where(Batch.id == batch_id)).scalar_one_or_none() is None:
+            raise LookupError(f"batch {batch_id!r} not found")
+        return False
 
     def update_payload(self, batch_id: str, payload: dict[str, Any] | None) -> None:
         """Replace the batch's detailed payload independently of status.
@@ -600,7 +622,7 @@ class BatchRepository:
             ValueError: if cutoff is naive.
         """
         _require_aware(cutoff, "cutoff")
-        dml = _cast(
+        dml = cast(
             "CursorResult[Any]",
             self._session.execute(
                 update(Batch)
@@ -641,30 +663,50 @@ class OperationRepository:
             ValueError: if now is naive.
         """
         _require_aware(now, "now")
+        self._session.flush()
 
-        existing = self._session.execute(
+        values = {
+            "id": _new_id(),
+            "batch_id": batch_id,
+            "kind": kind,
+            "asset_entity_id": asset_entity_id,
+            "status": OperationStatus.PENDING,
+            "idempotency_key": idempotency_key,
+            "attempts": 0,
+            "last_safe_error": None,
+            "payload_json": payload,
+            "result_json": None,
+            "created_at": now,
+            "updated_at": now,
+            "completed_at": None,
+        }
+        table = cast("Table", Operation.__table__)
+        dialect = self._session.get_bind().dialect.name
+        if dialect == "sqlite":
+            from sqlalchemy.dialects.sqlite import insert as dialect_insert
+        elif dialect == "postgresql":
+            from sqlalchemy.dialects.postgresql import insert as dialect_insert
+        else:
+            self._add_planned_generic(values)
+            return self._get_by_unique_key(batch_id, kind, asset_entity_id)
+
+        statement = dialect_insert(table).values(**values).on_conflict_do_nothing(index_elements=["batch_id", "kind", "asset_entity_id"])
+        self._session.execute(statement)
+        return self._get_by_unique_key(batch_id, kind, asset_entity_id)
+
+    def _add_planned_generic(self, values: dict[str, Any]) -> None:
+        """Use a savepoint-backed insert fallback for other SQL dialects."""
+        try:
+            with self._session.begin_nested():
+                self._session.execute(insert(Operation).values(**values))
+        except IntegrityError:
+            pass
+
+    def _get_by_unique_key(self, batch_id: str, kind: OperationKind, asset_entity_id: int) -> OperationRecord:
+        """Fetch an operation by its enforced idempotency key."""
+        row = self._session.execute(
             select(Operation).where(Operation.batch_id == batch_id, Operation.kind == kind, Operation.asset_entity_id == asset_entity_id)
-        ).scalar_one_or_none()
-
-        if existing is not None:
-            return _operation_to_record(existing)
-
-        row = Operation(
-            id=_new_id(),
-            batch_id=batch_id,
-            kind=kind,
-            asset_entity_id=asset_entity_id,
-            status=OperationStatus.PENDING,
-            idempotency_key=idempotency_key,
-            attempts=0,
-            last_safe_error=None,
-            payload_json=payload,
-            result_json=None,
-            created_at=now,
-            updated_at=now,
-            completed_at=None,
-        )
-        self._session.add(row)
+        ).scalar_one()
         return _operation_to_record(row)
 
     def get(self, operation_id: str) -> OperationRecord | None:
@@ -716,25 +758,29 @@ class OperationRepository:
         if new_status not in allowed:
             raise ValueError(f"illegal operation transition {expected_status!r} -> {new_status!r}")
 
-        row = self._session.get(Operation, operation_id)
-        if row is None:
-            raise LookupError(f"operation {operation_id!r} not found")
-
-        if row.status != expected_status:
-            return False
-
-        row.status = new_status
-        row.updated_at = now
+        values: dict[str, Any] = {"status": new_status, "updated_at": now}
         if attempts is not None:
-            row.attempts = attempts
+            values["attempts"] = attempts
         if safe_error is not None:
-            row.last_safe_error = safe_error
+            values["last_safe_error"] = safe_error
         if result is not None:
-            row.result_json = result
+            values["result_json"] = result
         if new_status in (OperationStatus.SUCCEEDED, OperationStatus.FAILED):
-            row.completed_at = now
-
-        return True
+            values["completed_at"] = now
+        dml = cast(
+            "CursorResult[Any]",
+            self._session.execute(
+                update(Operation)
+                .where(Operation.id == operation_id, Operation.status == expected_status)
+                .values(**values)
+                .execution_options(synchronize_session=False)
+            ),
+        )
+        if dml.rowcount:
+            return True
+        if self._session.execute(select(Operation.id).where(Operation.id == operation_id)).scalar_one_or_none() is None:
+            raise LookupError(f"operation {operation_id!r} not found")
+        return False
 
     def get_for_batch(self, batch_id: str) -> list[OperationRecord]:
         """Return all operations for a batch ordered by creation time.
@@ -796,7 +842,25 @@ class HistoryRepository:
         """
         _require_aware(inp.now, "now")
 
-        # retire prior latest marker for the same scope
+        # PostgreSQL serializes group replacements on the durable parent row.
+        # Asset replacement locks an existing latest row when one is present;
+        # the partial unique index remains the final arbiter for missing-row races.
+        if self._session.get_bind().dialect.name == "postgresql":
+            lock_statement = select(Group.id).where(Group.id == inp.group_id).with_for_update()
+            self._session.execute(lock_statement).scalar_one()
+            if inp.kind == MessageKind.ASSET_ROOT:
+                self._session.execute(
+                    select(Message.id)
+                    .where(
+                        Message.workspace_id == inp.workspace_id,
+                        Message.channel_id == inp.channel_id,
+                        Message.asset_entity_id == inp.asset_entity_id,
+                        Message.kind == inp.kind,
+                        Message.is_latest.is_(True),
+                    )
+                    .with_for_update()
+                ).all()
+
         if inp.kind == MessageKind.GROUP_SUMMARY:
             self._session.execute(
                 update(Message)

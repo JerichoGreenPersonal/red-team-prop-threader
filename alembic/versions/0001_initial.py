@@ -98,6 +98,7 @@ def upgrade() -> None:
         sa.Column("source_index", sa.Integer(), nullable=False),
         sa.Column("included", sa.Boolean(), nullable=False),
         sa.Column("asset_details_json", sa.JSON(), nullable=True),
+        sa.CheckConstraint("entity_id > 0", name="ck_batch_asset_entity_id_positive"),
         sa.ForeignKeyConstraint(["batch_id"], ["batches.id"]),
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint("batch_id", "entity_id", name="uq_batch_asset_entity"),
@@ -132,6 +133,22 @@ def upgrade() -> None:
         "messages",
         ["workspace_id", "channel_id", "asset_entity_id", "kind", "is_latest"],
     )
+    op.create_index(
+        "uq_message_latest_group_summary",
+        "messages",
+        ["group_id"],
+        unique=True,
+        sqlite_where=sa.text("kind = 'group_summary' AND is_latest = 1"),
+        postgresql_where=sa.text("kind = 'group_summary' AND is_latest = true"),
+    )
+    op.create_index(
+        "uq_message_latest_asset_root",
+        "messages",
+        ["workspace_id", "channel_id", "asset_entity_id"],
+        unique=True,
+        sqlite_where=sa.text("kind = 'asset_root' AND is_latest = 1"),
+        postgresql_where=sa.text("kind = 'asset_root' AND is_latest = true"),
+    )
 
     # 7. operations (foreign key: batches.id)
     op.create_table(
@@ -160,6 +177,8 @@ def downgrade() -> None:
     # 7. operations
     op.drop_table("operations")
     # 6. messages
+    op.drop_index("uq_message_latest_asset_root", table_name="messages")
+    op.drop_index("uq_message_latest_group_summary", table_name="messages")
     op.drop_index("ix_message_latest_asset_root", table_name="messages")
     op.drop_index("ix_message_latest_group_summary", table_name="messages")
     op.drop_table("messages")
