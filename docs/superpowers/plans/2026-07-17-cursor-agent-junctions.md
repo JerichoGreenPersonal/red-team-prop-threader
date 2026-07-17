@@ -98,7 +98,7 @@ Run:
 ```powershell
 $difference = Compare-Object `
     (Get-Content '.cursor\rules\git-workflow.md') `
-    (Get-Content '.agents\rules\git-workflow.md' | Select-Object -Skip 5)
+    (Get-Content '.agents\rules\git-workflow.md' | Select-Object -Skip 4)
 if ($difference) {
     $difference | Format-Table
     throw 'Canonical workflow body does not match the approved main-based rule.'
