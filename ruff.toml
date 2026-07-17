@@ -33,7 +33,7 @@ include = [
 ]
 indent-width = 4
 line-length = 160
-namespace-packages = ["<project-name>"]
+namespace-packages = ["red-team-prop-threader"]
 src = [
     "src",
 ]

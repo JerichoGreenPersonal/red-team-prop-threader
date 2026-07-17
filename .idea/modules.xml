@@ -2,7 +2,7 @@
 <project version="4">
   <component name="ProjectModuleManager">
     <modules>
-      <module fileurl="file://$PROJECT_DIR$/.idea/template-py-package.iml" filepath="$PROJECT_DIR$/.idea/template-py-package.iml" />
+      <module fileurl="file://$PROJECT_DIR$/.idea/red-team-prop-threader.iml" filepath="$PROJECT_DIR$/.idea/red-team-prop-threader.iml" />
     </modules>
   </component>
 </project>

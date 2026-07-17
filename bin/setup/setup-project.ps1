@@ -1,4 +1,4 @@
-#!/usr/bin/env pwsh
+﻿#!/usr/bin/env pwsh
 <#
 .SYNOPSIS
     Initialize a new Python package project using uv
@@ -65,7 +65,9 @@ $GitAvailable = Get-Command git -ErrorAction SilentlyContinue
 if ($GitAvailable) {
     Push-Location $ProjectRoot
     try {
+        $prevEA = $ErrorActionPreference; $ErrorActionPreference = "Continue"
         git checkout -b init-project main 2>$null
+        $ErrorActionPreference = $prevEA
         if ($LASTEXITCODE -eq 0) {
             Write-Host "switched to new branch 'init-project'" -ForegroundColor Green
         }
@@ -211,9 +213,15 @@ Write-Host ""
 Write-Host "(5/6) creating virtual environment..." -ForegroundColor Yellow
 Push-Location $ProjectRoot
 try {
-    & $UvPath venv
-    if ($LASTEXITCODE -ne 0) {
-        throw "uv venv failed - err: $LASTEXITCODE"
+    $VenvDir = Join-Path $ProjectRoot ".venv"
+    if (Test-Path $VenvDir) {
+        Write-Host "virtual environment already exists, skipping" -ForegroundColor Cyan
+    }
+    else {
+        & $UvPath venv
+        if ($LASTEXITCODE -ne 0) {
+            throw "uv venv failed - err: $LASTEXITCODE"
+        }
     }
     Write-Host "virtual environment created" -ForegroundColor Green
 }

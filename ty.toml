@@ -46,7 +46,6 @@ invalid-declaration = "error"
 division-by-zero = "error"
 invalid-overload = "error"
 invalid-type-guard-definition = "error"
-invalid-type-guard-call = "error"
 duplicate-base = "error"
 cyclic-class-definition = "error"
 
