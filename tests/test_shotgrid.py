@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import sys
+from types import SimpleNamespace
+import builtins
 from unittest.mock import MagicMock
 
 import pytest
@@ -172,6 +175,55 @@ def test_parse_page_id_error_does_not_echo_query_values() -> None:
     assert "SENTINEL_SECRET" not in str(exc_info.value)
 
 
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://[invalid/page/1",
+        "https://respawn.shotgunstudio.com:not-a-port/page/1",
+        "https://respawn.shotgunstudio.com:70000/page/1",
+        "https://respawn.shotgunstudio.com:/page/1",
+    ],
+)
+def test_parse_page_id_rejects_malformed_authority_safely(url: str) -> None:
+    """Malformed authorities become static validation errors."""
+    from red_team_prop_threader.shotgrid import parse_page_id
+
+    with pytest.raises(ImportValidationError, match="invalid authority") as exc_info:
+        parse_page_id(url, _EXPECTED_HOST)
+    assert url not in str(exc_info.value)
+
+
+def test_parse_page_id_accepts_bracketed_ipv6_default_port() -> None:
+    """Bracketed IPv6 with the HTTPS default port is parsed safely."""
+    from red_team_prop_threader.shotgrid import parse_page_id
+
+    assert parse_page_id("https://[2001:db8::1]:443/page/1", "2001:db8::1") == 1
+
+
+def test_parse_page_id_rejects_ipv6_nonstandard_port() -> None:
+    """Bracketed IPv6 with a nonstandard port is rejected."""
+    from red_team_prop_threader.shotgrid import parse_page_id
+
+    with pytest.raises(ImportValidationError, match="port"):
+        parse_page_id("https://[2001:db8::1]:8443/page/1", "2001:db8::1")
+
+
+def test_parse_page_id_rejects_empty_userinfo() -> None:
+    """An empty username before an at-sign is still userinfo."""
+    from red_team_prop_threader.shotgrid import parse_page_id
+
+    with pytest.raises(ImportValidationError, match="credentials"):
+        parse_page_id("https://@respawn.shotgunstudio.com/page/1", _EXPECTED_HOST)
+
+
+def test_parse_page_id_rejects_multiple_trailing_slashes() -> None:
+    """Only one optional trailing slash is accepted."""
+    from red_team_prop_threader.shotgrid import parse_page_id
+
+    with pytest.raises(ImportValidationError, match="path"):
+        parse_page_id("https://respawn.shotgunstudio.com/page/1//", _EXPECTED_HOST)
+
+
 # ---------------------------------------------------------------------------
 # build_asset_url
 # ---------------------------------------------------------------------------
@@ -223,6 +275,41 @@ def test_build_asset_url_rejects_fragment() -> None:
 
     with pytest.raises(ImportValidationError):
         build_asset_url("https://example.com#section", 1)
+
+
+@pytest.mark.parametrize(
+    "base_url", ["https://[invalid", "https://example.com:not-a-port", "https://example.com:70000", "https://example.com:", "https://[2001:db8::1]:8443"]
+)
+def test_build_asset_url_rejects_malformed_or_unexpected_authority(base_url: str) -> None:
+    """Malformed authorities and nonstandard ports fail safely."""
+    from red_team_prop_threader.shotgrid import build_asset_url
+
+    with pytest.raises(ImportValidationError):
+        build_asset_url(base_url, 1)
+
+
+def test_build_asset_url_accepts_bracketed_ipv6_default_port() -> None:
+    """Bracketed IPv6 and explicit port 443 remain valid."""
+    from red_team_prop_threader.shotgrid import build_asset_url
+
+    assert build_asset_url("https://[2001:db8::1]:443/", 1) == "https://[2001:db8::1]:443/detail/Asset/1"
+
+
+def test_build_asset_url_rejects_empty_userinfo() -> None:
+    """An empty username in the base URL is rejected."""
+    from red_team_prop_threader.shotgrid import build_asset_url
+
+    with pytest.raises(ImportValidationError, match="credentials"):
+        build_asset_url("https://@example.com", 1)
+
+
+@pytest.mark.parametrize("entity_id", [0, -1, "1", 1.0, True])
+def test_build_asset_url_rejects_non_positive_or_non_integer_entity_ids(entity_id: object) -> None:
+    """Runtime callers cannot bypass positive integer entity ID validation."""
+    from red_team_prop_threader.shotgrid import build_asset_url
+
+    with pytest.raises(ImportValidationError, match="positive integer"):
+        build_asset_url(_BASE_URL, entity_id)  # type: ignore[arg-type]
 
 
 # ---------------------------------------------------------------------------
@@ -314,6 +401,48 @@ def test_parse_export_csv_extra_columns_ignored() -> None:
     csv_text = "Asset Name,Entity ID,Status\nS31 Chair,101,Active\n"
     result = parse_export_csv(csv_text, _BASE_URL)
     assert result.assets[0].entity_id == 101
+
+
+def test_parse_export_csv_accepts_utf8_bom() -> None:
+    """One UTF-8 BOM before the first header is ignored."""
+    from red_team_prop_threader.shotgrid import parse_export_csv
+
+    result = parse_export_csv("\ufeffAsset Name,Entity ID\r\nS31 Chair,101\r\n", _BASE_URL)
+    assert result.assets[0].name == "S31 Chair"
+
+
+def test_parse_export_csv_accepts_quoted_comma() -> None:
+    """Quoted commas remain part of an asset name."""
+    from red_team_prop_threader.shotgrid import parse_export_csv
+
+    result = parse_export_csv('Asset Name,Entity ID\r\n"Chair, Large",101\r\n', _BASE_URL)
+    assert result.assets[0].name == "Chair, Large"
+
+
+def test_parse_export_csv_accepts_quoted_newline() -> None:
+    """Quoted newlines remain part of an asset name."""
+    from red_team_prop_threader.shotgrid import parse_export_csv
+
+    result = parse_export_csv('Asset Name,Entity ID\r\n"Chair\r\nLarge",101\r\n', _BASE_URL)
+    assert result.assets[0].name == "Chair\r\nLarge"
+
+
+def test_parse_export_csv_rejects_malformed_quotes_safely() -> None:
+    """Strict CSV parser errors become static import validation errors."""
+    from red_team_prop_threader.shotgrid import parse_export_csv
+
+    sentinel = "SENTINEL_CSV_CONTENT"
+    with pytest.raises(ImportValidationError, match="malformed CSV") as exc_info:
+        parse_export_csv(f'Asset Name,Entity ID\r\n"unclosed {sentinel},101\r\n', _BASE_URL)
+    assert sentinel not in str(exc_info.value)
+
+
+def test_parse_export_csv_rejects_overwide_rows() -> None:
+    """Rows with undeclared cells are rejected as malformed."""
+    from red_team_prop_threader.shotgrid import parse_export_csv
+
+    with pytest.raises(ImportValidationError, match="malformed"):
+        parse_export_csv("Asset Name,Entity ID\r\nChair,101,unexpected\r\n", _BASE_URL)
 
 
 def test_parse_export_csv_asset_url_format() -> None:
@@ -490,6 +619,21 @@ def test_gateway_export_page_client_exception_raises_external_service_error() ->
         gw.export_page(23280)
 
 
+def test_gateway_export_error_does_not_leak_message_or_cause() -> None:
+    """Export failures expose neither the unsafe message nor cause."""
+    from red_team_prop_threader.shotgrid import ShotGridGateway
+
+    sentinel = "SENTINEL_EXPORT_SECRET"
+    mock_client = MagicMock()
+    mock_client.export_page.side_effect = RuntimeError(sentinel)
+    gw = ShotGridGateway(base_url=_BASE_URL, script_name="test-script", script_key="test-key", client_factory=lambda: mock_client)
+
+    with pytest.raises(ExternalServiceError) as exc_info:
+        gw.export_page(23280)
+    assert sentinel not in str(exc_info.value)
+    assert exc_info.value.__cause__ is None
+
+
 def test_gateway_export_page_non_string_return_raises_external_service_error() -> None:
     """Non-string return value from client raises ExternalServiceError."""
     gw = _make_gateway(return_value=42)
@@ -515,3 +659,70 @@ def test_gateway_repr_does_not_expose_script_key() -> None:
 
     gw = ShotGridGateway(base_url=_BASE_URL, script_name="test-script", script_key="SENTINEL_KEY_VALUE", client_factory=lambda: MagicMock())
     assert "SENTINEL_KEY_VALUE" not in repr(gw)
+
+
+def test_gateway_normalizes_base_url_in_repr() -> None:
+    """Gateway stores a normalized validated base URL."""
+    from red_team_prop_threader.shotgrid import ShotGridGateway
+
+    gw = ShotGridGateway(base_url=f"{_BASE_URL}/", script_name="test-script", script_key="test-key", client_factory=lambda: MagicMock())
+    assert repr(gw) == f"ShotGridGateway(base_url={_BASE_URL!r})"
+
+
+@pytest.mark.parametrize(("script_name", "script_key"), [("", "key"), ("   ", "key"), ("name", ""), ("name", "   ")])
+def test_gateway_rejects_blank_script_credentials(script_name: str, script_key: str) -> None:
+    """Script names and keys must contain non-whitespace text."""
+    from red_team_prop_threader.shotgrid import ShotGridGateway
+
+    with pytest.raises(ImportValidationError):
+        ShotGridGateway(base_url=_BASE_URL, script_name=script_name, script_key=script_key, client_factory=lambda: MagicMock())
+
+
+def test_gateway_factory_failure_is_static_and_safe() -> None:
+    """Injected client factory failures become static external errors."""
+    from red_team_prop_threader.shotgrid import ShotGridGateway
+
+    sentinel = "SENTINEL_FACTORY_SECRET"
+
+    def fail_factory() -> object:
+        raise RuntimeError(sentinel)
+
+    with pytest.raises(ExternalServiceError, match="initialize") as exc_info:
+        ShotGridGateway(base_url=_BASE_URL, script_name="test-script", script_key="test-key", client_factory=fail_factory)
+    assert sentinel not in str(exc_info.value)
+    assert exc_info.value.__cause__ is None
+
+
+def test_gateway_lazy_import_failure_is_static_and_safe(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Lazy shotgun_api3 import failures become static external errors."""
+    from red_team_prop_threader.shotgrid import ShotGridGateway
+
+    sentinel = "SENTINEL_IMPORT_SECRET"
+    original_import = builtins.__import__
+
+    def fail_shotgun_import(name: str, *args: object, **kwargs: object) -> object:
+        if name == "shotgun_api3":
+            raise ImportError(sentinel)
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fail_shotgun_import)
+    with pytest.raises(ExternalServiceError, match="initialize") as exc_info:
+        ShotGridGateway(base_url=_BASE_URL, script_name="test-script", script_key="test-key")
+    assert sentinel not in str(exc_info.value)
+    assert exc_info.value.__cause__ is None
+
+
+def test_gateway_client_construction_failure_is_static_and_safe(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Shotgun client constructor failures become static external errors."""
+    from red_team_prop_threader.shotgrid import ShotGridGateway
+
+    sentinel = "SENTINEL_CONSTRUCTOR_SECRET"
+
+    def fail_constructor(*args: object, **kwargs: object) -> object:
+        raise RuntimeError(sentinel)
+
+    monkeypatch.setitem(sys.modules, "shotgun_api3", SimpleNamespace(Shotgun=fail_constructor))
+    with pytest.raises(ExternalServiceError, match="initialize") as exc_info:
+        ShotGridGateway(base_url=_BASE_URL, script_name="test-script", script_key="test-key")
+    assert sentinel not in str(exc_info.value)
+    assert exc_info.value.__cause__ is None

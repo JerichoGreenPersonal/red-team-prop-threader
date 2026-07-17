@@ -12,6 +12,7 @@ from red_team_prop_threader._errors import ExternalServiceError, ImportValidatio
 
 
 if TYPE_CHECKING:
+    from urllib.parse import ParseResult
     from collections.abc import Callable
 
     from red_team_prop_threader.config import Settings
@@ -20,6 +21,46 @@ if TYPE_CHECKING:
 __all__ = ("ShotGridGateway", "build_asset_url", "parse_export_csv", "parse_page_id")
 
 _MAX_EXPORT_ROWS = 30
+
+
+def _parse_https_authority(url: str, *, label: str) -> tuple[ParseResult, str]:
+    """Parse an HTTPS URL authority without leaking malformed input.
+
+    Args:
+        url: the URL to parse.
+        label: the safe URL label used in validation messages.
+
+    Returns:
+        tuple[ParseResult, str]: the parsed URL and normalized hostname.
+
+    Raises:
+        ImportValidationError: if parsing or authority inspection fails, the
+            scheme is not HTTPS, credentials are present, or the port is not
+            implicit or 443.
+    """
+    try:
+        parsed = urlparse(url)
+        hostname = parsed.hostname
+        username = parsed.username
+        password = parsed.password
+        port = parsed.port
+    except ValueError:
+        raise ImportValidationError(f"{label} has invalid authority") from None
+
+    if parsed.scheme != "https":
+        raise ImportValidationError(f"{label} must use HTTPS")
+    if not hostname:
+        raise ImportValidationError(f"{label} must include a hostname")
+    if username is not None or password is not None:
+        raise ImportValidationError(f"{label} must not include credentials")
+
+    authority = parsed.netloc.rsplit("@", 1)[-1]
+    if authority.endswith(":"):
+        raise ImportValidationError(f"{label} has invalid authority")
+    if port is not None and port != 443:
+        raise ImportValidationError(f"{label} must not include a non-standard port")
+
+    return parsed, hostname.lower()
 
 
 def parse_page_id(url: str, expected_host: str) -> int:
@@ -36,19 +77,10 @@ def parse_page_id(url: str, expected_host: str) -> int:
         ImportValidationError: if the URL is not a valid absolute HTTPS ShotGrid
             page URL with a matching host and a /page/<positive-integer> path.
     """
-    parsed = urlparse(url)
+    parsed, hostname = _parse_https_authority(url, label="page URL")
 
-    if parsed.scheme != "https":
-        raise ImportValidationError("page URL must use HTTPS")
-
-    if not parsed.hostname or parsed.hostname.lower() != expected_host.lower():
+    if hostname != expected_host.lower():
         raise ImportValidationError(f"page URL must use host {expected_host!r} exactly")
-
-    if parsed.username or parsed.password:
-        raise ImportValidationError("page URL must not include credentials")
-
-    if parsed.port is not None and parsed.port != 443:
-        raise ImportValidationError("page URL must not include a non-standard port")
 
     if parsed.fragment:
         raise ImportValidationError("page URL must not include a fragment")
@@ -56,8 +88,8 @@ def parse_page_id(url: str, expected_host: str) -> int:
     if parsed.query:
         raise ImportValidationError("page URL must not include a query string")
 
-    # strip at most one trailing slash from path, then split
-    path = parsed.path.rstrip("/") if parsed.path.endswith("/") and parsed.path != "/" else parsed.path
+    # remove exactly one optional trailing slash
+    path = parsed.path[:-1] if parsed.path.endswith("/") else parsed.path
     parts = path.split("/")
 
     # valid path: '' / 'page' / '<id>'
@@ -88,16 +120,7 @@ def _validate_base_url(base_url: str) -> str:
         ImportValidationError: if the URL is not an absolute HTTPS URL with a
             hostname and no credentials, query string, or fragment.
     """
-    parsed = urlparse(base_url)
-
-    if parsed.scheme != "https":
-        raise ImportValidationError("base URL must use HTTPS")
-
-    if not parsed.hostname:
-        raise ImportValidationError("base URL must include a hostname")
-
-    if parsed.username or parsed.password:
-        raise ImportValidationError("base URL must not include credentials")
+    parsed, _hostname = _parse_https_authority(base_url, label="base URL")
 
     if parsed.query:
         raise ImportValidationError("base URL must not include a query string")
@@ -119,9 +142,12 @@ def build_asset_url(base_url: str, entity_id: int) -> str:
         str: the full asset detail URL in the form <base_url>/detail/Asset/<entity_id>.
 
     Raises:
-        ImportValidationError: if base_url fails validation.
+        ImportValidationError: if base_url fails validation or entity_id is not
+            a positive integer.
     """
     normalized = _validate_base_url(base_url)
+    if isinstance(entity_id, bool) or not isinstance(entity_id, int) or entity_id <= 0:
+        raise ImportValidationError("entity ID must be a positive integer")
     return f"{normalized}/detail/Asset/{entity_id}"
 
 
@@ -142,10 +168,16 @@ def parse_export_csv(csv_text: str, base_url: str) -> ImportResult:
     """
     normalized_base = _validate_base_url(base_url)
 
-    reader = csv.DictReader(io.StringIO(csv_text))
+    csv_text = csv_text.removeprefix("\ufeff")
+    reader = csv.DictReader(io.StringIO(csv_text, newline=""), strict=True)
 
-    # DictReader populates fieldnames on first row read; trigger it
-    fieldnames: list[str] = list(reader.fieldnames or [])
+    try:
+        # DictReader populates fieldnames on first row read; trigger it
+        fieldnames: list[str] = list(reader.fieldnames or [])
+        # collect all rows before validating to enforce the raw row limit
+        raw_rows: list[dict[Any, Any]] = list(reader)
+    except csv.Error:
+        raise ImportValidationError("CSV export contains malformed CSV") from None
 
     if not fieldnames:
         raise ImportValidationError("CSV has no headers")
@@ -165,9 +197,6 @@ def parse_export_csv(csv_text: str, base_url: str) -> ImportResult:
     name_key = fieldnames[normalized_fields.index("asset name")]
     id_key = fieldnames[normalized_fields.index("entity id")]
 
-    # collect all rows before validating to enforce the raw row limit
-    raw_rows: list[dict[str | Any, str | Any]] = list(reader)
-
     if len(raw_rows) > _MAX_EXPORT_ROWS:
         raise ImportValidationError(f"CSV export contains {len(raw_rows)} rows, which exceeds the limit of {_MAX_EXPORT_ROWS}")
 
@@ -179,6 +208,9 @@ def parse_export_csv(csv_text: str, base_url: str) -> ImportResult:
     duplicate_count = 0
 
     for source_index, row in enumerate(raw_rows):
+        if None in row:
+            raise ImportValidationError(f"row {source_index + 1} is malformed (contains undeclared fields)")
+
         name_raw: str | None = row.get(name_key)
         id_raw: str | None = row.get(id_key)
 
@@ -221,15 +253,26 @@ class ShotGridGateway:
             client_factory: optional callable that returns a Shotgun client; when
                 omitted the real shotgun_api3.Shotgun client is constructed.
         """
-        self._base_url = base_url
-        self._script_name = script_name
-        self._script_key = script_key
-        if client_factory is not None:
-            self._client: Any = client_factory()
-        else:
-            import shotgun_api3
+        normalized_base_url = _validate_base_url(base_url)
+        normalized_script_name = script_name.strip()
+        normalized_script_key = script_key.strip()
+        if not normalized_script_name:
+            raise ImportValidationError("ShotGrid script name must not be blank")
+        if not normalized_script_key:
+            raise ImportValidationError("ShotGrid script key must not be blank")
 
-            self._client = shotgun_api3.Shotgun(base_url, script_name=script_name, api_key=script_key, connect=False)
+        self._base_url = normalized_base_url
+        self._script_name = normalized_script_name
+        self._script_key = normalized_script_key
+        try:
+            if client_factory is not None:
+                self._client: Any = client_factory()
+            else:
+                import shotgun_api3
+
+                self._client = shotgun_api3.Shotgun(normalized_base_url, script_name=normalized_script_name, api_key=normalized_script_key, connect=False)
+        except Exception:
+            raise ExternalServiceError("failed to initialize ShotGrid client") from None
 
     def __repr__(self) -> str:
         """Return a safe repr that does not include credentials."""
@@ -266,11 +309,11 @@ class ShotGridGateway:
         """
         try:
             result: Any = self._client.export_page(page_id, "csv")
-        except Exception as exc:
-            raise ExternalServiceError("shotgrid export_page call failed") from exc
+        except Exception:
+            raise ExternalServiceError("shotgrid export_page call failed") from None
 
         if not isinstance(result, str):
-            raise ExternalServiceError(f"shotgrid export_page returned unexpected type {type(result).__name__!r}")
+            raise ExternalServiceError("shotgrid export_page returned an invalid value")
 
         if not result:
             raise ExternalServiceError("shotgrid export_page returned empty CSV")
