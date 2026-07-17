@@ -21,6 +21,8 @@ from red_team_prop_threader.views import (
     BID_GROUP_ANIMATOR,
     BID_GROUP_ADDITIONAL,
     AID_IMPORT_START_OVER,
+    AID_CONFIRM_GROUP_TITLE,
+    BID_CONFIRM_GROUP_TITLE,
     AssetDraft,
     ImportContext,
     AssetSelection,
@@ -266,6 +268,25 @@ def test_import_view_all_blocks_have_block_id() -> None:
         assert "block_id" in block, f"block missing block_id: {block!r}"
 
 
+@pytest.mark.parametrize("value_length", [2000, 2001])
+def test_import_view_enforces_button_value_limit(value_length: int) -> None:
+    """Existing draft button values accept 2000 characters and reject 2001."""
+    context = ImportContext(draft_id="d1", existing_draft_id="x" * value_length)
+
+    if value_length == 2000:
+        view = render_import_view(context)
+        resume = next(
+            element
+            for block in view["blocks"]  # type: ignore[union-attr]
+            for element in block.get("elements", [])
+            if element.get("action_id") == AID_IMPORT_RESUME
+        )
+        assert len(resume["value"]) == 2000
+    else:
+        with pytest.raises(ValidationError, match="button value"):
+            render_import_view(context)
+
+
 # ---------------------------------------------------------------------------
 # asset page — counts and limits
 # ---------------------------------------------------------------------------
@@ -387,6 +408,73 @@ def test_asset_page_initial_user_set_when_animator_present() -> None:
     view = render_asset_page(draft, page_index=0)
     anim_block = next(b for b in view["blocks"] if b.get("block_id") == "asset_100_animator")  # type: ignore[union-attr]
     assert anim_block["element"]["initial_user"] == "U_ANIM"  # type: ignore[index]
+
+
+def test_asset_page_animator_input_is_required() -> None:
+    """Each per-asset animator input is visually and structurally required."""
+    view = render_asset_page(sample_draft(asset_count=1), page_index=0)
+    animator = next(block for block in view["blocks"] if block.get("block_id") == "asset_100_animator")  # type: ignore[union-attr]
+
+    assert animator["type"] == "input"
+    assert animator["optional"] is False
+
+
+def test_asset_page_plain_text_asset_label_preserves_special_characters() -> None:
+    """Plain-text labels retain raw special characters while mrkdwn stays escaped."""
+    asset = ImportedAsset(entity_id=42, name="Prop & <Hero>", url="https://sg.example.com/42", source_index=0)
+    selection = AssetSelection(entity_id=42, included=True, animator_id=None, additional_ids=(), links_text="")
+    draft = AssetDraft(
+        draft_id="d1", assets=(asset,), group_title="G", group_animator_id=None, group_additional_ids=(), group_links_text="", selections=(selection,)
+    )
+    view = render_asset_page(draft, page_index=0)
+    include = next(block for block in view["blocks"] if block.get("block_id") == "asset_42_include")  # type: ignore[union-attr]
+    context = next(block for block in view["blocks"] if block.get("block_id") == "ctx_asset_42")  # type: ignore[union-attr]
+
+    assert include["label"]["text"] == "Prop & <Hero> (ID: 42)"  # type: ignore[index]
+    assert context["elements"][0]["text"] == "<https://sg.example.com/42|Prop &amp; &lt;Hero&gt;> · ShotGrid ID: 42"  # type: ignore[index]
+
+
+def test_asset_context_mrkdwn_accepts_exact_slack_limit() -> None:
+    """Asset context mrkdwn accepts a payload exactly 3000 characters long."""
+    prefix = "<https://sg.example.com/42|"
+    suffix = "> · ShotGrid ID: 42"
+    name = "N" * (3000 - len(prefix) - len(suffix))
+    asset = ImportedAsset(entity_id=42, name=name, url="https://sg.example.com/42", source_index=0)
+    selection = AssetSelection(entity_id=42, included=True, animator_id=None, additional_ids=(), links_text="")
+    draft = AssetDraft(
+        draft_id="d1", assets=(asset,), group_title="G", group_animator_id=None, group_additional_ids=(), group_links_text="", selections=(selection,)
+    )
+
+    view = render_asset_page(draft, page_index=0)
+    context = next(block for block in view["blocks"] if block.get("block_id") == "ctx_asset_42")  # type: ignore[union-attr]
+    assert len(context["elements"][0]["text"]) == 3000  # type: ignore[index]
+
+
+def test_asset_context_mrkdwn_rejects_over_slack_limit() -> None:
+    """Asset context fails safely instead of truncating Slack link markup."""
+    prefix = "<https://sg.example.com/42|"
+    suffix = "> · ShotGrid ID: 42"
+    name = "N" * (3001 - len(prefix) - len(suffix))
+    asset = ImportedAsset(entity_id=42, name=name, url="https://sg.example.com/42", source_index=0)
+    selection = AssetSelection(entity_id=42, included=True, animator_id=None, additional_ids=(), links_text="")
+    draft = AssetDraft(
+        draft_id="d1", assets=(asset,), group_title="G", group_animator_id=None, group_additional_ids=(), group_links_text="", selections=(selection,)
+    )
+
+    with pytest.raises(ValidationError, match="asset context"):
+        render_asset_page(draft, page_index=0)
+
+
+def test_asset_context_mrkdwn_rejects_oversized_url() -> None:
+    """An impossible oversized imported URL fails safely before link rendering."""
+    asset = ImportedAsset(entity_id=42, name="Prop", url=f"https://sg.example.com/{'x' * 3000}", source_index=0)
+    selection = AssetSelection(entity_id=42, included=True, animator_id=None, additional_ids=(), links_text="")
+    draft = AssetDraft(
+        draft_id="d1", assets=(asset,), group_title="G", group_animator_id=None, group_additional_ids=(), group_links_text="", selections=(selection,)
+    )
+
+    with pytest.raises(ValidationError, match="asset context"):
+        render_asset_page(draft, page_index=0)
 
 
 def test_asset_page_initial_users_set_for_additional() -> None:
@@ -661,6 +749,59 @@ def test_decode_malformed_users_select_raises() -> None:
         decode_asset_page_state(state, page_index=0)
 
 
+@pytest.mark.parametrize("selected_users", [None, pytest.param([], id="empty-list")])
+def test_decode_multi_user_select_accepts_empty_values(selected_users: object) -> None:
+    """Missing-like multi-select values decode as an empty tuple."""
+    state: dict[str, Any] = {
+        "values": {
+            "asset_100_include": {"asset_100_include": {"type": "checkboxes", "selected_options": []}},
+            "asset_100_additional": {"asset_100_additional": {"type": "multi_users_select", "selected_users": selected_users}},
+        }
+    }
+
+    decoded = decode_asset_page_state(state, page_index=0)
+    assert decoded.asset_states[0].additional_ids == ()
+
+
+def test_decode_multi_user_select_accepts_missing_selected_users() -> None:
+    """A missing selected_users key decodes as an empty tuple."""
+    state: dict[str, Any] = {
+        "values": {
+            "asset_100_include": {"asset_100_include": {"type": "checkboxes", "selected_options": []}},
+            "asset_100_additional": {"asset_100_additional": {"type": "multi_users_select"}},
+        }
+    }
+
+    decoded = decode_asset_page_state(state, page_index=0)
+    assert decoded.asset_states[0].additional_ids == ()
+
+
+def test_decode_multi_user_select_rejects_non_list() -> None:
+    """A non-list selected_users value raises a safe ValidationError."""
+    state: dict[str, Any] = {
+        "values": {
+            "asset_100_include": {"asset_100_include": {"type": "checkboxes", "selected_options": []}},
+            "asset_100_additional": {"asset_100_additional": {"type": "multi_users_select", "selected_users": "U_BAD"}},
+        }
+    }
+
+    with pytest.raises(ValidationError, match="selected_users must be a list"):
+        decode_asset_page_state(state, page_index=0)
+
+
+def test_decode_multi_user_select_rejects_non_string_member() -> None:
+    """A non-string selected_users member raises a safe ValidationError."""
+    state: dict[str, Any] = {
+        "values": {
+            "asset_100_include": {"asset_100_include": {"type": "checkboxes", "selected_options": []}},
+            "asset_100_additional": {"asset_100_additional": {"type": "multi_users_select", "selected_users": ["U_OK", 42]}},
+        }
+    }
+
+    with pytest.raises(ValidationError, match="string user IDs"):
+        decode_asset_page_state(state, page_index=0)
+
+
 def test_decode_invalid_page_index_raises() -> None:
     """Page index outside {0,1} raises ValidationError."""
     with pytest.raises(ValidationError):
@@ -702,23 +843,16 @@ def test_decode_entity_id_comes_from_block_id_not_value() -> None:
     assert decoded.asset_states[0].entity_id == 100  # from block key, not value
 
 
-def test_decode_duplicate_entity_ids_raises() -> None:
-    """Duplicate entity IDs in view state raise ValidationError."""
+def test_decode_repeated_asset_fields_form_one_asset_state() -> None:
+    """The four distinct field keys for one entity decode to one asset state."""
     state: dict[str, Any] = {
         "values": {
             "asset_100_include": {"asset_100_include": {"type": "checkboxes", "selected_options": []}},
             "asset_100_animator": {"asset_100_animator": {"type": "users_select", "selected_user": None}},
             "asset_100_additional": {"asset_100_additional": {"type": "multi_users_select", "selected_users": []}},
             "asset_100_links": {"asset_100_links": {"type": "plain_text_input", "value": ""}},
-            # injected second asset_100 set via alternate spacing — should not happen but let's test
         }
     }
-    # Cannot easily inject duplicate block_ids in a dict (same key), so test by
-    # building a state dict where the same entity_id appears twice artificially.
-    # We use an OrderedDict-style re-test via state manipulation helper if needed.
-    # In practice, dicts can't have duplicate keys, so this test verifies the
-    # decoder doesn't break on that edge case (it won't see duplicates from a dict).
-    # This test validates the decoder is pure and returns valid output.
     decoded = decode_asset_page_state(state, page_index=0)
     assert len(decoded.asset_states) == 1
 
@@ -791,6 +925,28 @@ def test_confirmation_view_shows_group_title() -> None:
     view = render_confirmation_view(ctx)
     rendered = json.dumps(view)
     assert "SEASON 31 UNIQUE TITLE" in rendered
+
+
+def test_confirmation_group_title_is_required_editable_input() -> None:
+    """Confirmation exposes a stable required input prefilled with the group title."""
+    context = ConfirmationContext(
+        draft_id="d1",
+        target_channel_id="C1",
+        group_title="SEASON 31 UNIQUE TITLE",
+        included_count=1,
+        deduped_row_count=1,
+        existing_duplicate_thread_count=0,
+        existing_duplicate_thread_links=(),
+        warnings=(),
+    )
+    view = render_confirmation_view(context)
+    title = next(block for block in view["blocks"] if block.get("block_id") == BID_CONFIRM_GROUP_TITLE)  # type: ignore[union-attr]
+
+    assert title["type"] == "input"
+    assert title["optional"] is False
+    assert title["element"]["type"] == "plain_text_input"  # type: ignore[index]
+    assert title["element"]["action_id"] == AID_CONFIRM_GROUP_TITLE  # type: ignore[index]
+    assert title["element"]["initial_value"] == context.group_title  # type: ignore[index]
 
 
 def test_confirmation_view_shows_included_count() -> None:

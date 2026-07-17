@@ -28,6 +28,7 @@ AID_EDIT_ASSET_DETAILS = "edit_asset_details"
 
 _SECTION_TEXT_MAX = 3000
 _BUTTON_TEXT_MAX = 75
+_BUTTON_VALUE_MAX = 2000
 
 # ---------------------------------------------------------------------------
 # context dataclasses
@@ -221,7 +222,12 @@ def _button(text: str, action_id: str, value: str = "") -> dict[str, object]:
 
     Returns:
         dict[str, object]: Slack button element.
+
+    Raises:
+        ValidationError: if value exceeds Slack's 2000-character limit.
     """
+    if len(value) > _BUTTON_VALUE_MAX:
+        raise ValidationError(f"button value exceeds Slack limit of {_BUTTON_VALUE_MAX} characters")
     return {"type": "button", "text": _plain(text, max_len=_BUTTON_TEXT_MAX), "action_id": action_id, "value": value}
 
 

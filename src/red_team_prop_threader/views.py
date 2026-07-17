@@ -18,11 +18,13 @@ __all__ = (
     "AID_CANVAS_CREATE",
     "AID_CANVAS_DECLINE",
     "AID_CANVAS_RENAME",
+    "AID_CONFIRM_GROUP_TITLE",
     "AID_IMPORT_RESUME",
     "AID_IMPORT_START_OVER",
     "AID_NAV_BACK",
     "AID_NAV_CONFIRM",
     "AID_NAV_NEXT",
+    "BID_CONFIRM_GROUP_TITLE",
     "BID_GROUP_ADDITIONAL",
     "BID_GROUP_ANIMATOR",
     "BID_GROUP_LINKS",
@@ -48,6 +50,7 @@ __all__ = (
 AID_CANVAS_CREATE = "canvas_create"
 AID_CANVAS_RENAME = "canvas_rename"
 AID_CANVAS_DECLINE = "canvas_decline"
+AID_CONFIRM_GROUP_TITLE = "confirm_group_title"
 AID_IMPORT_RESUME = "import_resume"
 AID_IMPORT_START_OVER = "import_start_over"
 AID_NAV_BACK = "nav_back"
@@ -62,6 +65,7 @@ BID_GROUP_TITLE = "group_title"
 BID_GROUP_ANIMATOR = "group_animator"
 BID_GROUP_ADDITIONAL = "group_additional"
 BID_GROUP_LINKS = "group_links"
+BID_CONFIRM_GROUP_TITLE = "confirm_group_title"
 
 # ---------------------------------------------------------------------------
 # Slack limits
@@ -71,9 +75,9 @@ _PAGE_SIZE = 15
 _MAX_ASSETS = 30
 _BLOCK_MAX = 100
 _MODAL_TITLE_MAX = 24
-_HEADER_TEXT_MAX = 150
 _SECTION_TEXT_MAX = 3000
 _BUTTON_TEXT_MAX = 75
+_BUTTON_VALUE_MAX = 2000
 _PLAIN_TEXT_INPUT_MAX = 3000
 _DRAFT_ID_MAX = 255
 
@@ -365,7 +369,12 @@ def _button(text: str, action_id: str, value: str = "", style: str | None = None
 
     Returns:
         dict[str, object]: Slack button element.
+
+    Raises:
+        ValidationError: if value exceeds Slack's 2000-character limit.
     """
+    if len(value) > _BUTTON_VALUE_MAX:
+        raise ValidationError(f"button value exceeds Slack limit of {_BUTTON_VALUE_MAX} characters")
     btn: dict[str, object] = {"type": "button", "text": _plain(text, max_len=_BUTTON_TEXT_MAX), "action_id": action_id, "value": value}
     if style is not None:
         btn["style"] = style
@@ -417,7 +426,12 @@ def _plain_text_input(action_id: str, placeholder: str, initial_value: str | Non
 
     Returns:
         dict[str, object]: Slack plain_text_input element.
+
+    Raises:
+        ValidationError: if initial_value exceeds Slack's 3000-character limit.
     """
+    if initial_value is not None and len(initial_value) > _PLAIN_TEXT_INPUT_MAX:
+        raise ValidationError(f"plain text input initial value exceeds Slack limit of {_PLAIN_TEXT_INPUT_MAX} characters")
     elem: dict[str, object] = {"type": "plain_text_input", "action_id": action_id, "placeholder": _plain(placeholder), "multiline": multiline}
     if initial_value:
         elem["initial_value"] = initial_value
@@ -535,10 +549,13 @@ def _asset_blocks(asset: ImportedAsset, sel: AssetSelection) -> list[dict[str, o
     """
     eid = asset.entity_id
     ctx_bid = f"ctx_asset_{eid}"
+    context_text = f"<{asset.url}|{_escape(asset.name)}> · ShotGrid ID: {eid}"
+    if len(context_text) > _SECTION_TEXT_MAX:
+        raise ValidationError(f"asset context for entity {eid} exceeds Slack limit of {_SECTION_TEXT_MAX} characters")
     return [
-        _context_block(ctx_bid, [_mrkdwn(f"<{asset.url}|{_escape(asset.name)}> \u00b7 ShotGrid ID: {eid}")]),
-        _input_block(f"asset_{eid}_include", f"{_escape(asset.name)} (ID: {eid})", _checkboxes(f"asset_{eid}_include", sel.included), optional=True),
-        _input_block(f"asset_{eid}_animator", "Animator", _users_select(f"asset_{eid}_animator", "Select animator", sel.animator_id), optional=True),
+        _context_block(ctx_bid, [_mrkdwn(context_text)]),
+        _input_block(f"asset_{eid}_include", f"{asset.name} (ID: {eid})", _checkboxes(f"asset_{eid}_include", sel.included), optional=True),
+        _input_block(f"asset_{eid}_animator", "Animator", _users_select(f"asset_{eid}_animator", "Select animator", sel.animator_id)),
         _input_block(
             f"asset_{eid}_additional",
             "Additional people",
@@ -717,10 +734,9 @@ def render_confirmation_view(context: ConfirmationContext) -> dict[str, object]:
         ValidationError: if draft_id exceeds the maximum length.
     """
     _validate_draft_id(context.draft_id)
-    escaped_title = _escape(context.group_title)
     blocks: list[dict[str, object]] = [
         _section("conf_channel", _mrkdwn(f"*Target channel:* <#{context.target_channel_id}>")),
-        _section("conf_title", _mrkdwn(f"*Group title:* {escaped_title}")),
+        _input_block(BID_CONFIRM_GROUP_TITLE, "Group title", _plain_text_input(AID_CONFIRM_GROUP_TITLE, "SEASON N PROP REQUEST THREADS", context.group_title)),
         _section("conf_counts", _mrkdwn(f"*{context.included_count}* asset(s) included \u2014 *{context.deduped_row_count}* unique deduplicated row(s).")),
     ]
 
@@ -785,15 +801,11 @@ def decode_asset_page_state(view_state: dict[str, object], page_index: int) -> D
     group_links_text = _decode_plain_text(values, BID_GROUP_LINKS)
 
     # collect asset entity IDs from _include block keys, in dict-insertion order
-    seen_ids: set[int] = set()
     ordered_ids: list[int] = []
     for bid in values:
         m = _ASSET_INCLUDE_RE.match(bid)
         if m:
             eid = int(m.group(1))
-            if eid in seen_ids:
-                raise ValidationError(f"duplicate entity ID {eid} in view_state")
-            seen_ids.add(eid)
             ordered_ids.append(eid)
 
     asset_states: list[DecodedAssetState] = []
@@ -874,6 +886,10 @@ def _decode_multi_user_select(values: dict[str, object], bid: str) -> tuple[str,
 
     Returns:
         tuple[str, ...]: selected user IDs, or empty tuple if absent.
+
+    Raises:
+        ValidationError: if selected_users is not a list or contains non-string
+            members.
     """
     block_entry = values.get(bid)
     if block_entry is None:
@@ -884,9 +900,13 @@ def _decode_multi_user_select(values: dict[str, object], bid: str) -> tuple[str,
     if not isinstance(action_entry, dict):
         return ()
     val = action_entry.get("selected_users")
-    if not isinstance(val, list):
+    if val is None:
         return ()
-    return tuple(str(u) for u in val if isinstance(u, str))
+    if not isinstance(val, list):
+        raise ValidationError(f"block '{bid}': selected_users must be a list or None, got {type(val).__name__}")
+    if not all(isinstance(user_id, str) for user_id in val):
+        raise ValidationError(f"block '{bid}': selected_users must contain only string user IDs")
+    return tuple(user_id for user_id in val if isinstance(user_id, str))
 
 
 def _decode_checkbox(values: dict[str, object], bid: str, entity_id: int) -> bool:

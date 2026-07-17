@@ -166,6 +166,20 @@ def test_group_summary_edit_button_value_is_opaque_identity() -> None:
     assert "OPAQUE_SUMMARY_ID_XYZ" in rendered
 
 
+@pytest.mark.parametrize("value_length", [2000, 2001])
+def test_group_summary_enforces_button_value_limit(value_length: int) -> None:
+    """Summary identity accepts 2000 characters and rejects 2001."""
+    context = sample_group_context(summary_identity="x" * value_length)
+
+    if value_length == 2000:
+        message = render_group_summary(context)
+        button = message["blocks"][-1]["elements"][0]  # type: ignore[index]
+        assert len(button["value"]) == 2000
+    else:
+        with pytest.raises(ValidationError, match="button value"):
+            render_group_summary(context)
+
+
 def test_group_summary_completion_count_when_supplied() -> None:
     """Completion count appears when provided."""
     ctx = sample_group_context(completion_count=8, failure_count=2)
@@ -340,6 +354,20 @@ def test_asset_root_edit_button_value_is_message_identity() -> None:
     ctx = sample_asset_context(message_identity="OPAQUE_MSG_ID_ABC")
     rendered = json.dumps(render_asset_root(ctx))
     assert "OPAQUE_MSG_ID_ABC" in rendered
+
+
+@pytest.mark.parametrize("value_length", [2000, 2001])
+def test_asset_root_enforces_button_value_limit(value_length: int) -> None:
+    """Message identity accepts 2000 characters and rejects 2001."""
+    context = sample_asset_context(message_identity="x" * value_length)
+
+    if value_length == 2000:
+        message = render_asset_root(context)
+        button = message["blocks"][-1]["elements"][0]  # type: ignore[index]
+        assert len(button["value"]) == 2000
+    else:
+        with pytest.raises(ValidationError, match="button value"):
+            render_asset_root(context)
 
 
 def test_asset_root_last_editor_when_set_and_latest() -> None:
