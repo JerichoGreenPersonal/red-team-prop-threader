@@ -33,6 +33,9 @@ version = { file = "VERSION" }
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "--strict-markers --strict-config"
+markers = [
+    "shotgrid_contract: live contract test requiring RUN_SHOTGRID_CONTRACT=1 and valid ShotGrid credentials",
+]
 
 [dependency-groups]
 dev = [
