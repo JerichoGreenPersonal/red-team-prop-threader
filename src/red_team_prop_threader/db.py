@@ -31,7 +31,11 @@ def resolve_migration_url(*, explicit_override: str | None, configured_url: str)
     Returns:
         The selected URL. ``DATABASE_URL`` outranks only the ini default.
     """
-    return explicit_override or os.environ.get("DATABASE_URL") or configured_url
+    if explicit_override is not None:
+        if not explicit_override.strip():
+            raise ValueError("explicit migration URL must not be empty or whitespace")
+        return explicit_override
+    return os.environ.get("DATABASE_URL") or configured_url
 
 
 def build_engine(database_url: str) -> Engine:

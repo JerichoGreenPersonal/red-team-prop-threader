@@ -171,6 +171,10 @@ class Message(Base):
     last_edited_at: Mapped[datetime | None] = mapped_column(UtcDateTime, nullable=True)
 
     __table_args__ = (
+        CheckConstraint(
+            "(kind = 'asset_root' AND asset_entity_id IS NOT NULL AND asset_entity_id > 0) OR (kind = 'group_summary' AND asset_entity_id IS NULL)",
+            name="ck_message_kind_asset_entity",
+        ),
         Index("ix_message_latest_group_summary", "group_id", "kind", "is_latest"),
         Index("ix_message_latest_asset_root", "workspace_id", "channel_id", "asset_entity_id", "kind", "is_latest"),
         Index(

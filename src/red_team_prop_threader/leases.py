@@ -48,6 +48,52 @@ def _new_token() -> str:
     return secrets.token_hex(32)
 
 
+def _lease_for_update_statement(workspace_id: str, channel_id: str) -> Any:
+    """Build the PostgreSQL existing-row acquisition lock statement."""
+    return select(ChannelLease).where(ChannelLease.workspace_id == workspace_id, ChannelLease.channel_id == channel_id).with_for_update()
+
+
+def _postgres_lease_insert_statement(*, workspace_id: str, channel_id: str, owner_user_id: str, new_token: str, now: datetime, expires_at: datetime) -> Any:
+    """Build the race-safe PostgreSQL missing-row lease insert."""
+    from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+    table = cast("Table", ChannelLease.__table__)
+    return (
+        pg_insert(table)
+        .values(
+            id=_new_id(),
+            workspace_id=workspace_id,
+            channel_id=channel_id,
+            owner_user_id=owner_user_id,
+            lease_token=new_token,
+            expires_at=expires_at,
+            created_at=now,
+            renewed_at=now,
+            version=1,
+        )
+        .on_conflict_do_nothing(index_elements=["workspace_id", "channel_id"])
+        .returning(table.c.id)
+    )
+
+
+def _lease_renew_statement(
+    *, workspace_id: str, channel_id: str, owner_user_id: str, lease_token: str, new_token: str, now: datetime, expires_at: datetime
+) -> Any:
+    """Build an atomic lease renewal statement."""
+    return (
+        update(ChannelLease)
+        .where(
+            ChannelLease.workspace_id == workspace_id,
+            ChannelLease.channel_id == channel_id,
+            ChannelLease.owner_user_id == owner_user_id,
+            ChannelLease.lease_token == lease_token,
+            ChannelLease.expires_at >= now,
+        )
+        .values(lease_token=new_token, expires_at=expires_at, renewed_at=now, version=ChannelLease.version + 1)
+        .execution_options(synchronize_session=False)
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class LeaseResult:
     """immutable result of a lease acquire, renew, or failed attempt.
@@ -163,16 +209,15 @@ class ChannelLeaseRepository:
         dml = cast(
             "CursorResult[Any]",
             self._session.execute(
-                update(ChannelLease)
-                .where(
-                    ChannelLease.workspace_id == workspace_id,
-                    ChannelLease.channel_id == channel_id,
-                    ChannelLease.owner_user_id == owner_user_id,
-                    ChannelLease.lease_token == lease_token,
-                    ChannelLease.expires_at >= now,
+                _lease_renew_statement(
+                    workspace_id=workspace_id,
+                    channel_id=channel_id,
+                    owner_user_id=owner_user_id,
+                    lease_token=lease_token,
+                    new_token=new_token,
+                    now=now,
+                    expires_at=new_expires,
                 )
-                .values(lease_token=new_token, expires_at=new_expires, renewed_at=now, version=ChannelLease.version + 1)
-                .execution_options(synchronize_session=False)
             ),
         )
         if dml.rowcount:
@@ -299,28 +344,14 @@ class ChannelLeaseRepository:
         Returns:
             bool: True if this session acquired the lease.
         """
-        from sqlalchemy.dialects.postgresql import insert as _insert
-
         locked = self._fetch_for_update(workspace_id, channel_id)
         if locked is not None:
             return self._claim_locked_pg(locked, owner_user_id, new_token, now, expires_at)
 
-        table = cast("Table", ChannelLease.__table__)
         inserted_id = self._session.execute(
-            _insert(table)
-            .values(
-                id=_new_id(),
-                workspace_id=workspace_id,
-                channel_id=channel_id,
-                owner_user_id=owner_user_id,
-                lease_token=new_token,
-                expires_at=expires_at,
-                created_at=now,
-                renewed_at=now,
-                version=1,
+            _postgres_lease_insert_statement(
+                workspace_id=workspace_id, channel_id=channel_id, owner_user_id=owner_user_id, new_token=new_token, now=now, expires_at=expires_at
             )
-            .on_conflict_do_nothing(index_elements=["workspace_id", "channel_id"])
-            .returning(table.c.id)
         ).scalar_one_or_none()
         if inserted_id is not None:
             return True
@@ -361,6 +392,4 @@ class ChannelLeaseRepository:
 
     def _fetch_for_update(self, workspace_id: str, channel_id: str) -> ChannelLease | None:
         """Fetch and row-lock a PostgreSQL lease for serialized replacement."""
-        return self._session.execute(
-            select(ChannelLease).where(ChannelLease.workspace_id == workspace_id, ChannelLease.channel_id == channel_id).with_for_update()
-        ).scalar_one_or_none()
+        return self._session.execute(_lease_for_update_statement(workspace_id, channel_id)).scalar_one_or_none()

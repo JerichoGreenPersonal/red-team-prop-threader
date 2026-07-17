@@ -126,12 +126,14 @@ def test_migration_upgrade_and_downgrade(tmp_path: Path) -> None:
     insp = inspect(eng)
     tables_after_upgrade = set(insp.get_table_names())
     batch_asset_checks = {constraint["name"] for constraint in insp.get_check_constraints("batch_assets")}
+    message_checks = {constraint["name"] for constraint in insp.get_check_constraints("messages")}
     message_indexes = {index["name"] for index in insp.get_indexes("messages")}
     eng.dispose()
 
     for expected in ("drafts", "groups", "batches", "batch_assets", "messages", "operations", "channel_leases"):
         assert expected in tables_after_upgrade, f"table {expected!r} missing after upgrade"
     assert "ck_batch_asset_entity_id_positive" in batch_asset_checks
+    assert "ck_message_kind_asset_entity" in message_checks
     assert {"uq_message_latest_group_summary", "uq_message_latest_asset_root"} <= message_indexes
 
     assert cfg.attributes["database_url_override"] == db_url
@@ -151,6 +153,15 @@ def test_explicit_migration_url_outranks_database_url(monkeypatch: pytest.Monkey
     monkeypatch.setenv("DATABASE_URL", "postgresql://example.invalid/production")
     explicit = "postgresql://example.invalid/disposable_test"
     assert resolve_migration_url(explicit_override=explicit, configured_url="sqlite:///default.db") == explicit
+
+
+@pytest.mark.parametrize("explicit", ["", "   ", "\t"])
+def test_empty_explicit_migration_url_is_rejected(explicit: str) -> None:
+    """An explicitly supplied blank migration target is a configuration error."""
+    from red_team_prop_threader.db import resolve_migration_url
+
+    with pytest.raises(ValueError, match="explicit migration URL"):
+        resolve_migration_url(explicit_override=explicit, configured_url="sqlite:///default.db")
 
 
 # ---------------------------------------------------------------------------
@@ -828,6 +839,49 @@ def test_history_record_asset_root(repositories: Repositories, session: Session,
     assert msg.asset_entity_id == 99
 
 
+@pytest.mark.parametrize("asset_entity_id", [None, 0, -1])
+def test_history_rejects_asset_root_without_positive_entity(
+    repositories: Repositories, session: Session, clock: FakeClock, asset_entity_id: int | None
+) -> None:
+    """Asset-root history requires a positive non-null entity ID."""
+    group = _make_group(session, clock)
+    with pytest.raises(ValueError, match="ASSET_ROOT"):
+        repositories.history.record(
+            NewMessageInput(
+                workspace_id="W1",
+                channel_id="C1",
+                group_id=group.id,
+                batch_id=None,
+                kind=MessageKind.ASSET_ROOT,
+                asset_entity_id=asset_entity_id,
+                slack_ts="invalid",
+                permalink="https://example.invalid/invalid",
+                canvas_metadata=None,
+                now=clock.now(),
+            )
+        )
+
+
+def test_history_rejects_group_summary_with_entity(repositories: Repositories, session: Session, clock: FakeClock) -> None:
+    """Group-summary history requires a null entity ID."""
+    group = _make_group(session, clock)
+    with pytest.raises(ValueError, match="GROUP_SUMMARY"):
+        repositories.history.record(
+            NewMessageInput(
+                workspace_id="W1",
+                channel_id="C1",
+                group_id=group.id,
+                batch_id=None,
+                kind=MessageKind.GROUP_SUMMARY,
+                asset_entity_id=42,
+                slack_ts="invalid",
+                permalink="https://example.invalid/invalid",
+                canvas_metadata=None,
+                now=clock.now(),
+            )
+        )
+
+
 def test_history_latest_asset_root(repositories: Repositories, session: Session, clock: FakeClock) -> None:
     """latest_asset_root returns the current latest for a specific entity."""
     group = _make_group(session, clock)
@@ -946,6 +1000,32 @@ def test_database_rejects_duplicate_latest_asset_roots(session: Session, clock: 
         session.flush()
 
 
+def test_database_rejects_null_asset_root(session: Session, clock: FakeClock) -> None:
+    """Raw SQL/ORM inserts cannot bypass the asset-root entity invariant."""
+    group = _make_group(session, clock)
+    session.add(
+        Message(
+            id=str(uuid.uuid4()),
+            workspace_id="W1",
+            channel_id="C1",
+            group_id=group.id,
+            batch_id=None,
+            kind=MessageKind.ASSET_ROOT,
+            asset_entity_id=None,
+            slack_ts="invalid",
+            permalink="https://example.invalid/invalid",
+            is_latest=False,
+            canvas_metadata_json=None,
+            created_at=clock.now(),
+            updated_at=clock.now(),
+            last_editor_id=None,
+            last_edited_at=None,
+        )
+    )
+    with pytest.raises(IntegrityError):
+        session.flush()
+
+
 def test_concurrent_history_replacement_never_leaves_duplicate_latest(tmp_path: Path, clock: FakeClock) -> None:
     """Concurrent repository writers leave exactly one current group summary."""
     from red_team_prop_threader.db import build_engine
@@ -998,6 +1078,76 @@ def test_concurrent_history_replacement_never_leaves_duplicate_latest(tmp_path: 
             .all()
         )
         assert len(current) == 1
+    engine.dispose()
+
+
+def test_cross_group_asset_contention_preserves_outer_transactions(tmp_path: Path, clock: FakeClock) -> None:
+    """Same-asset writers in different groups both commit and leave one latest row."""
+    from red_team_prop_threader.db import build_engine
+
+    engine = build_engine(f"sqlite:///{tmp_path / 'asset-history-contention.db'}")
+    Base.metadata.create_all(engine)
+    with Session(engine) as setup:
+        groups = [
+            _make_group(setup, clock, channel_id="C1"),
+            Repositories.from_session(setup).groups.create(
+                workspace_id="W1", channel_id="C1", display_title="Other Group", normalized_title="other group", now=clock.now()
+            ),
+        ]
+        setup.commit()
+
+    barrier = threading.Barrier(2)
+    errors: list[Exception] = []
+
+    def _writer(sequence: int) -> None:
+        with Session(engine) as writer:
+            try:
+                barrier.wait()
+                repos = Repositories.from_session(writer)
+                repos.history.record(
+                    NewMessageInput(
+                        workspace_id="W1",
+                        channel_id="C1",
+                        group_id=groups[sequence - 1].id,
+                        batch_id=None,
+                        kind=MessageKind.ASSET_ROOT,
+                        asset_entity_id=42,
+                        slack_ts=str(sequence),
+                        permalink=f"https://example.invalid/{sequence}",
+                        canvas_metadata=None,
+                        now=clock.now(),
+                    )
+                )
+                repos.drafts.save(sample_draft(created_at=clock.now(), channel_id=f"C-OUTER-{sequence}", user_id=f"U{sequence}"))
+                writer.commit()
+            except Exception as exc:
+                errors.append(exc)
+
+    threads = [threading.Thread(target=_writer, args=(sequence,)) for sequence in (1, 2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=10)
+
+    assert not errors
+    with Session(engine) as verify:
+        latest = (
+            verify
+            .execute(
+                select(Message).where(
+                    Message.workspace_id == "W1",
+                    Message.channel_id == "C1",
+                    Message.kind == MessageKind.ASSET_ROOT,
+                    Message.asset_entity_id == 42,
+                    Message.is_latest.is_(True),
+                )
+            )
+            .scalars()
+            .all()
+        )
+        drafts = verify.execute(select(Draft).where(Draft.channel_id.like("C-OUTER-%"))).scalars().all()
+        assert len(latest) == 1
+        assert len(drafts) == 2
     engine.dispose()
 
 

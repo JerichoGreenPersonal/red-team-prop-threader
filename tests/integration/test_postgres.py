@@ -1,13 +1,14 @@
 """postgresql integration tests.
 
 these tests skip unless TEST_POSTGRES_URL is set to a non-empty value. the database
-name must contain 'test' or 'dev' to prevent accidental destruction of production data.
+name must start with ``test_``/``ci_`` or end with ``_test``.
 credentials are never printed or included in error messages.
 """
 
 from __future__ import annotations
 
 import os
+import re
 from typing import TYPE_CHECKING
 from datetime import datetime, timezone, timedelta
 from urllib.parse import urlparse
@@ -27,18 +28,16 @@ if TYPE_CHECKING:
 
 _POSTGRES_URL: str | None = os.environ.get("TEST_POSTGRES_URL") or None
 
-_SAFE_DB_NAME_SUBSTRINGS = ("test", "dev", "local", "ci", "sandbox")
+_DISPOSABLE_DB_NAME = re.compile(r"(?:(?:test|ci)_[a-z0-9_]+|[a-z0-9_]+_test)\Z")
 
 
 def _assert_disposable_db(url: str) -> None:
     """Raise if the database name does not look obviously disposable."""
     parsed = urlparse(url)
     db_name = (parsed.path or "").lstrip("/").lower()
-    if not any(sub in db_name for sub in _SAFE_DB_NAME_SUBSTRINGS):
+    if _DISPOSABLE_DB_NAME.fullmatch(db_name) is None:
         raise RuntimeError(
-            "TEST_POSTGRES_URL points to a database whose name does not contain "
-            f"any of {_SAFE_DB_NAME_SUBSTRINGS!r}. refusing to run destructive migration. "
-            "rename the database or set TEST_POSTGRES_URL to a clearly disposable database."
+            "TEST_POSTGRES_URL must target an obviously disposable database named test_<name>, ci_<name>, or <name>_test; refusing destructive migration"
         )
 
 
@@ -60,6 +59,15 @@ def _assert_final_migration_url(cfg: object, expected_url: str) -> None:
     resolved = resolve_migration_url(explicit_override=cfg.attributes.get("database_url_override"), configured_url=cfg.get_main_option("sqlalchemy.url"))
     if resolved != expected_url:
         raise RuntimeError("resolved migration target does not match the disposable test database")
+
+
+def _assert_empty_target(engine: Engine) -> None:
+    """Refuse migration when application or Alembic tables already exist."""
+    from sqlalchemy import inspect
+
+    protected = {"alembic_version", "drafts", "groups", "batches", "batch_assets", "messages", "operations", "channel_leases"}
+    if protected.intersection(inspect(engine).get_table_names()):
+        raise RuntimeError("disposable PostgreSQL target is not empty")
 
 
 # ---------------------------------------------------------------------------
@@ -84,16 +92,26 @@ def pg_engine() -> Generator[Engine, None, None]:
     cfg = Config(str(root / "alembic.ini"))
     cfg.attributes["database_url_override"] = _POSTGRES_URL
 
-    _assert_final_migration_url(cfg, _POSTGRES_URL)
-    command.upgrade(cfg, "head")
+    preflight_engine = create_engine(_POSTGRES_URL)
+    try:
+        _assert_empty_target(preflight_engine)
+    finally:
+        preflight_engine.dispose()
 
-    engine = create_engine(_POSTGRES_URL)
-    yield engine
-    engine.dispose()
-
-    # downgrade to clean state
-    _assert_final_migration_url(cfg, _POSTGRES_URL)
-    command.downgrade(cfg, "base")
+    engine = None
+    upgraded = False
+    try:
+        _assert_final_migration_url(cfg, _POSTGRES_URL)
+        command.upgrade(cfg, "head")
+        upgraded = True
+        engine = create_engine(_POSTGRES_URL)
+        yield engine
+    finally:
+        if engine is not None:
+            engine.dispose()
+        if upgraded:
+            _assert_final_migration_url(cfg, _POSTGRES_URL)
+            command.downgrade(cfg, "base")
 
 
 @pytest.fixture
@@ -120,6 +138,32 @@ def test_explicit_test_url_outranks_database_url(monkeypatch: pytest.MonkeyPatch
     monkeypatch.setenv("TEST_POSTGRES_URL", "postgresql://example.invalid/disposable_test")
     explicit = os.environ["TEST_POSTGRES_URL"]
     assert resolve_migration_url(explicit_override=explicit, configured_url="sqlite:///default.db") == explicit
+
+
+@pytest.mark.parametrize("database_name", ["test_props", "ci_props", "props_test"])
+def test_disposable_database_guard_accepts_anchored_names(database_name: str) -> None:
+    """The guard accepts only explicit anchored disposable naming conventions."""
+    _assert_disposable_db(f"postgresql://example.invalid/{database_name}")
+
+
+@pytest.mark.parametrize("database_name", ["contest", "latest", "production_test_backup", "dev_props", "props_ci"])
+def test_disposable_database_guard_rejects_substring_accidents(database_name: str) -> None:
+    """Incidental safety substrings do not authorize destructive migrations."""
+    with pytest.raises(RuntimeError, match="disposable"):
+        _assert_disposable_db(f"postgresql://example.invalid/{database_name}")
+
+
+def test_preflight_rejects_existing_application_or_alembic_tables() -> None:
+    """Migration setup refuses a target that is not empty."""
+    from sqlalchemy import text, create_engine
+
+    engine = create_engine("sqlite:///:memory:")
+    _assert_empty_target(engine)
+    with engine.begin() as connection:
+        connection.execute(text("CREATE TABLE alembic_version (version_num VARCHAR(32))"))
+    with pytest.raises(RuntimeError, match="not empty"):
+        _assert_empty_target(engine)
+    engine.dispose()
 
 
 def test_postgres_alembic_upgrade_creates_tables(pg_engine: Engine) -> None:

@@ -5,9 +5,10 @@ from __future__ import annotations
 from enum import StrEnum
 import uuid
 from typing import TYPE_CHECKING, Any, cast
+import hashlib
 from dataclasses import dataclass
 
-from sqlalchemy import delete, insert, select, update
+from sqlalchemy import func, delete, insert, select, update
 from sqlalchemy.exc import IntegrityError
 
 from red_team_prop_threader.domain import OperationKind
@@ -221,6 +222,48 @@ def _new_id() -> str:
     return str(uuid.uuid4())
 
 
+def _build_draft_upsert(dialect_name: str, values: dict[str, Any]) -> Any:
+    """Build a native draft upsert for a supported production dialect."""
+    table = cast("Table", Draft.__table__)
+    if dialect_name == "sqlite":
+        from sqlalchemy.dialects.sqlite import insert as dialect_insert
+    elif dialect_name == "postgresql":
+        from sqlalchemy.dialects.postgresql import insert as dialect_insert
+    else:
+        raise ValueError(f"native draft upsert is unsupported for dialect {dialect_name!r}")
+    statement = dialect_insert(table).values(**values)
+    return statement.on_conflict_do_update(
+        index_elements=["workspace_id", "channel_id", "user_id"],
+        set_={
+            "snapshot_json": statement.excluded.snapshot_json,
+            "imported_at": statement.excluded.imported_at,
+            "updated_at": statement.excluded.updated_at,
+            "expires_at": statement.excluded.expires_at,
+        },
+    )
+
+
+def _build_operation_insert(dialect_name: str, values: dict[str, Any]) -> Any:
+    """Build a native idempotent operation insert for a supported dialect."""
+    table = cast("Table", Operation.__table__)
+    if dialect_name == "sqlite":
+        from sqlalchemy.dialects.sqlite import insert as dialect_insert
+    elif dialect_name == "postgresql":
+        from sqlalchemy.dialects.postgresql import insert as dialect_insert
+    else:
+        raise ValueError(f"native operation insert is unsupported for dialect {dialect_name!r}")
+    return dialect_insert(table).values(**values).on_conflict_do_nothing(index_elements=["batch_id", "kind", "asset_entity_id"])
+
+
+def _history_advisory_lock_statement(inp: NewMessageInput) -> Any:
+    """Build a transaction-scoped PostgreSQL advisory lock for the true history scope."""
+    scope_id = str(inp.asset_entity_id) if inp.kind == MessageKind.ASSET_ROOT else inp.group_id
+    scope = "\x1f".join((inp.workspace_id, inp.channel_id, inp.kind.value, scope_id))
+    digest = hashlib.blake2b(scope.encode("utf-8"), digest_size=8, person=b"rtpt-hist").digest()
+    key = int.from_bytes(digest, byteorder="big", signed=True)
+    return select(func.pg_advisory_xact_lock(key))
+
+
 def _draft_to_record(row: Draft) -> DraftRecord:
     """Convert a Draft ORM row to a DraftRecord."""
     return DraftRecord(
@@ -345,27 +388,11 @@ class DraftRepository:
             "updated_at": record.updated_at,
             "expires_at": record.expires_at,
         }
-        table = cast("Table", Draft.__table__)
         dialect = self._session.get_bind().dialect.name
-        if dialect == "sqlite":
-            from sqlalchemy.dialects.sqlite import insert as dialect_insert
-        elif dialect == "postgresql":
-            from sqlalchemy.dialects.postgresql import insert as dialect_insert
-        else:
+        if dialect not in ("sqlite", "postgresql"):
             self._save_generic(values)
             return
-
-        statement = dialect_insert(table).values(**values)
-        statement = statement.on_conflict_do_update(
-            index_elements=["workspace_id", "channel_id", "user_id"],
-            set_={
-                "snapshot_json": statement.excluded.snapshot_json,
-                "imported_at": statement.excluded.imported_at,
-                "updated_at": statement.excluded.updated_at,
-                "expires_at": statement.excluded.expires_at,
-            },
-        )
-        self._session.execute(statement)
+        self._session.execute(_build_draft_upsert(dialect, values))
 
     def _save_generic(self, values: dict[str, Any]) -> None:
         """Use a savepoint-backed conflict fallback for other SQL dialects."""
@@ -680,18 +707,12 @@ class OperationRepository:
             "updated_at": now,
             "completed_at": None,
         }
-        table = cast("Table", Operation.__table__)
         dialect = self._session.get_bind().dialect.name
-        if dialect == "sqlite":
-            from sqlalchemy.dialects.sqlite import insert as dialect_insert
-        elif dialect == "postgresql":
-            from sqlalchemy.dialects.postgresql import insert as dialect_insert
-        else:
+        if dialect not in ("sqlite", "postgresql"):
             self._add_planned_generic(values)
             return self._get_by_unique_key(batch_id, kind, asset_entity_id)
 
-        statement = dialect_insert(table).values(**values).on_conflict_do_nothing(index_elements=["batch_id", "kind", "asset_entity_id"])
-        self._session.execute(statement)
+        self._session.execute(_build_operation_insert(dialect, values))
         return self._get_by_unique_key(batch_id, kind, asset_entity_id)
 
     def _add_planned_generic(self, values: dict[str, Any]) -> None:
@@ -840,27 +861,39 @@ class HistoryRepository:
         Raises:
             ValueError: if inp.now is naive.
         """
+        self._validate_input(inp)
+        dialect = self._session.get_bind().dialect.name
+        if dialect == "postgresql":
+            self._session.execute(_history_advisory_lock_statement(inp))
+        if dialect == "sqlite":
+            return self._record_sqlite(inp)
+        return self._record_once(inp)
+
+    @staticmethod
+    def _validate_input(inp: NewMessageInput) -> None:
+        """Validate message-kind/entity invariants before issuing SQL."""
         _require_aware(inp.now, "now")
+        if inp.kind == MessageKind.ASSET_ROOT and (inp.asset_entity_id is None or inp.asset_entity_id <= 0):
+            raise ValueError("ASSET_ROOT messages require a positive asset_entity_id")
+        if inp.kind == MessageKind.GROUP_SUMMARY and inp.asset_entity_id is not None:
+            raise ValueError("GROUP_SUMMARY messages require asset_entity_id=None")
 
-        # PostgreSQL serializes group replacements on the durable parent row.
-        # Asset replacement locks an existing latest row when one is present;
-        # the partial unique index remains the final arbiter for missing-row races.
-        if self._session.get_bind().dialect.name == "postgresql":
-            lock_statement = select(Group.id).where(Group.id == inp.group_id).with_for_update()
-            self._session.execute(lock_statement).scalar_one()
-            if inp.kind == MessageKind.ASSET_ROOT:
-                self._session.execute(
-                    select(Message.id)
-                    .where(
-                        Message.workspace_id == inp.workspace_id,
-                        Message.channel_id == inp.channel_id,
-                        Message.asset_entity_id == inp.asset_entity_id,
-                        Message.kind == inp.kind,
-                        Message.is_latest.is_(True),
-                    )
-                    .with_for_update()
-                ).all()
+    def _record_sqlite(self, inp: NewMessageInput) -> MessageRecord:
+        """Serialize SQLite replacement and isolate a rare uniqueness retry."""
+        attempts = 3
+        for attempt in range(attempts):
+            try:
+                with self._session.begin_nested():
+                    row = self._record_once(inp)
+                    self._session.flush()
+                return row
+            except IntegrityError:
+                if attempt == attempts - 1:
+                    raise
+        raise RuntimeError("unreachable history retry state")
 
+    def _record_once(self, inp: NewMessageInput) -> MessageRecord:
+        """Retire the current row and insert its replacement in this transaction."""
         if inp.kind == MessageKind.GROUP_SUMMARY:
             self._session.execute(
                 update(Message)

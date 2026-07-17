@@ -123,6 +123,11 @@ def upgrade() -> None:
         sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("last_editor_id", sa.String(255), nullable=True),
         sa.Column("last_edited_at", sa.DateTime(timezone=True), nullable=True),
+        sa.CheckConstraint(
+            "(kind = 'asset_root' AND asset_entity_id IS NOT NULL AND asset_entity_id > 0) "
+            "OR (kind = 'group_summary' AND asset_entity_id IS NULL)",
+            name="ck_message_kind_asset_entity",
+        ),
         sa.ForeignKeyConstraint(["batch_id"], ["batches.id"]),
         sa.ForeignKeyConstraint(["group_id"], ["groups.id"]),
         sa.PrimaryKeyConstraint("id"),
