@@ -1,0 +1,31 @@
+display_information:
+  name: RED Team Prop Threader
+  description: Creates and indexes prop-request threads from ShotGrid pages.
+features:
+  bot_user:
+    display_name: RED Team Prop Threader
+    always_online: false
+  slash_commands:
+    - command: /create-prop-threads
+      url: https://prop-threader-dev.example.invalid/slack/events
+      description: Create prop-request threads from a ShotGrid page
+      usage_hint: "[ShotGrid page URL]"
+      should_escape: false
+oauth_config:
+  scopes:
+    bot:
+      - commands
+      - channels:read
+      - chat:write
+      - files:read
+      - groups:read
+      - im:write
+      - users:read
+      - canvases:write
+settings:
+  interactivity:
+    is_enabled: true
+    request_url: https://prop-threader-dev.example.invalid/slack/events
+  org_deploy_enabled: false
+  socket_mode_enabled: false
+  token_rotation_enabled: false
