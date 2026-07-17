@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
 import logging
 
 import pytest
@@ -9,6 +10,45 @@ import pytest
 from red_team_prop_threader.config import Settings
 from red_team_prop_threader._errors import ConfigurationError
 from red_team_prop_threader._logging import RedactionFilter
+
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
+
+
+_ENV_KEYS = (
+    "SLACK_BOT_TOKEN",
+    "SLACK_SIGNING_SECRET",
+    "SLACK_PUBLIC_BASE_URL",
+    "SHOTGRID_URL",
+    "SHOTGRID_SCRIPT_NAME",
+    "SHOTGRID_SCRIPT_KEY",
+    "SHOTGRID_TEST_PAGE_ID",
+    "DATABASE_URL",
+    "TEST_POSTGRES_URL",
+    "CANVAS_TIMEZONE",
+    "WEB_HOST",
+    "WEB_PORT",
+    "WORKER_POLL_SECONDS",
+    "TUNNEL_COMMAND",
+    "TUNNEL_HEALTH_URL",
+)
+
+
+@pytest.fixture(autouse=True)
+def clear_settings_environment(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """Clear every supported setting before each configuration test."""
+    for key in _ENV_KEYS:
+        monkeypatch.delenv(key, raising=False)
+    yield
+
+
+def _set_required(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Set valid required settings."""
+    monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-test")
+    monkeypatch.setenv("SLACK_SIGNING_SECRET", "signing-secret")
+    monkeypatch.setenv("SHOTGRID_SCRIPT_NAME", "threader")
+    monkeypatch.setenv("SHOTGRID_SCRIPT_KEY", "script-key")
 
 
 # ---------------------------------------------------------------------------
@@ -42,6 +82,36 @@ def test_settings_empty_slack_bot_token(monkeypatch: pytest.MonkeyPatch) -> None
     monkeypatch.setenv("SHOTGRID_SCRIPT_KEY", "key")
     with pytest.raises(ConfigurationError):
         Settings.from_env()
+
+
+def test_settings_strips_required_values(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Required values, including secrets, are stripped before storage."""
+    monkeypatch.setenv("SLACK_BOT_TOKEN", "  xoxb-test  ")
+    monkeypatch.setenv("SLACK_SIGNING_SECRET", "  signing-secret  ")
+    monkeypatch.setenv("SHOTGRID_SCRIPT_NAME", "  threader  ")
+    monkeypatch.setenv("SHOTGRID_SCRIPT_KEY", "  script-key  ")
+
+    settings = Settings.from_env()
+
+    assert settings.slack_bot_token == "xoxb-test"
+    assert settings.slack_signing_secret == "signing-secret"
+    assert settings.shotgrid_script_name == "threader"
+    assert settings.shotgrid_script_key == "script-key"
+
+
+def test_configuration_errors_never_include_secret_values(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Configuration errors never echo configured secret values."""
+    sentinels = ("xoxb-SENTINEL-BOT", "SENTINEL-SIGNING", "SENTINEL-SCRIPT-KEY")
+    monkeypatch.setenv("SLACK_BOT_TOKEN", sentinels[0])
+    monkeypatch.setenv("SLACK_SIGNING_SECRET", sentinels[1])
+    monkeypatch.setenv("SHOTGRID_SCRIPT_NAME", "threader")
+    monkeypatch.setenv("SHOTGRID_SCRIPT_KEY", sentinels[2])
+    monkeypatch.setenv("WEB_PORT", "invalid")
+
+    with pytest.raises(ConfigurationError) as exc_info:
+        Settings.from_env()
+
+    assert all(secret not in str(exc_info.value) for secret in sentinels)
 
 
 # ---------------------------------------------------------------------------
@@ -168,6 +238,35 @@ def test_settings_invalid_worker_poll_seconds(monkeypatch: pytest.MonkeyPatch) -
         Settings.from_env()
 
 
+@pytest.mark.parametrize("value", [" 3000", "3000 ", "+3000", "-1", "3_000", "\uff10"])
+def test_settings_rejects_non_ascii_decimal_integers(monkeypatch: pytest.MonkeyPatch, value: str) -> None:
+    """Integer settings reject whitespace, signs, underscores, and non-ASCII digits."""
+    _set_required(monkeypatch)
+    monkeypatch.setenv("WEB_PORT", value)
+
+    with pytest.raises(ConfigurationError, match="ASCII decimal"):
+        Settings.from_env()
+
+
+@pytest.mark.parametrize("value", ["0", "65536"])
+def test_settings_rejects_web_port_outside_bounds(monkeypatch: pytest.MonkeyPatch, value: str) -> None:
+    """WEB_PORT must be between 1 and 65535 inclusive."""
+    _set_required(monkeypatch)
+    monkeypatch.setenv("WEB_PORT", value)
+
+    with pytest.raises(ConfigurationError, match="WEB_PORT"):
+        Settings.from_env()
+
+
+def test_settings_accepts_web_port_bounds(monkeypatch: pytest.MonkeyPatch) -> None:
+    """WEB_PORT accepts both inclusive bounds."""
+    _set_required(monkeypatch)
+    monkeypatch.setenv("WEB_PORT", "1")
+    assert Settings.from_env().web_port == 1
+    monkeypatch.setenv("WEB_PORT", "65535")
+    assert Settings.from_env().web_port == 65535
+
+
 # ---------------------------------------------------------------------------
 # Settings — secret safety
 # ---------------------------------------------------------------------------
@@ -202,7 +301,7 @@ def test_settings_is_frozen(monkeypatch: pytest.MonkeyPatch) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _make_record(msg: str, args: tuple[object, ...] = ()) -> logging.LogRecord:
+def _make_record(msg: str, args: tuple[object, ...] | dict[str, object] = ()) -> logging.LogRecord:
     """Create a minimal log record for testing."""
     return logging.LogRecord(name="test", level=logging.INFO, pathname="", lineno=0, msg=msg, args=args, exc_info=None)
 
@@ -230,6 +329,47 @@ def test_redaction_filter_authorization_bearer() -> None:
     assert "abc123supersecret" not in record.getMessage()
 
 
+@pytest.mark.parametrize(
+    ("message", "secret"),
+    [
+        ("Authorization: Basic dXNlcjpwYXNz", "dXNlcjpwYXNz"),
+        ("Authorization: Digest username=admin", "username=admin"),
+        ("Authorization: ApiKey top-secret-key", "top-secret-key"),
+        ("{'Authorization': 'Bearer abc123'}", "abc123"),
+        ('{"Authorization": "Basic dXNlcjpwYXNz"}', "dXNlcjpwYXNz"),
+    ],
+)
+def test_redaction_filter_complete_authorization_values(message: str, secret: str) -> None:
+    """Formatted authorization values are completely redacted for every scheme."""
+    record = _make_record(message)
+    RedactionFilter().filter(record)
+    assert secret not in record.getMessage()
+    assert "[REDACTED]" in record.getMessage()
+
+
+def test_redaction_filter_mapping_authorization_does_not_mutate_input() -> None:
+    """Authorization values in mapping arguments are recursively copied and redacted."""
+    headers = {"Authorization": "Bearer abc123", "nested": {"items": ["safe", "xoxb-nested-secret"]}}
+    record = _make_record("headers=%s", (headers,))
+
+    RedactionFilter().filter(record)
+
+    assert headers == {"Authorization": "Bearer abc123", "nested": {"items": ["safe", "xoxb-nested-secret"]}}
+    assert "abc123" not in record.getMessage()
+    assert "xoxb-nested-secret" not in record.getMessage()
+
+
+def test_redaction_filter_direct_mapping_arguments() -> None:
+    """Direct logging mapping arguments sanitize Authorization before formatting."""
+    headers: dict[str, object] = {"Authorization": "Basic dXNlcjpwYXNz"}
+    record = _make_record("authorization=%(Authorization)s", (headers,))
+
+    RedactionFilter().filter(record)
+
+    assert headers["Authorization"] == "Basic dXNlcjpwYXNz"
+    assert "dXNlcjpwYXNz" not in record.getMessage()
+
+
 def test_redaction_filter_url_query_string() -> None:
     """URL query strings are stripped; scheme+host+path are preserved."""
     record = _make_record("fetching https://api.example.com/data?token=secret&key=value")
@@ -238,6 +378,26 @@ def test_redaction_filter_url_query_string() -> None:
     assert "secret" not in msg
     assert "value" not in msg
     assert "https://api.example.com/data" in msg
+
+
+@pytest.mark.parametrize("url", ["HTTPS://api.example.com/data?token=secret", "HtTpS://api.example.com/data?token=secret"])
+def test_redaction_filter_mixed_case_https_query(url: str) -> None:
+    """Mixed-case HTTPS URLs have query strings redacted."""
+    record = _make_record("fetching %s", (url,))
+    RedactionFilter().filter(record)
+    assert "secret" not in record.getMessage()
+    assert url.split("?")[0] in record.getMessage()
+
+
+def test_redaction_filter_structured_uppercase_https_query() -> None:
+    """URLs nested in structured arguments are copied and query-redacted."""
+    payload = {"requests": [{"url": "HTTPS://api.example.com/data?token=secret"}]}
+    record = _make_record("payload=%s", (payload,))
+
+    RedactionFilter().filter(record)
+
+    assert payload["requests"][0]["url"].endswith("token=secret")  # type: ignore[index, union-attr]
+    assert "secret" not in record.getMessage()
 
 
 def test_redaction_does_not_mutate_args() -> None:

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from typing import TYPE_CHECKING
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlunsplit
 
 from red_team_prop_threader.domain import PersonRole, SupportingLink, PersonSelection, DedupePeopleResult
 from red_team_prop_threader._errors import ValidationError
@@ -21,8 +21,8 @@ __all__ = ("dedupe_links", "dedupe_people", "infer_group_title", "normalize_grou
 # matches "Label: URL" where label is nonempty and URL is non-whitespace
 _LINK_LINE_RE = re.compile(r"^(?P<label>.+?):\s+(?P<url>\S+)\s*$")
 
-# matches S<digits> season tokens case-insensitively
-_SEASON_RE = re.compile(r"S(\d+)", re.IGNORECASE)
+# matches S<digits> with non-alphanumeric boundaries; underscores are separators
+_SEASON_RE = re.compile(r"(?<![A-Z0-9])S(\d+)(?![A-Z0-9])", re.IGNORECASE)
 
 
 # ---------------------------------------------------------------------------
@@ -75,10 +75,15 @@ def _validate_link_url(url: str, line_num: int) -> None:
         ValidationError: if the URL is not absolute HTTPS or lacks a host.
             Query-string values are never included in the error message.
     """
-    parsed = urlparse(url)
+    try:
+        parsed = urlparse(url)
+        hostname = parsed.hostname
+        _port = parsed.port
+    except ValueError:
+        raise ValidationError(f"line {line_num}: URL has an invalid authority") from None
     if parsed.scheme != "https":
         raise ValidationError(f"line {line_num}: URL must be absolute HTTPS (https://...)")
-    if not parsed.netloc:
+    if hostname is None:
         raise ValidationError(f"line {line_num}: URL must include a host")
 
 
@@ -101,23 +106,39 @@ def dedupe_links(group_links: tuple[SupportingLink, ...], asset_links: tuple[Sup
     Returns:
         tuple[SupportingLink, ...]: deduplicated links in stable order.
     """
-    asset_by_norm: dict[str, SupportingLink] = {_norm_url(link.url): link for link in asset_links}
+    clean_group = _dedupe_link_level(group_links)
+    clean_asset = _dedupe_link_level(asset_links)
+    asset_urls = {_norm_url(link.url) for link in clean_asset}
 
-    results: list[SupportingLink] = []
-    for link in group_links:
-        norm = _norm_url(link.url)
-        if norm not in asset_by_norm:
-            results.append(link)
-
-    results.extend(asset_links)
+    results = [link for link in clean_group if _norm_url(link.url) not in asset_urls]
+    results.extend(clean_asset)
     return tuple(results)
+
+
+def _dedupe_link_level(links: tuple[SupportingLink, ...]) -> tuple[SupportingLink, ...]:
+    """Retain the first link for each normalized URL within one level.
+
+    Args:
+        links: links from one selection level.
+
+    Returns:
+        tuple[SupportingLink, ...]: stable first occurrences.
+    """
+    seen: set[str] = set()
+    result: list[SupportingLink] = []
+    for link in links:
+        key = _norm_url(link.url)
+        if key not in seen:
+            seen.add(key)
+            result.append(link)
+    return tuple(result)
 
 
 def _norm_url(url: str) -> str:
     """Normalise a URL for deduplication comparison.
 
-    Lowercases scheme and host; removes an insignificant trailing slash from
-    the path.  Query strings and fragments are excluded from the key.
+    Lowercases scheme and host and removes an insignificant trailing slash from
+    the path. Query strings and fragments are preserved.
 
     Args:
         url: the URL to normalise.
@@ -127,10 +148,12 @@ def _norm_url(url: str) -> str:
     """
     parsed = urlparse(url)
     scheme = parsed.scheme.lower()
-    host = (parsed.hostname or "").lower()
+    hostname = (parsed.hostname or "").lower()
+    host = f"[{hostname}]" if ":" in hostname else hostname
+    userinfo = f"{parsed.netloc.rpartition('@')[0]}@" if "@" in parsed.netloc else ""
     port = f":{parsed.port}" if parsed.port else ""
     path = parsed.path.rstrip("/")
-    return f"{scheme}://{host}{port}{path}"
+    return urlunsplit((scheme, f"{userinfo}{host}{port}", path, parsed.query, parsed.fragment))
 
 
 # ---------------------------------------------------------------------------

@@ -97,9 +97,10 @@ def _require_nonempty(key: str) -> str:
         ConfigurationError: if the variable is absent or blank.
     """
     val = os.environ.get(key, "")
-    if not val.strip():
+    stripped = val.strip()
+    if not stripped:
         raise ConfigurationError(f"{key} is required and must not be empty")
-    return val
+    return stripped
 
 
 def _optional_str(key: str) -> str | None:
@@ -150,10 +151,9 @@ def _parse_bounded_int(key: str, raw: str, *, min_val: int | None = None, max_va
     Raises:
         ConfigurationError: if the value is not a valid integer or is out of range.
     """
-    try:
-        val = int(raw)
-    except ValueError:
-        raise ConfigurationError(f"{key} must be an integer, got an invalid value") from None
+    if not raw or not raw.isascii() or not raw.isdecimal():
+        raise ConfigurationError(f"{key} must use ASCII decimal digits")
+    val = int(raw)
     if min_val is not None and val < min_val:
         raise ConfigurationError(f"{key} must be >= {min_val}")
     if max_val is not None and val > max_val:

@@ -92,10 +92,9 @@ def test_parse_supporting_links_rejects_relative_url() -> None:
 
 def test_parse_supporting_links_no_sensitive_query_in_error() -> None:
     """ValidationError message does not echo sensitive query string values."""
-    try:
+    with pytest.raises(ValidationError) as exc_info:
         parse_supporting_links("Bad: http://example.com?secret=abc123")
-    except ValidationError as exc:
-        assert "abc123" not in str(exc)
+    assert "abc123" not in str(exc_info.value)
 
 
 def test_parse_supporting_links_error_identifies_line_number() -> None:
@@ -103,6 +102,15 @@ def test_parse_supporting_links_error_identifies_line_number() -> None:
     text = "A: https://a.example.com\nBad: http://b.example.com"
     with pytest.raises(ValidationError, match="2"):
         parse_supporting_links(text)
+
+
+@pytest.mark.parametrize(
+    "url", ["https://:443/path", "https://user@:443/path", "https://[invalid/path", "https://example.com:not-a-port/path", "https://example.com:70000/path"]
+)
+def test_parse_supporting_links_rejects_malformed_authorities(url: str) -> None:
+    """Malformed hosts and ports raise a safe ValidationError."""
+    with pytest.raises(ValidationError, match="line 1"):
+        parse_supporting_links(f"Bad: {url}")
 
 
 # ---------------------------------------------------------------------------
@@ -164,6 +172,62 @@ def test_dedupe_links_empty_asset() -> None:
     group = parse_supporting_links("A: https://a.example.com")
     result = dedupe_links(group, ())
     assert result == group
+
+
+def test_dedupe_links_deduplicates_within_group() -> None:
+    """The first normalized URL within group links is retained."""
+    group = (
+        SupportingLink("First", "https://EXAMPLE.com/page/"),
+        SupportingLink("Duplicate", "HTTPS://example.com/page"),
+        SupportingLink("Other", "https://example.com/other"),
+    )
+
+    assert dedupe_links(group, ()) == (SupportingLink("First", "https://EXAMPLE.com/page/"), SupportingLink("Other", "https://example.com/other"))
+
+
+def test_dedupe_links_deduplicates_within_asset() -> None:
+    """The first normalized URL within asset links is retained."""
+    asset = (
+        SupportingLink("Asset first", "https://example.com/page"),
+        SupportingLink("Asset duplicate", "https://EXAMPLE.com/page/"),
+        SupportingLink("Asset other", "https://example.com/other"),
+    )
+
+    assert dedupe_links((), asset) == (SupportingLink("Asset first", "https://example.com/page"), SupportingLink("Asset other", "https://example.com/other"))
+
+
+def test_dedupe_links_asset_wins_after_each_level_is_deduplicated() -> None:
+    """Asset entries win across levels while each level keeps stable first occurrence."""
+    group = (
+        SupportingLink("Group duplicate", "https://example.com/shared/"),
+        SupportingLink("Group duplicate again", "https://EXAMPLE.com/shared"),
+        SupportingLink("Group unique", "https://example.com/group"),
+    )
+    asset = (
+        SupportingLink("Asset winner", "HTTPS://example.com/shared"),
+        SupportingLink("Asset duplicate", "https://example.com/shared/"),
+        SupportingLink("Asset unique", "https://example.com/asset"),
+    )
+
+    assert dedupe_links(group, asset) == (
+        SupportingLink("Group unique", "https://example.com/group"),
+        SupportingLink("Asset winner", "HTTPS://example.com/shared"),
+        SupportingLink("Asset unique", "https://example.com/asset"),
+    )
+
+
+def test_dedupe_links_equal_queries_are_duplicates() -> None:
+    """Equivalent URLs with the same query deduplicate after case and slash normalization."""
+    group = (SupportingLink("Group", "HTTPS://Example.com/page/?view=full"),)
+    asset = (SupportingLink("Asset", "https://example.com/page?view=full"),)
+    assert dedupe_links(group, asset) == asset
+
+
+def test_dedupe_links_different_queries_remain_distinct() -> None:
+    """URLs with different query strings remain separate entries."""
+    group = (SupportingLink("Group", "https://example.com/page?view=group"),)
+    asset = (SupportingLink("Asset", "https://example.com/page?view=asset"),)
+    assert dedupe_links(group, asset) == group + asset
 
 
 # ---------------------------------------------------------------------------
@@ -228,6 +292,18 @@ def test_infer_group_title_multiple_seasons_in_one_name() -> None:
 def test_infer_group_title_single_asset() -> None:
     """Single asset with one season token returns the canonical title."""
     assert infer_group_title(["S10_hero_prop"]) == "SEASON 10 PROP REQUEST THREADS:"
+
+
+@pytest.mark.parametrize("name", ["assetS31_prop", "S31prop", "XS31Y", "S31S32_prop"])
+def test_infer_group_title_rejects_embedded_or_adjacent_tokens(name: str) -> None:
+    """Season tokens embedded in alphanumeric text are not accepted."""
+    assert infer_group_title([name]) == ""
+
+
+@pytest.mark.parametrize("name", ["S31_prop", "prop_S31", "prop_S31_asset", "_S31_"])
+def test_infer_group_title_accepts_underscore_boundaries(name: str) -> None:
+    """Underscores provide valid boundaries around season tokens."""
+    assert infer_group_title([name]) == "SEASON 31 PROP REQUEST THREADS:"
 
 
 # ---------------------------------------------------------------------------
