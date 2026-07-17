@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from enum import StrEnum
+import json
 import uuid
 from typing import TYPE_CHECKING, Any, cast
 import hashlib
@@ -257,9 +258,12 @@ def _build_operation_insert(dialect_name: str, values: dict[str, Any]) -> Any:
 
 def _history_advisory_lock_statement(inp: NewMessageInput) -> Any:
     """Build a transaction-scoped PostgreSQL advisory lock for the true history scope."""
-    scope_id = str(inp.asset_entity_id) if inp.kind == MessageKind.ASSET_ROOT else inp.group_id
-    scope = "\x1f".join((inp.workspace_id, inp.channel_id, inp.kind.value, scope_id))
-    digest = hashlib.blake2b(scope.encode("utf-8"), digest_size=8, person=b"rtpt-hist").digest()
+    if inp.kind == MessageKind.ASSET_ROOT:
+        components = [inp.kind.value, inp.workspace_id, inp.channel_id, str(inp.asset_entity_id)]
+    else:
+        components = [inp.kind.value, inp.group_id]
+    canonical_scope = json.dumps(components, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    digest = hashlib.blake2b(canonical_scope, digest_size=8, person=b"rtpt-hist").digest()
     key = int.from_bytes(digest, byteorder="big", signed=True)
     return select(func.pg_advisory_xact_lock(key))
 

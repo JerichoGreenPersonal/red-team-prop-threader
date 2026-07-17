@@ -12,6 +12,16 @@ from red_team_prop_threader.tables import Message
 from red_team_prop_threader.repositories import MessageKind, NewMessageInput
 
 
+def _advisory_key(inp: NewMessageInput) -> int:
+    """Extract the deterministic advisory key from a compiled lock statement."""
+    from red_team_prop_threader.repositories import _history_advisory_lock_statement
+
+    compiled = _history_advisory_lock_statement(inp).compile(dialect=postgresql.dialect())
+    [key] = compiled.params.values()
+    assert isinstance(key, int)
+    return key
+
+
 def _values() -> dict[str, object]:
     """Return representative bind values for dialect statement builders."""
     now = datetime(2025, 1, 1, tzinfo=timezone.utc)
@@ -100,6 +110,26 @@ def test_postgres_advisory_lock_uses_stable_asset_scope() -> None:
     assert "pg_advisory_xact_lock" in str(first_compiled)
     assert tuple(first_compiled.params.values()) == tuple(other_group_compiled.params.values())
     assert tuple(first_compiled.params.values()) != tuple(other_asset_compiled.params.values())
+
+
+def test_group_summary_advisory_scope_matches_unique_index() -> None:
+    """Group-summary locks depend on kind and group ID, matching DB uniqueness."""
+    now = datetime(2025, 1, 1, tzinfo=timezone.utc)
+    first = NewMessageInput("W1", "C1", "G1", None, MessageKind.GROUP_SUMMARY, None, "1", "https://example/1", None, now)
+    moved = NewMessageInput("W2", "C2", "G1", None, MessageKind.GROUP_SUMMARY, None, "2", "https://example/2", None, now)
+    other_group = NewMessageInput("W1", "C1", "G2", None, MessageKind.GROUP_SUMMARY, None, "3", "https://example/3", None, now)
+
+    assert _advisory_key(first) == _advisory_key(moved)
+    assert _advisory_key(first) != _advisory_key(other_group)
+
+
+def test_advisory_scope_encoding_is_unambiguous() -> None:
+    """Components that collide under delimiter joining produce different keys."""
+    now = datetime(2025, 1, 1, tzinfo=timezone.utc)
+    first = NewMessageInput("W\x1fC", "D", "G1", None, MessageKind.ASSET_ROOT, 42, "1", "https://example/1", None, now)
+    ambiguous_under_join = NewMessageInput("W", "C\x1fD", "G2", None, MessageKind.ASSET_ROOT, 42, "2", "https://example/2", None, now)
+
+    assert _advisory_key(first) != _advisory_key(ambiguous_under_join)
 
 
 def test_partial_latest_indexes_compile_for_both_dialects() -> None:

@@ -11,9 +11,9 @@ import os
 import re
 from typing import TYPE_CHECKING
 from datetime import datetime, timezone, timedelta
-from urllib.parse import urlparse
 
 import pytest
+from sqlalchemy.engine import make_url
 
 
 if TYPE_CHECKING:
@@ -33,8 +33,10 @@ _DISPOSABLE_DB_NAME = re.compile(r"(?:(?:test|ci)_[a-z0-9_]+|[a-z0-9_]+_test)\Z"
 
 def _assert_disposable_db(url: str) -> None:
     """Raise if the database name does not look obviously disposable."""
-    parsed = urlparse(url)
-    db_name = (parsed.path or "").lstrip("/").lower()
+    parsed = make_url(url)
+    if parsed.get_backend_name() != "postgresql":
+        raise RuntimeError("TEST_POSTGRES_URL must use the PostgreSQL backend")
+    db_name = (parsed.database or "").lower()
     if _DISPOSABLE_DB_NAME.fullmatch(db_name) is None:
         raise RuntimeError(
             "TEST_POSTGRES_URL must target an obviously disposable database named test_<name>, ci_<name>, or <name>_test; refusing destructive migration"
@@ -62,11 +64,10 @@ def _assert_final_migration_url(cfg: object, expected_url: str) -> None:
 
 
 def _assert_empty_target(engine: Engine) -> None:
-    """Refuse migration when application or Alembic tables already exist."""
+    """Refuse migration when any table already exists."""
     from sqlalchemy import inspect
 
-    protected = {"alembic_version", "drafts", "groups", "batches", "batch_assets", "messages", "operations", "channel_leases"}
-    if protected.intersection(inspect(engine).get_table_names()):
+    if inspect(engine).get_table_names():
         raise RuntimeError("disposable PostgreSQL target is not empty")
 
 
@@ -146,6 +147,12 @@ def test_disposable_database_guard_accepts_anchored_names(database_name: str) ->
     _assert_disposable_db(f"postgresql://example.invalid/{database_name}")
 
 
+def test_disposable_database_guard_rejects_sqlite_backend() -> None:
+    """A disposable-looking name never permits a non-PostgreSQL backend."""
+    with pytest.raises(RuntimeError, match="PostgreSQL"):
+        _assert_disposable_db("sqlite:///test_props")
+
+
 @pytest.mark.parametrize("database_name", ["contest", "latest", "production_test_backup", "dev_props", "props_ci"])
 def test_disposable_database_guard_rejects_substring_accidents(database_name: str) -> None:
     """Incidental safety substrings do not authorize destructive migrations."""
@@ -161,6 +168,18 @@ def test_preflight_rejects_existing_application_or_alembic_tables() -> None:
     _assert_empty_target(engine)
     with engine.begin() as connection:
         connection.execute(text("CREATE TABLE alembic_version (version_num VARCHAR(32))"))
+    with pytest.raises(RuntimeError, match="not empty"):
+        _assert_empty_target(engine)
+    engine.dispose()
+
+
+def test_preflight_rejects_unrelated_existing_table() -> None:
+    """Any pre-existing table makes the destructive migration target unsafe."""
+    from sqlalchemy import text, create_engine
+
+    engine = create_engine("sqlite:///:memory:")
+    with engine.begin() as connection:
+        connection.execute(text("CREATE TABLE unrelated_data (id INTEGER)"))
     with pytest.raises(RuntimeError, match="not empty"):
         _assert_empty_target(engine)
     engine.dispose()
