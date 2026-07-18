@@ -362,7 +362,22 @@ class BatchExecutor:
                 asset_entity_id=None,
                 slack_ts=ts,
                 permalink=permalink,
-                canvas_metadata={"canvas_id": payload.get("canvas_id")},
+                canvas_metadata={
+                    "canvas_id": payload.get("canvas_id"),
+                    "edit": {
+                        "kind": "group_summary",
+                        "canvas_id": payload.get("canvas_id"),
+                        "group_title": payload["group_title"],
+                        "group_animator_id": payload["group_animator_id"],
+                        "group_additional_ids": list(payload.get("group_additional_ids") or ()),
+                        "group_links": list(payload.get("group_links") or ()),
+                        "group_animator_display": self._display_name(str(payload["group_animator_id"])),
+                        "group_additional_displays": [self._display_name(str(item)) for item in payload.get("group_additional_ids") or ()],
+                        "included_asset_count": len(assets),
+                        "processing_status": "Creating threads…",
+                        "message_identity": batch.id,
+                    },
+                },
                 now=now,
             )
         )
@@ -403,7 +418,25 @@ class BatchExecutor:
                 asset_entity_id=operation.asset_entity_id,
                 slack_ts=ts,
                 permalink=permalink,
-                canvas_metadata=None,
+                canvas_metadata={
+                    "edit": {
+                        "kind": "asset_root",
+                        "entity_id": operation.asset_entity_id,
+                        "asset_name": asset["name"],
+                        "asset_url": asset["url"],
+                        "group_title": payload["group_title"],
+                        "created_ts": created_ts,
+                        "asset_animator_id": asset["animator_id"],
+                        "asset_additional_ids": list(asset.get("additional_ids") or ()),
+                        "asset_links": list(asset.get("links") or ()),
+                        "group_animator_id": payload["group_animator_id"],
+                        "group_additional_ids": list(payload.get("group_additional_ids") or ()),
+                        "group_links": list(payload.get("group_links") or ()),
+                        "group_animator_display": self._display_name(str(payload["group_animator_id"])),
+                        "group_additional_displays": [self._display_name(str(item)) for item in payload.get("group_additional_ids") or ()],
+                        "message_identity": f"{batch.id}:{operation.asset_entity_id}",
+                    }
+                },
                 now=now,
             )
         )

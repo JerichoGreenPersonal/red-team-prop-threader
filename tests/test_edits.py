@@ -1,0 +1,345 @@
+"""tests for latest-only post-completion asset and group editing."""
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Any
+from datetime import datetime, timezone, timedelta
+from dataclasses import field, dataclass
+
+import pytest
+from sqlalchemy import event, create_engine
+from sqlalchemy.orm import Session
+
+from red_team_prop_threader.edits import MessageRef, EditService, AssetEditRequest, GroupEditRequest
+from red_team_prop_threader.tables import Base
+from red_team_prop_threader.repositories import MessageKind, Repositories, NewMessageInput
+
+
+if TYPE_CHECKING:
+    from collections.abc import Generator
+
+    from sqlalchemy import Engine
+
+
+@dataclass
+class FakeClock:
+    """deterministic utc clock."""
+
+    _now: datetime = field(default_factory=lambda: datetime(2025, 1, 1, 12, 0, 0, tzinfo=timezone.utc))
+
+    def now(self) -> datetime:
+        """Return current fake instant."""
+        return self._now
+
+    def advance(self, *, minutes: int = 0) -> None:
+        """Advance the clock."""
+        self._now += timedelta(minutes=minutes)
+
+
+@dataclass
+class MessageUpdate:
+    """recorded chat.update call."""
+
+    channel_id: str
+    ts: str
+    text: str
+    blocks: list[dict[str, Any]]
+    sends_notifications: bool = False
+
+
+@dataclass
+class FakeSlackGateway:
+    """slack double for edit tests."""
+
+    members: set[str] = field(default_factory=lambda: {"Ueditor", "Uanim", "Uadd", "Uasset"})
+    updates: list[MessageUpdate] = field(default_factory=list)
+    canvas_edits: list[dict[str, Any]] = field(default_factory=list)
+    opened_views: list[dict[str, Any]] = field(default_factory=list)
+    section_lookup_result: list[dict[str, str]] = field(default_factory=list)
+
+    @property
+    def updated_summary(self) -> MessageUpdate | None:
+        """Return the first summary-looking update."""
+        for update in self.updates:
+            if update.text.startswith("Group summary:"):
+                return update
+        return None
+
+    @property
+    def updated_latest_roots(self) -> list[MessageUpdate]:
+        """Return updates that look like asset roots."""
+        return [update for update in self.updates if "Asset:" in update.text]
+
+    def open_view(self, trigger_id: str, view: dict[str, Any]) -> dict[str, Any]:
+        """Record an opened modal."""
+        del trigger_id
+        self.opened_views.append(view)
+        return {"ok": True}
+
+    def update_message(self, channel_id: str, ts: str, *, text: str, blocks: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+        """Record a non-notifying message update."""
+        self.updates.append(MessageUpdate(channel_id=channel_id, ts=ts, text=text, blocks=blocks or [], sends_notifications=False))
+        return {"ok": True}
+
+    def get_conversation_members(self, channel_id: str) -> tuple[str, ...]:
+        """Return configured channel members."""
+        del channel_id
+        return tuple(sorted(self.members))
+
+    def get_user_info(self, user_id: str) -> dict[str, object]:
+        """Return a display name profile."""
+        return {"id": user_id, "profile": {"display_name": f"Name {user_id}", "real_name": f"Name {user_id}"}}
+
+    def lookup_sections(self, canvas_id: str, *, contains_text: str | None = None, section_types: tuple[str, ...] = ("any_header",)) -> list[dict[str, str]]:
+        """Return canvas sections for group replace."""
+        del canvas_id, contains_text, section_types
+        return list(self.section_lookup_result) or [{"id": "Sgroup", "type": "h2"}]
+
+    def edit_canvas(self, canvas_id: str, *, operation: str, markdown: str | None = None, section_id: str | None = None, title: str | None = None) -> None:
+        """Record canvas edits from group updates."""
+        self.canvas_edits.append({"canvas_id": canvas_id, "operation": operation, "markdown": markdown, "section_id": section_id, "title": title})
+
+    def get_conversation_info(self, channel_id: str) -> dict[str, object]:
+        """Unused canvas preflight helper."""
+        return {"id": channel_id, "properties": {"canvas": {"file_id": "Fcanvas"}}}
+
+    def get_file_info(self, file_id: str) -> dict[str, object]:
+        """Unused canvas helper."""
+        return {"id": file_id, "title": "INDEX OF PROP REQUESTS"}
+
+
+@pytest.fixture
+def engine() -> Generator[Engine, None, None]:
+    """in-memory sqlite engine."""
+    e = create_engine("sqlite:///:memory:")
+
+    @event.listens_for(e, "connect")
+    def _pragmas(dbapi_conn: object, _record: object) -> None:
+        cursor = dbapi_conn.cursor()  # type: ignore[union-attr]
+        cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.close()
+
+    Base.metadata.create_all(e)
+    yield e
+    e.dispose()
+
+
+@pytest.fixture
+def session(engine: Engine) -> Generator[Session, None, None]:
+    """Open session."""
+    with Session(engine) as sess:
+        yield sess
+
+
+@pytest.fixture
+def clock() -> FakeClock:
+    """Clock fixture."""
+    return FakeClock()
+
+
+@pytest.fixture
+def fake_slack() -> FakeSlackGateway:
+    """Slack double."""
+    return FakeSlackGateway()
+
+
+@pytest.fixture
+def repositories(session: Session) -> Repositories:
+    """Repository bundle."""
+    return Repositories.from_session(session)
+
+
+@pytest.fixture
+def edit_service(repositories: Repositories, fake_slack: FakeSlackGateway, clock: FakeClock) -> EditService:
+    """Edit service under test."""
+    return EditService(repositories=repositories, slack=fake_slack, canvas_slack=fake_slack, clock=clock)
+
+
+def _seed_group(repositories: Repositories, session: Session, clock: FakeClock) -> str:
+    """Create a group and return its id."""
+    group = repositories.groups.create(
+        workspace_id="W1", channel_id="C1", display_title="SEASON 31 PROP REQUEST THREADS", normalized_title="season 31 prop request threads", now=clock.now()
+    )
+    session.flush()
+    return group.id
+
+
+def _asset_snapshot(entity_id: int) -> dict[str, Any]:
+    """Build editable asset snapshot metadata."""
+    return {
+        "kind": "asset_root",
+        "entity_id": entity_id,
+        "asset_name": f"Prop {entity_id}",
+        "asset_url": f"https://respawn.shotgunstudio.com/detail/Asset/{entity_id}",
+        "group_title": "SEASON 31 PROP REQUEST THREADS",
+        "created_ts": 1700000000,
+        "asset_animator_id": "Uasset",
+        "asset_additional_ids": [],
+        "asset_links": [],
+        "group_animator_id": "Uanim",
+        "group_additional_ids": [],
+        "group_links": [{"label": "Brief", "url": "https://example.com/brief"}],
+        "group_animator_display": "Name Uanim",
+        "group_additional_displays": [],
+        "message_identity": f"batch:{entity_id}",
+    }
+
+
+def historical_message(repositories: Repositories, session: Session, clock: FakeClock) -> MessageRef:
+    """Seed historical + latest asset roots and return a ref to the historical one."""
+    group_id = _seed_group(repositories, session, clock)
+    batch = repositories.batches.create(group_id=group_id, workspace_id="W1", channel_id="C1", submitter_user_id="Ueditor", payload={}, now=clock.now())
+    session.flush()
+    historical = repositories.history.record(
+        NewMessageInput(
+            workspace_id="W1",
+            channel_id="C1",
+            group_id=group_id,
+            batch_id=batch.id,
+            kind=MessageKind.ASSET_ROOT,
+            asset_entity_id=1001,
+            slack_ts="100.1",
+            permalink="https://slack.example/historical",
+            canvas_metadata={"edit": _asset_snapshot(1001)},
+            now=clock.now(),
+        )
+    )
+    clock.advance(minutes=1)
+    repositories.history.record(
+        NewMessageInput(
+            workspace_id="W1",
+            channel_id="C1",
+            group_id=group_id,
+            batch_id=batch.id,
+            kind=MessageKind.ASSET_ROOT,
+            asset_entity_id=1001,
+            slack_ts="100.2",
+            permalink="https://slack.example/latest",
+            canvas_metadata={"edit": _asset_snapshot(1001)},
+            now=clock.now(),
+        )
+    )
+    session.flush()
+    del historical
+    return MessageRef(workspace_id="W1", channel_id="C1", user_id="Ueditor", message_ts="100.1", message_identity="batch:1001")
+
+
+def sample_group_edit(repositories: Repositories, session: Session, clock: FakeClock) -> GroupEditRequest:
+    """Seed a latest summary plus three latest roots and return a group edit request."""
+    group_id = _seed_group(repositories, session, clock)
+    batch = repositories.batches.create(group_id=group_id, workspace_id="W1", channel_id="C1", submitter_user_id="Ueditor", payload={}, now=clock.now())
+    session.flush()
+    repositories.history.record(
+        NewMessageInput(
+            workspace_id="W1",
+            channel_id="C1",
+            group_id=group_id,
+            batch_id=batch.id,
+            kind=MessageKind.GROUP_SUMMARY,
+            asset_entity_id=None,
+            slack_ts="200.1",
+            permalink="https://slack.example/summary",
+            canvas_metadata={
+                "canvas_id": "Fcanvas",
+                "edit": {
+                    "kind": "group_summary",
+                    "canvas_id": "Fcanvas",
+                    "group_title": "SEASON 31 PROP REQUEST THREADS",
+                    "group_animator_id": "Uanim",
+                    "group_additional_ids": [],
+                    "group_links": [{"label": "Brief", "url": "https://example.com/brief"}],
+                    "group_animator_display": "Name Uanim",
+                    "group_additional_displays": [],
+                    "included_asset_count": 3,
+                    "processing_status": "Complete",
+                    "completion_count": 3,
+                    "failure_count": 0,
+                    "message_identity": batch.id,
+                },
+            },
+            now=clock.now(),
+        )
+    )
+    for entity_id, ts in ((1001, "201.1"), (1002, "201.2"), (1003, "201.3")):
+        repositories.history.record(
+            NewMessageInput(
+                workspace_id="W1",
+                channel_id="C1",
+                group_id=group_id,
+                batch_id=batch.id,
+                kind=MessageKind.ASSET_ROOT,
+                asset_entity_id=entity_id,
+                slack_ts=ts,
+                permalink=f"https://slack.example/{entity_id}",
+                canvas_metadata={"edit": _asset_snapshot(entity_id)},
+                now=clock.now(),
+            )
+        )
+    session.flush()
+    return GroupEditRequest(
+        workspace_id="W1",
+        channel_id="C1",
+        user_id="Ueditor",
+        message_ts="200.1",
+        animator_id="Uanim",
+        additional_ids=("Uadd",),
+        links_text="Notes: https://example.com/notes",
+    )
+
+
+def test_historical_asset_edit_is_refused_with_latest_link(edit_service: EditService, repositories: Repositories, session: Session, clock: FakeClock) -> None:
+    """Historical roots are refused and point at the current Latest permalink."""
+    result = edit_service.open_asset_editor(historical_message(repositories, session, clock))
+    assert result.refused
+    assert result.latest_permalink == "https://slack.example/latest"
+
+
+def test_group_edit_updates_latest_roots_without_notifications(
+    edit_service: EditService, fake_slack: FakeSlackGateway, repositories: Repositories, session: Session, clock: FakeClock
+) -> None:
+    """Group edits update summary + all latest roots via non-notifying chat.update."""
+    edit_service.apply_group_edit(sample_group_edit(repositories, session, clock))
+    assert fake_slack.updated_summary is not None
+    assert len(fake_slack.updated_latest_roots) == 3
+    assert all(update.sends_notifications is False for update in fake_slack.updates)
+    assert fake_slack.canvas_edits
+
+
+def test_asset_edit_updates_one_latest_root(
+    edit_service: EditService, fake_slack: FakeSlackGateway, repositories: Repositories, session: Session, clock: FakeClock
+) -> None:
+    """Asset edits rewrite only the current latest root and store audit fields."""
+    group_id = _seed_group(repositories, session, clock)
+    batch = repositories.batches.create(group_id=group_id, workspace_id="W1", channel_id="C1", submitter_user_id="Ueditor", payload={}, now=clock.now())
+    session.flush()
+    root = repositories.history.record(
+        NewMessageInput(
+            workspace_id="W1",
+            channel_id="C1",
+            group_id=group_id,
+            batch_id=batch.id,
+            kind=MessageKind.ASSET_ROOT,
+            asset_entity_id=1001,
+            slack_ts="300.1",
+            permalink="https://slack.example/300",
+            canvas_metadata={"edit": _asset_snapshot(1001)},
+            now=clock.now(),
+        )
+    )
+    session.flush()
+    edit_service.apply_asset_edit(
+        AssetEditRequest(
+            workspace_id="W1",
+            channel_id="C1",
+            user_id="Ueditor",
+            message_ts=root.slack_ts,
+            animator_id="Uasset",
+            additional_ids=("Uadd",),
+            links_text="Ref: https://example.com/ref",
+        )
+    )
+    assert len(fake_slack.updates) == 1
+    updated = repositories.history.get_by_channel_ts(workspace_id="W1", channel_id="C1", slack_ts="300.1")
+    assert updated is not None
+    assert updated.last_editor_id == "Ueditor"
+    assert updated.last_edited_at == clock.now()

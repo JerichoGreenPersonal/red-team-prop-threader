@@ -995,6 +995,69 @@ class HistoryRepository:
         ).scalar_one_or_none()
         return None if row is None else _message_to_record(row)
 
+    def get_by_channel_ts(self, *, workspace_id: str, channel_id: str, slack_ts: str) -> MessageRecord | None:
+        """Return a tracked message by channel and Slack timestamp.
+
+        Args:
+            workspace_id: slack workspace id.
+            channel_id: slack channel id.
+            slack_ts: slack message timestamp.
+
+        Returns:
+            MessageRecord | None: the matching message, or None.
+        """
+        row = self._session.execute(
+            select(Message).where(Message.workspace_id == workspace_id, Message.channel_id == channel_id, Message.slack_ts == slack_ts)
+        ).scalar_one_or_none()
+        return None if row is None else _message_to_record(row)
+
+    def list_latest_asset_roots_for_group(self, group_id: str) -> list[MessageRecord]:
+        """Return all current latest asset-root messages for a group.
+
+        Args:
+            group_id: parent group uuid.
+
+        Returns:
+            list[MessageRecord]: latest asset roots ordered by entity id.
+        """
+        rows = (
+            self._session.execute(
+                select(Message)
+                .where(Message.group_id == group_id, Message.kind == MessageKind.ASSET_ROOT, Message.is_latest.is_(True))
+                .order_by(Message.asset_entity_id)
+            )
+            .scalars()
+            .all()
+        )
+        return [_message_to_record(row) for row in rows]
+
+    def touch_editor(self, message_id: str, *, editor_id: str, now: datetime, canvas_metadata: dict[str, Any] | None = None) -> MessageRecord:
+        """Record the last editor and optional updated edit snapshot metadata.
+
+        Args:
+            message_id: tracked message uuid.
+            editor_id: slack user id of the editor.
+            now: UTC-aware edit timestamp.
+            canvas_metadata: optional replacement metadata payload.
+
+        Returns:
+            MessageRecord: updated message record.
+
+        Raises:
+            ValueError: if now is naive.
+            LookupError: if message_id does not exist.
+        """
+        _require_aware(now, "now")
+        row = self._session.get(Message, message_id)
+        if row is None:
+            raise LookupError(f"message {message_id!r} not found")
+        row.last_editor_id = editor_id
+        row.last_edited_at = now
+        row.updated_at = now
+        if canvas_metadata is not None:
+            row.canvas_metadata_json = canvas_metadata
+        return _message_to_record(row)
+
 
 # ---------------------------------------------------------------------------
 # repository bundle
