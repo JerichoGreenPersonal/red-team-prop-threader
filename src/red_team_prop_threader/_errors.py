@@ -3,7 +3,17 @@
 from __future__ import annotations
 
 
-__all__ = ("ConfigurationError", "ConflictError", "ExternalServiceError", "ImportValidationError", "NotFoundError", "PropThreaderError", "ValidationError")
+__all__ = (
+    "ConfigurationError",
+    "ConflictError",
+    "ExternalServiceError",
+    "ImportValidationError",
+    "NotFoundError",
+    "PermissionDeniedError",
+    "PropThreaderError",
+    "RetryableExternalServiceError",
+    "ValidationError",
+)
 
 
 class PropThreaderError(Exception):
@@ -24,6 +34,23 @@ class ImportValidationError(ValidationError):
 
 class ExternalServiceError(PropThreaderError):
     """Raised when a call to an external service (Slack, ShotGrid) fails."""
+
+
+class RetryableExternalServiceError(ExternalServiceError):
+    """Raised when an external service failure should be retried.
+
+    Args:
+        message: user-safe error description.
+        retry_after: optional seconds to wait before retrying.
+    """
+
+    def __init__(self, message: str, *, retry_after: float | None = None) -> None:
+        super().__init__(message)
+        self.retry_after = retry_after
+
+
+class PermissionDeniedError(ExternalServiceError):
+    """Raised when the caller lacks permission for an external operation."""
 
 
 class ConflictError(PropThreaderError):
