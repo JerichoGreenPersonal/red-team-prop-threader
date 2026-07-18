@@ -82,7 +82,7 @@ _BATCH_TRANSITIONS: dict[BatchStatus, frozenset[BatchStatus]] = {
     BatchStatus.PENDING: frozenset({BatchStatus.RUNNING}),
     BatchStatus.RUNNING: frozenset({BatchStatus.SUCCEEDED, BatchStatus.FAILED, BatchStatus.CANCELLED}),
     BatchStatus.SUCCEEDED: frozenset(),
-    BatchStatus.FAILED: frozenset(),
+    BatchStatus.FAILED: frozenset({BatchStatus.RUNNING}),
     BatchStatus.CANCELLED: frozenset(),
 }
 
@@ -585,6 +585,8 @@ class BatchRepository:
         values: dict[str, Any] = {"status": new_status, "updated_at": now}
         if new_status in (BatchStatus.SUCCEEDED, BatchStatus.FAILED, BatchStatus.CANCELLED):
             values["completed_at"] = now
+        elif new_status is BatchStatus.RUNNING:
+            values["completed_at"] = None
         result = cast(
             "CursorResult[Any]",
             self._session.execute(
@@ -596,6 +598,26 @@ class BatchRepository:
         if self._session.execute(select(Batch.id).where(Batch.id == batch_id)).scalar_one_or_none() is None:
             raise LookupError(f"batch {batch_id!r} not found")
         return False
+
+    def claim_next_pending(self, *, now: datetime) -> BatchRecord | None:
+        """Claim the oldest PENDING batch by transitioning it to RUNNING.
+
+        Args:
+            now: UTC-aware claim timestamp.
+
+        Returns:
+            BatchRecord | None: the claimed batch, or None when no PENDING batch exists.
+
+        Raises:
+            ValueError: if now is naive.
+        """
+        _require_aware(now, "now")
+        row = self._session.execute(select(Batch).where(Batch.status == BatchStatus.PENDING).order_by(Batch.created_at).limit(1)).scalar_one_or_none()
+        if row is None:
+            return None
+        if not self.transition(row.id, BatchStatus.PENDING, BatchStatus.RUNNING, now=now):
+            return None
+        return self.get(row.id)
 
     def update_payload(self, batch_id: str, payload: dict[str, Any] | None) -> None:
         """Replace the batch's detailed payload independently of status.
