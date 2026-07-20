@@ -33,6 +33,19 @@ Copy `.env.example` to `.env` and fill in values:
 Copy-Item .env.example .env
 ```
 
+### Local run
+
+```powershell
+.\bin\run-local.ps1          # web + worker (+ optional tunnel)
+.\bin\run-local.ps1 -Test    # run pytest/ruff/ty first
+```
+
+### Administrator docs
+
+- [Slack app setup (IT / manifest)](docs/admin/slack-app-setup.md)
+- [Development-channel pilot procedure](docs/admin/pilot-test.md)
+- Manifest: [`slack-app-manifest.yaml`](slack-app-manifest.yaml) — replace `prop-threader-dev.example.invalid` before import
+
 ## Development Commands
 
 ### Python Validation
@@ -66,11 +79,16 @@ uv run pytest --cov=src --cov-report=html
 red-team-prop-threader/
 ├── bin/
 │   ├── build.ps1
+│   ├── run-local.ps1
+│   ├── run-local.bat
 │   └── setup/
+├── docs/admin/
+│   ├── slack-app-setup.md
+│   └── pilot-test.md
 ├── src/red_team_prop_threader/
 │   ├── __init__.py
 │   ├── web.py              # Flask/Waitress entry point
-│   ├── worker.py           # Polling worker entry point
+│   ├── worker.py           # Durable batch worker entry point
 │   └── retention.py        # Retention job entry point
 ├── tests/
 ├── .agents/                # AI skill workflows
@@ -88,3 +106,5 @@ red-team-prop-threader/
 - **`VERSION`** — auto-generated, do not edit
 - **`ruff.toml`** / **`ty.toml`** / **`uv.toml`** — tooling configuration
 - **`slack-app-manifest.yaml`** — Slack app manifest for IT provisioning
+- **`docs/admin/slack-app-setup.md`** — manifest import and scope justification
+- **`docs/admin/pilot-test.md`** — development-channel pilot checklist
