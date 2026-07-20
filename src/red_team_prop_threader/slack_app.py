@@ -36,6 +36,10 @@ _CALLBACK_CONFIRM = "confirm_batch"
 def create_bolt_app(*, bot_token: str, signing_secret: str, process_before_response: bool = False) -> App:
     """Create a Bolt App configured for HTTPS request handling.
 
+    Token verification at startup is disabled so local tests and cold starts do
+    not require a live auth.test round-trip; request signature verification still
+    uses the signing secret.
+
     Args:
         bot_token: slack bot token.
         signing_secret: slack signing secret.
@@ -44,7 +48,12 @@ def create_bolt_app(*, bot_token: str, signing_secret: str, process_before_respo
     Returns:
         App: configured Bolt application.
     """
-    return App(token=bot_token, signing_secret=signing_secret, process_before_response=process_before_response)
+    return App(
+        token=bot_token,
+        signing_secret=signing_secret,
+        process_before_response=process_before_response,
+        token_verification_enabled=False,
+    )
 
 
 def register_listeners(app: App, workflow_factory: Callable[[], Workflow], edit_factory: Callable[[], EditService] | None = None) -> None:

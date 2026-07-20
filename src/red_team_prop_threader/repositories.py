@@ -9,7 +9,16 @@ from typing import TYPE_CHECKING, Any, cast
 import hashlib
 from dataclasses import dataclass
 
-from sqlalchemy import func, delete, insert, select, update
+from sqlalchemy import (
+    String,
+    cast as sql_cast,
+    func,
+    null as sql_null,
+    delete,
+    insert,
+    select,
+    update,
+)
 from sqlalchemy.exc import IntegrityError
 
 from red_team_prop_threader.domain import OperationKind
@@ -216,6 +225,15 @@ def _require_aware(dt: datetime, name: str) -> None:
     """
     if dt.tzinfo is None or dt.tzinfo.utcoffset(dt) is None:
         raise ValueError(f"{name} must be a timezone-aware UTC datetime, got {dt!r}")
+
+
+def _payload_present_clause() -> Any:
+    """Return a SQL clause that is true when batch payload_json holds real content.
+
+    SQLAlchemy's JSON type may persist Python ``None`` as the JSON text ``null``
+    on SQLite; treat both SQL NULL and JSON null as absent.
+    """
+    return Batch.payload_json.is_not(None) & (sql_cast(Batch.payload_json, String) != "null")
 
 
 def _new_id() -> str:
@@ -642,7 +660,7 @@ class BatchRepository:
         Args:
             batch_id: the batch's UUID string.
         """
-        self._session.execute(update(Batch).where(Batch.id == batch_id).values(payload_json=None))
+        self._session.execute(update(Batch).where(Batch.id == batch_id).values(payload_json=sql_null()))
 
     def set_payload_expires_at(self, batch_id: str, expires_at: datetime) -> None:
         """Set the retention deadline after which the payload may be cleared.
@@ -679,11 +697,43 @@ class BatchRepository:
             "CursorResult[Any]",
             self._session.execute(
                 update(Batch)
-                .where(Batch.payload_json.isnot(None), Batch.payload_expires_at.isnot(None), Batch.payload_expires_at < cutoff)
-                .values(payload_json=None)
+                .where(_payload_present_clause(), Batch.payload_expires_at.isnot(None), Batch.payload_expires_at < cutoff)
+                .values(payload_json=sql_null())
+                .execution_options(synchronize_session=False)
             ),
         )
-        return dml.rowcount
+        self._session.expire_all()
+        return int(dml.rowcount or 0)
+
+    def purge_completed_payloads(self, cutoff: datetime) -> int:
+        """Clear detailed payloads for terminal batches completed strictly before cutoff.
+
+        Args:
+            cutoff: UTC-aware cutoff; batches with completed_at < cutoff are cleared.
+
+        Returns:
+            int: number of batches whose payload was cleared.
+
+        Raises:
+            ValueError: if cutoff is naive.
+        """
+        _require_aware(cutoff, "cutoff")
+        dml = cast(
+            "CursorResult[Any]",
+            self._session.execute(
+                update(Batch)
+                .where(
+                    _payload_present_clause(),
+                    Batch.completed_at.isnot(None),
+                    Batch.completed_at < cutoff,
+                    Batch.status.in_([BatchStatus.SUCCEEDED, BatchStatus.FAILED, BatchStatus.CANCELLED]),
+                )
+                .values(payload_json=sql_null())
+                .execution_options(synchronize_session=False)
+            ),
+        )
+        self._session.expire_all()
+        return int(dml.rowcount or 0)
 
 
 class OperationRepository:
@@ -1021,7 +1071,8 @@ class HistoryRepository:
             list[MessageRecord]: latest asset roots ordered by entity id.
         """
         rows = (
-            self._session.execute(
+            self._session
+            .execute(
                 select(Message)
                 .where(Message.group_id == group_id, Message.kind == MessageKind.ASSET_ROOT, Message.is_latest.is_(True))
                 .order_by(Message.asset_entity_id)
