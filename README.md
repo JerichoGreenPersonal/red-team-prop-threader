@@ -2,13 +2,38 @@
 
 Internal Slack app that creates and indexes prop-request threads from API-exportable ShotGrid pages.
 
+**Author:** Jericho A. Green ([jgreen2@ea.com](mailto:jgreen2@ea.com))
+
 ## Overview
+
+### Long Description
+
+RED Team Prop Threader:
+• Imports up to 30 assets from an API-exportable ShotGrid page via `/create-prop-threads`
+• Validates Asset Name and Entity ID columns, deduplicates Entity IDs, and preserves export order
+• Collects group-level and asset-level context in a paginated Slack modal (Animator, Additional People, supporting links)
+• Lets users exclude individual assets before submission (at least one must remain included)
+• Presents a confirmation summary of channel, group title, included count, and conflict warnings
+• Creates one Slack root message per selected asset after explicit confirmation
+• Indexes threads in the channel canvas under `INDEX OF PROP REQUESTS`
+• Supports latest-only post-completion edits without sending new notifications
+
+The result is a consistent, discoverable set of prop-request threads that stakeholders can follow without manually copying assets from ShotGrid or rebuilding channel indexes by hand.
+
+Human-in-the-Loop Control (does not post prop threads autonomously — by design)
+All prop-request threads are assembled as a private draft and require confirmation before any public messages are created. The bot does not autonomously publish asset roots or canvas updates from a slash-command invocation alone. This ensures oversight, editorial control, and alignment with team communication standards. After confirmation, processing cannot be cancelled mid-batch; failures are reported privately with a Retry Failed path.
+
+Canvas Indexing
+When a channel canvas is missing or mistitled, the app asks for confirmation before creating or renaming it to `INDEX OF PROP REQUESTS`. Canvas edits are narrow and additive: the bot maintains group headings and asset links for threads it creates, without overwriting unrelated canvas content.
+
+Latest-Only Editing
+Any current channel member (invoking from the EA workspace) may edit group or asset details on the current `Latest` messages only. Historical roots remain snapshots. Edits update the latest roots and canvas summary without re-notifying mentioned users.
 
 `red-team-prop-threader` is a Python 3.11 web service with three entry points:
 
 - **`prop-threader-web`** — Flask/Waitress HTTP server handling Slack events and slash commands
-- **`prop-threader-worker`** — background worker that polls ShotGrid for new prop requests and creates Slack threads
-- **`prop-threader-retention`** — scheduled job that enforces thread retention policy
+- **`prop-threader-worker`** — background worker that executes durable prop-thread batches
+- **`prop-threader-retention`** — scheduled job that redacts aged job payloads and expires drafts
 
 ## Development Setup
 
