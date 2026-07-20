@@ -280,3 +280,60 @@ def test_blocked_preflight_shows_user_safe_error(workflow: Workflow, fake_slack:
     assert fake_slack.updated_views
     text = str(fake_slack.updated_views[-1])
     assert "cannot" in text.lower() or "permission" in text.lower() or "blocked" in text.lower()
+
+
+def test_canvas_create_rename_and_decline(workflow: Workflow, fake_slack: FakeSlackGateway) -> None:
+    """create/rename confirmation paths reach import; decline discards the draft."""
+    workflow.handle_command(sample_command(text=""))
+    draft_id = str(fake_slack.opened_view["private_metadata"])
+    import_view = workflow.confirm_canvas_create(draft_id)
+    assert import_view["callback_id"] == "import_assets"
+    assert fake_slack.channel_canvas_id == "Fnew"
+
+    fake_slack.canvas_title = "Wrong Title"
+    workflow.handle_command(sample_command(text=""))
+    rename_draft = str(fake_slack.opened_view["private_metadata"])
+    renamed = workflow.confirm_canvas_rename(rename_draft)
+    assert renamed["callback_id"] == "import_assets"
+    assert fake_slack.canvas_title == CANVAS_TITLE
+
+    workflow.handle_command(sample_command(text=""))
+    decline_id = str(fake_slack.opened_view["private_metadata"])
+    workflow.decline_canvas(decline_id)
+    assert not workflow.drafts.exists(decline_id)
+
+
+def test_asset_page_save_open_confirm_and_accept(workflow: Workflow, fake_slack: FakeSlackGateway) -> None:
+    """Save page state, open confirmation, and accept a free channel lease."""
+    fake_slack.channel_canvas_id = "Fcanvas"
+    fake_slack.members = ("U_COMMAND", "U_SECOND", "U_OWNER")
+    workflow.handle_command(sample_command())
+    draft_id = str(fake_slack.opened_view["private_metadata"])
+    workflow.submit_import_url(draft_id=draft_id, page_url="https://respawn.shotgunstudio.com/page/23280")
+
+    state = {
+        "values": {
+            "group_title": {"group_title": {"value": "SEASON 31 PROP REQUEST THREADS"}},
+            "group_animator": {"group_animator": {"selected_user": "U_COMMAND"}},
+            "group_additional": {"group_additional": {"selected_users": []}},
+            "group_links": {"group_links": {"value": ""}},
+            "asset_1001_include": {"asset_1001_include": {"selected_options": [{"value": "included"}]}},
+            "asset_1001_animator": {"asset_1001_animator": {"selected_user": "U_COMMAND"}},
+            "asset_1001_additional": {"asset_1001_additional": {"selected_users": []}},
+            "asset_1001_links": {"asset_1001_links": {"value": ""}},
+            "asset_1002_include": {"asset_1002_include": {"selected_options": [{"value": "included"}]}},
+            "asset_1002_animator": {"asset_1002_animator": {"selected_user": "U_COMMAND"}},
+            "asset_1002_additional": {"asset_1002_additional": {"selected_users": []}},
+            "asset_1002_links": {"asset_1002_links": {"value": ""}},
+        }
+    }
+    draft = workflow.save_asset_page(draft_id=draft_id, page_index=0, view_state=state)
+    assert draft.group_animator_id == "U_COMMAND"
+    assert draft.included_entity_ids == (1001, 1002)
+    page = workflow.open_asset_page(draft_id, 0)
+    assert page["callback_id"] == "asset_page"
+    confirm = workflow.open_confirmation(draft_id)
+    assert confirm["callback_id"] == "confirm_batch"
+    response = workflow.confirm_batch(draft)
+    assert response.accepted
+    assert response.lease_token

@@ -32,6 +32,10 @@ $ErrorActionPreference = "Stop"
 $ProjectRoot = Split-Path -Parent $PSScriptRoot
 $ScriptsDir = Join-Path $ProjectRoot "scripts"
 $DistDir = Join-Path $ProjectRoot "dist"
+$UvPath = Join-Path $ProjectRoot "uv.exe"
+if (-not (Test-Path $UvPath)) {
+    throw "uv executable not found: $UvPath"
+}
 
 Write-Host "starting package build" -ForegroundColor Cyan
 Write-Host ""
@@ -76,10 +80,6 @@ if (-not $SkipPackage) {
         }
 
         # build package
-        $UvPath = Join-Path $ProjectRoot "uv.exe"
-        if (-not (Test-Path $UvPath)) {
-            throw "uv executable not found: $UvPath"
-        }
         & $UvPath build
         if ($LASTEXITCODE -ne 0) {
             throw "package build failed - err: $LASTEXITCODE"
@@ -110,10 +110,6 @@ Write-Host ""
 Write-Host "(3:3) installing package in editable mode..." -ForegroundColor Yellow
 Push-Location $ProjectRoot
 try {
-    $UvPath = Join-Path $ProjectRoot "uv.exe"
-    if (-not (Test-Path $UvPath)) {
-        throw "uv executable not found: $UvPath"
-    }
     & $UvPath pip install -e .
 
     if ($LASTEXITCODE -ne 0) {

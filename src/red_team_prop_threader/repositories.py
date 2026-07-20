@@ -9,16 +9,7 @@ from typing import TYPE_CHECKING, Any, cast
 import hashlib
 from dataclasses import dataclass
 
-from sqlalchemy import (
-    String,
-    cast as sql_cast,
-    func,
-    null as sql_null,
-    delete,
-    insert,
-    select,
-    update,
-)
+from sqlalchemy import String, cast as sql_cast, func, null as sql_null, delete, insert, select, update
 from sqlalchemy.exc import IntegrityError
 
 from red_team_prop_threader.domain import OperationKind

@@ -10,8 +10,9 @@ import pytest
 from sqlalchemy import event, create_engine
 from sqlalchemy.orm import Session
 
-from red_team_prop_threader.edits import MessageRef, EditService, AssetEditRequest, GroupEditRequest
+from red_team_prop_threader.edits import MessageRef, EditService, AssetEditRequest, GroupEditRequest, decode_edit_submission
 from red_team_prop_threader.tables import Base
+from red_team_prop_threader._errors import ValidationError
 from red_team_prop_threader.repositories import MessageKind, Repositories, NewMessageInput
 
 
@@ -343,3 +344,52 @@ def test_asset_edit_updates_one_latest_root(
     assert updated is not None
     assert updated.last_editor_id == "Ueditor"
     assert updated.last_edited_at == clock.now()
+
+
+def test_open_latest_editors_return_views(edit_service: EditService, repositories: Repositories, session: Session, clock: FakeClock) -> None:
+    """Latest asset/group editors return modal views."""
+    request = sample_group_edit(repositories, session, clock)
+    group_ref = MessageRef(workspace_id="W1", channel_id="C1", user_id="Ueditor", message_ts=request.message_ts, message_identity="g")
+    group_result = edit_service.open_group_editor(group_ref)
+    assert not group_result.refused
+    assert group_result.view is not None
+    assert group_result.view["callback_id"]
+
+    root = repositories.history.list_latest_asset_roots_for_group(
+        repositories.history.get_by_channel_ts(workspace_id="W1", channel_id="C1", slack_ts=request.message_ts).group_id  # type: ignore[union-attr]
+    )[0]
+    asset_result = edit_service.open_asset_editor(
+        MessageRef(workspace_id="W1", channel_id="C1", user_id="Ueditor", message_ts=root.slack_ts, message_identity="a")
+    )
+    assert not asset_result.refused
+    assert asset_result.view is not None
+
+
+def test_non_member_cannot_open_editor(
+    edit_service: EditService, fake_slack: FakeSlackGateway, repositories: Repositories, session: Session, clock: FakeClock
+) -> None:
+    """non-members are rejected before opening editors."""
+    request = sample_group_edit(repositories, session, clock)
+    fake_slack.members = {"Uanim"}
+    with pytest.raises(ValidationError, match="channel members"):
+        edit_service.open_group_editor(MessageRef(workspace_id="W1", channel_id="C1", user_id="Ueditor", message_ts=request.message_ts, message_identity="g"))
+
+
+def test_decode_edit_submission_parses_metadata_and_fields() -> None:
+    """Edit modal decoding splits channel|ts metadata and people fields."""
+    view = {
+        "private_metadata": "C1|12.34",
+        "state": {
+            "values": {
+                "edit_animator": {"edit_animator": {"selected_user": "Uanim"}},
+                "edit_additional": {"edit_additional": {"selected_users": ["Uadd"]}},
+                "edit_links": {"edit_links": {"value": "A: https://example.com/a"}},
+            }
+        },
+    }
+    channel_id, message_ts, animator_id, additional_ids, links_text = decode_edit_submission(view)
+    assert channel_id == "C1"
+    assert message_ts == "12.34"
+    assert animator_id == "Uanim"
+    assert additional_ids == ("Uadd",)
+    assert "example.com" in links_text

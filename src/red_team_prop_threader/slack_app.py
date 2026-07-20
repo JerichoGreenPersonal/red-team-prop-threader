@@ -48,12 +48,7 @@ def create_bolt_app(*, bot_token: str, signing_secret: str, process_before_respo
     Returns:
         App: configured Bolt application.
     """
-    return App(
-        token=bot_token,
-        signing_secret=signing_secret,
-        process_before_response=process_before_response,
-        token_verification_enabled=False,
-    )
+    return App(token=bot_token, signing_secret=signing_secret, process_before_response=process_before_response, token_verification_enabled=False)
 
 
 def register_listeners(app: App, workflow_factory: Callable[[], Workflow], edit_factory: Callable[[], EditService] | None = None) -> None:

@@ -188,14 +188,14 @@ ignore-one-line-docstrings = true
 case-sensitive = true
 combine-as-imports = true
 force-sort-within-sections = true
-force-wrap-aliases = true
+force-wrap-aliases = false
 length-sort = true
 length-sort-straight = true
 lines-after-imports = 2
 # lines-between-types = 1  # this is ignored when force-sort-within-sections is set to true
 no-lines-before = ["future"]
 order-by-type = true
-split-on-trailing-comma = true
+split-on-trailing-comma = false
 
 known-third-party = ["vendored.*"]
 section-order = [
