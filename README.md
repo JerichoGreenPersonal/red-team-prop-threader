@@ -69,6 +69,7 @@ Copy-Item .env.example .env
 
 - [Slack app setup (IT / manifest)](docs/admin/slack-app-setup.md)
 - [Development-channel pilot procedure](docs/admin/pilot-test.md)
+- [ROI assessment / reason for the app](docs/admin/roi.md)
 - Manifest: [`slack-app-manifest.yaml`](slack-app-manifest.yaml) — replace `prop-threader-dev.example.invalid` before import
 
 ## Development Commands
