@@ -15,7 +15,7 @@ dependencies = [
 
 [project.scripts]
 review-prep-worker = "review_prep.worker_main:main"
-review-prep = "review_prep:main"
+review-prep = "review_prep.app_main:main"
 
 [build-system]
 requires = ["setuptools>=61"]
