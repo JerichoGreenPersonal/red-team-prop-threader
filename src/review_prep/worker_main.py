@@ -139,8 +139,13 @@ def main(argv: list[str] | None = None) -> int:
         _logger.error("Failed to wire adapters: %s", exc)
         return 1
 
-    orchestrator = PrepOrchestrator(settings=settings, state=repo, shotgun=shotgun, p4=p4, trigger="scheduled")
-    result: PrepRunResult = orchestrator.run_worklist()
+    try:
+        orchestrator = PrepOrchestrator(settings=settings, state=repo, shotgun=shotgun, p4=p4, trigger="scheduled")
+        result: PrepRunResult = orchestrator.run_worklist()
+    except Exception as exc:
+        _logger.exception("Worker prep run failed: %s", exc)
+        return 1
+
     _logger.info(
         "prep run id=%s date=%s cards=%s hard_failure=%s errors=%s launchables=%s",
         result.prep_run_id,

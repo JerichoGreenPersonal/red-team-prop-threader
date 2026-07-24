@@ -2,14 +2,20 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
 from pathlib import Path
+from typing import TYPE_CHECKING
 from unittest.mock import MagicMock
 
+from review_prep.orchestrator import PrepRunResult
+from review_prep.scheduler_windows import (
+    DAILY_TASK_NAME,
+    LOGON_TASK_NAME,
+    _daily_task_xml,
+    register_daily_task,
+    register_logon_trigger,
+)
 from review_prep.settings import AppSettings, save_settings
 from review_prep.worker_main import main, settings_path
-from review_prep.orchestrator import PrepRunResult
-from review_prep.scheduler_windows import DAILY_TASK_NAME, LOGON_TASK_NAME, register_daily_task, register_logon_trigger
 
 
 if TYPE_CHECKING:
@@ -17,11 +23,14 @@ if TYPE_CHECKING:
 
 
 def test_register_daily_task_builds_schtasks(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Daily registration invokes schtasks with expected switches."""
+    """Daily registration creates via /XML with StartWhenAvailable catch-up."""
     calls: list[list[str]] = []
+    xml_snapshots: list[str] = []
 
     def fake_run(cmd: list[str], **kwargs: object) -> MagicMock:
         calls.append(list(cmd))
+        xml_path = Path(cmd[cmd.index("/XML") + 1])
+        xml_snapshots.append(xml_path.read_text(encoding="utf-16"))
         result = MagicMock()
         result.returncode = 0
         result.stdout = ""
@@ -39,28 +48,51 @@ def test_register_daily_task_builds_schtasks(monkeypatch: pytest.MonkeyPatch) ->
     assert "/Create" in cmd
     assert "/F" in cmd
     assert cmd[cmd.index("/TN") + 1] == DAILY_TASK_NAME
-    assert cmd[cmd.index("/SC") + 1] == "DAILY"
-    assert cmd[cmd.index("/ST") + 1] == "05:00"
-    assert cmd[cmd.index("/RL") + 1] == "LIMITED"
-    assert cmd[cmd.index("/TR") + 1] == r'"C:\Apps\review-prep-worker.exe"'
-    assert cmd[cmd.index("/RU") + 1] == "testuser"
+    assert "/XML" in cmd
+    xml_body = xml_snapshots[0]
+    assert "<StartWhenAvailable>true</StartWhenAvailable>" in xml_body
+    assert r"C:\Apps\review-prep-worker.exe" in xml_body
+    assert "<Command>" in xml_body
+    assert "05:00:00" in xml_body
+    assert "testuser" in xml_body
+    assert "LeastPrivilege" in xml_body
+
+
+def test_daily_task_xml_includes_start_when_available() -> None:
+    """Generated task XML enables StartWhenAvailable for missed-run catch-up."""
+    xml_body = _daily_task_xml(Path(r"C:\Apps\worker.exe"), hour=5, minute=0, user="alice")
+    assert "<StartWhenAvailable>true</StartWhenAvailable>" in xml_body
+    assert "<Command>C:\\Apps\\worker.exe</Command>" in xml_body
+    assert "2000-01-01T05:00:00" in xml_body
 
 
 def test_register_daily_task_custom_time(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Custom hour/minute format as HH:MM for /ST."""
+    """Custom hour/minute land in the CalendarTrigger StartBoundary."""
     calls: list[list[str]] = []
-    monkeypatch.setattr("review_prep.scheduler_windows.subprocess.run", lambda cmd, **kwargs: calls.append(list(cmd)) or MagicMock(returncode=0))
+    xml_snapshots: list[str] = []
+
+    def fake_run(cmd: list[str], **kwargs: object) -> MagicMock:
+        calls.append(list(cmd))
+        xml_path = Path(cmd[cmd.index("/XML") + 1])
+        xml_snapshots.append(xml_path.read_text(encoding="utf-16"))
+        return MagicMock(returncode=0)
+
+    monkeypatch.setattr("review_prep.scheduler_windows.subprocess.run", fake_run)
     monkeypatch.setattr("review_prep.scheduler_windows.getpass.getuser", lambda: "u")
 
     register_daily_task(Path(r"D:\bin\worker.exe"), hour=6, minute=30)
 
-    assert calls[0][calls[0].index("/ST") + 1] == "06:30"
+    assert "06:30:00" in xml_snapshots[0]
+    assert r"D:\bin\worker.exe" in xml_snapshots[0]
 
 
 def test_register_logon_trigger_builds_schtasks(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Logon registration uses ONLOGON and the dashboard exe path."""
+    """Logon registration uses ONLOGON and an unquoted absolute /TR path."""
     calls: list[list[str]] = []
-    monkeypatch.setattr("review_prep.scheduler_windows.subprocess.run", lambda cmd, **kwargs: calls.append(list(cmd)) or MagicMock(returncode=0))
+    monkeypatch.setattr(
+        "review_prep.scheduler_windows.subprocess.run",
+        lambda cmd, **kwargs: calls.append(list(cmd)) or MagicMock(returncode=0),
+    )
     monkeypatch.setattr("review_prep.scheduler_windows.getpass.getuser", lambda: "testuser")
 
     register_logon_trigger(r"C:\Apps\review-prep.exe")
@@ -68,7 +100,7 @@ def test_register_logon_trigger_builds_schtasks(monkeypatch: pytest.MonkeyPatch)
     cmd = calls[0]
     assert cmd[cmd.index("/TN") + 1] == LOGON_TASK_NAME
     assert cmd[cmd.index("/SC") + 1] == "ONLOGON"
-    assert cmd[cmd.index("/TR") + 1] == r'"C:\Apps\review-prep.exe"'
+    assert cmd[cmd.index("/TR") + 1] == r"C:\Apps\review-prep.exe"
     assert cmd[cmd.index("/RU") + 1] == "testuser"
 
 
