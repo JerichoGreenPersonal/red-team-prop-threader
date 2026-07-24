@@ -67,6 +67,7 @@ def test_from_settings_builds_client() -> None:
         tunnel_command=None,
         tunnel_health_url=None,
         primary_asset_index_channel_id="C04H4QZEYUE",
+        primary_asset_index_canvas_id="F0BKLFG5S0M",
     )
     gw = SlackGateway.from_settings(settings)
     assert isinstance(gw, SlackGateway)

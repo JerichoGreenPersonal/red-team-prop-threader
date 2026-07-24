@@ -332,9 +332,16 @@ def test_group_edit_updates_latest_roots_without_notifications(
 def test_group_edit_updates_primary_canvas(repositories: Repositories, fake_slack: FakeSlackGateway, session: Session, clock: FakeClock) -> None:
     """Satellite group edits mirror onto the primary channel canvas."""
     fake_slack.channel_canvas_ids = {"C1": "Fcanvas", _PRIMARY_CHANNEL: "Fprimary"}
-    service = EditService(repositories=repositories, slack=fake_slack, canvas_slack=fake_slack, clock=clock, primary_asset_index_channel_id=_PRIMARY_CHANNEL)
+    service = EditService(
+        repositories=repositories,
+        slack=fake_slack,
+        canvas_slack=fake_slack,
+        clock=clock,
+        primary_asset_index_channel_id=_PRIMARY_CHANNEL,
+        primary_asset_index_canvas_id="F0BKLFG5S0M",
+    )
     service.apply_group_edit(sample_group_edit(repositories, session, clock))
-    primary_edits = [edit for edit in fake_slack.canvas_edits if edit["canvas_id"] == "Fprimary"]
+    primary_edits = [edit for edit in fake_slack.canvas_edits if edit["canvas_id"] == "F0BKLFG5S0M"]
     assert primary_edits
     assert any(":slack3:" in str(edit.get("markdown") or "") for edit in primary_edits)
     assert any("SG Link -" in str(edit.get("markdown") or "") for edit in primary_edits)
@@ -343,8 +350,15 @@ def test_group_edit_updates_primary_canvas(repositories: Repositories, fake_slac
 def test_group_edit_primary_failure_does_not_raise(repositories: Repositories, fake_slack: FakeSlackGateway, session: Session, clock: FakeClock) -> None:
     """Primary canvas failures are logged but do not fail the edit."""
     fake_slack.channel_canvas_ids = {"C1": "Fcanvas", _PRIMARY_CHANNEL: "Fprimary"}
-    fake_slack.fail_edit_canvas_id = "Fprimary"
-    service = EditService(repositories=repositories, slack=fake_slack, canvas_slack=fake_slack, clock=clock, primary_asset_index_channel_id=_PRIMARY_CHANNEL)
+    fake_slack.fail_edit_canvas_id = "F0BKLFG5S0M"
+    service = EditService(
+        repositories=repositories,
+        slack=fake_slack,
+        canvas_slack=fake_slack,
+        clock=clock,
+        primary_asset_index_channel_id=_PRIMARY_CHANNEL,
+        primary_asset_index_canvas_id="F0BKLFG5S0M",
+    )
     service.apply_group_edit(sample_group_edit(repositories, session, clock))
     satellite_edits = [edit for edit in fake_slack.canvas_edits if edit["canvas_id"] == "Fcanvas"]
     assert satellite_edits

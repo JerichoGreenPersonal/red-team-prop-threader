@@ -504,13 +504,14 @@ class BatchExecutor:
         return {"indexed": True, "entity_id": operation.asset_entity_id}
 
     def _index_primary_asset(self, batch: BatchRecord, operation: OperationRecord, payload: dict[str, Any]) -> dict[str, Any]:
-        """Best-effort mirror of the group onto the primary channel canvas."""
+        """Best-effort mirror of the group onto the primary ledger canvas."""
         primary_channel = str(payload.get("primary_asset_index_channel_id") or "").strip()
         if not primary_channel or batch.channel_id == primary_channel:
             return {"indexed": False, "skipped": True}
         try:
             self._require_succeeded_asset_op(batch.id, OperationKind.POST_ASSET, operation.asset_entity_id)
-            canvas_id = self._canvas.ensure_primary_canvas(primary_channel)
+            configured_canvas = str(payload.get("primary_asset_index_canvas_id") or "").strip()
+            canvas_id = configured_canvas or self._canvas.ensure_primary_canvas(primary_channel)
             indexed_assets = self._indexed_assets_for_group(batch, payload)
             group_animator_id = self._group_animator_id(payload)
             display = str(payload.get("source_channel_display") or batch.channel_id)

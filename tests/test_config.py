@@ -195,6 +195,22 @@ def test_primary_asset_index_channel_id_override(monkeypatch: pytest.MonkeyPatch
     assert settings.primary_asset_index_channel_id == "C999OVERRIDE"
 
 
+def test_primary_asset_index_canvas_id_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    """PRIMARY_ASSET_INDEX_CANVAS_ID defaults to the pilot canvas file id."""
+    _set_required(monkeypatch)
+    monkeypatch.delenv("PRIMARY_ASSET_INDEX_CANVAS_ID", raising=False)
+    settings = Settings.from_env()
+    assert settings.primary_asset_index_canvas_id == "F0BKLFG5S0M"
+
+
+def test_primary_asset_index_canvas_id_empty_uses_channel_canvas(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Empty PRIMARY_ASSET_INDEX_CANVAS_ID falls back to channel-canvas discovery."""
+    _set_required(monkeypatch)
+    monkeypatch.setenv("PRIMARY_ASSET_INDEX_CANVAS_ID", "")
+    settings = Settings.from_env()
+    assert settings.primary_asset_index_canvas_id is None
+
+
 def test_settings_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     """Defaults are applied for all optional fields."""
     monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-test")

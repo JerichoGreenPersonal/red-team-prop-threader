@@ -39,6 +39,7 @@ class Settings:
     tunnel_command: str | None
     tunnel_health_url: str | None
     primary_asset_index_channel_id: str
+    primary_asset_index_canvas_id: str | None
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -68,6 +69,13 @@ class Settings:
         tunnel_command = _optional_str("TUNNEL_COMMAND")
         tunnel_health_url = _optional_str("TUNNEL_HEALTH_URL")
         primary_asset_index_channel_id = os.environ.get("PRIMARY_ASSET_INDEX_CHANNEL_ID", "C04H4QZEYUE").strip() or "C04H4QZEYUE"
+        # Standalone Slack canvas file id (docs/.../F...). Default targets the
+        # pilot PRIMARY ASSET INDEX file. Set the env var to empty to fall back
+        # to the primary channel's built-in canvas instead.
+        if "PRIMARY_ASSET_INDEX_CANVAS_ID" not in os.environ:
+            primary_asset_index_canvas_id: str | None = "F0BKLFG5S0M"
+        else:
+            primary_asset_index_canvas_id = _optional_str("PRIMARY_ASSET_INDEX_CANVAS_ID")
 
         return cls(
             slack_bot_token=slack_bot_token,
@@ -87,6 +95,7 @@ class Settings:
             tunnel_command=tunnel_command,
             tunnel_health_url=tunnel_health_url,
             primary_asset_index_channel_id=primary_asset_index_channel_id,
+            primary_asset_index_canvas_id=primary_asset_index_canvas_id,
         )
 
 

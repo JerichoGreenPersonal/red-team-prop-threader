@@ -623,6 +623,7 @@ def test_gateway_from_settings_constructs_gateway() -> None:
         tunnel_command=None,
         tunnel_health_url=None,
         primary_asset_index_channel_id="C04H4QZEYUE",
+        primary_asset_index_canvas_id="F0BKLFG5S0M",
     )
     mock_client = MagicMock()
     mock_client.export_page.return_value = "Asset Name,Entity ID\nS31 Chair,101\n"

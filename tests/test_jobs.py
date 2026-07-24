@@ -233,6 +233,7 @@ def _sample_payload(*, assets: list[dict[str, Any]] | None = None, lease_token: 
 
 
 _PRIMARY_CHANNEL = "C04H4QZEYUE"
+_PRIMARY_CANVAS = "F0BKLFG5S0M"
 
 
 def sample_confirmed_batch(
@@ -267,6 +268,7 @@ def sample_satellite_batch_with_primary(
         else {
             **_sample_payload(assets=[_sample_payload()["assets"][0]]),
             "primary_asset_index_channel_id": _PRIMARY_CHANNEL,
+            "primary_asset_index_canvas_id": _PRIMARY_CANVAS,
             "source_channel_display": "red-props",
         }
     )
@@ -365,19 +367,19 @@ def test_plan_skips_index_primary_when_channel_is_primary(
 def test_index_primary_asset_writes_primary_canvas(
     repositories: Repositories, leases: ChannelLeaseRepository, session: Session, clock: FakeClock, fake_slack: FakeSlackGateway, executor: BatchExecutor
 ) -> None:
-    """Satellite execution indexes the group onto the primary channel canvas."""
+    """Satellite execution indexes the group onto the configured primary canvas file."""
     fake_slack.channel_canvas_ids = {"C_satellite": "Fcanvas", _PRIMARY_CHANNEL: "Fprimary"}
     batch_id = sample_satellite_batch_with_primary(repositories, leases, session, clock)
     result = executor.execute(batch_id)
     assert result.status is BatchStatus.SUCCEEDED
-    primary_edits = [edit for edit in fake_slack.canvas_edits if edit["canvas_id"] == "Fprimary"]
+    primary_edits = [edit for edit in fake_slack.canvas_edits if edit["canvas_id"] == _PRIMARY_CANVAS]
     assert primary_edits
     assert any(edit["operation"] == "insert_at_start" for edit in primary_edits)
     primary_op = next(op for op in repositories.operations.get_for_batch(batch_id) if op.kind is OperationKind.INDEX_PRIMARY_ASSET)
     assert primary_op.status is OperationStatus.SUCCEEDED
     assert primary_op.result is not None
     assert primary_op.result["indexed"] is True
-    assert primary_op.result["canvas_id"] == "Fprimary"
+    assert primary_op.result["canvas_id"] == _PRIMARY_CANVAS
 
 
 def test_index_primary_failure_does_not_fail_batch(
@@ -385,7 +387,7 @@ def test_index_primary_failure_does_not_fail_batch(
 ) -> None:
     """Primary canvas failures succeed the op with indexed false and leave the batch succeeded."""
     fake_slack.channel_canvas_ids = {"C_satellite": "Fcanvas", _PRIMARY_CHANNEL: "Fprimary"}
-    fake_slack.fail_edit_canvas_id = "Fprimary"
+    fake_slack.fail_edit_canvas_id = _PRIMARY_CANVAS
     batch_id = sample_satellite_batch_with_primary(repositories, leases, session, clock)
     result = executor.execute(batch_id)
     assert result.status is BatchStatus.SUCCEEDED

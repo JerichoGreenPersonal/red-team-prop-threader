@@ -137,6 +137,7 @@ def create_app(settings: Settings | None = None, *, engine: Engine | None = None
             clock=clock,
             shotgrid_base_url=cfg.shotgrid_url,
             primary_asset_index_channel_id=cfg.primary_asset_index_channel_id,
+            primary_asset_index_canvas_id=cfg.primary_asset_index_canvas_id,
             session=session,
             drafts=_DRAFTS,
         )
@@ -149,6 +150,7 @@ def create_app(settings: Settings | None = None, *, engine: Engine | None = None
             canvas_slack=slack,
             clock=clock,
             primary_asset_index_channel_id=cfg.primary_asset_index_channel_id,
+            primary_asset_index_canvas_id=cfg.primary_asset_index_canvas_id,
         )
 
     register_listeners(bolt_app, workflow_factory, edit_factory)

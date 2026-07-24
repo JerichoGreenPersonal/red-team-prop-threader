@@ -79,6 +79,7 @@ def test_create_app_slack_events_route_exists() -> None:
         tunnel_command=None,
         tunnel_health_url=None,
         primary_asset_index_channel_id="C04H4QZEYUE",
+        primary_asset_index_canvas_id="F0BKLFG5S0M",
     )
     engine = create_engine("sqlite:///:memory:")
     Base.metadata.create_all(engine)

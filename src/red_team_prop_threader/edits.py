@@ -124,7 +124,14 @@ class EditService:
     """guards and applies latest-only group/asset detail edits."""
 
     def __init__(
-        self, *, repositories: Repositories, slack: EditSlackGateway, canvas_slack: Any, clock: Clock, primary_asset_index_channel_id: str = ""
+        self,
+        *,
+        repositories: Repositories,
+        slack: EditSlackGateway,
+        canvas_slack: Any,
+        clock: Clock,
+        primary_asset_index_channel_id: str = "",
+        primary_asset_index_canvas_id: str | None = None,
     ) -> None:
         """Wire repositories, slack, canvas gateway, and clock.
 
@@ -133,13 +140,15 @@ class EditService:
             slack: messaging gateway for updates and membership checks.
             canvas_slack: gateway satisfying CanvasService needs.
             clock: utc clock.
-            primary_asset_index_channel_id: channel id for the primary asset index canvas.
+            primary_asset_index_channel_id: channel id for the primary asset index home.
+            primary_asset_index_canvas_id: optional Slack canvas file id to edit.
         """
         self._repos = repositories
         self._slack = slack
         self._canvas = CanvasService(canvas_slack)
         self._clock = clock
         self._primary_asset_index_channel_id = primary_asset_index_channel_id.strip()
+        self._primary_asset_index_canvas_id = (primary_asset_index_canvas_id or "").strip() or None
 
     def open_asset_editor(self, ref: MessageRef) -> EditOpenResult:
         """Open the asset editor, or refuse a historical root.
@@ -258,7 +267,7 @@ class EditService:
         primary_channel = self._primary_asset_index_channel_id
         if primary_channel and summary.channel_id != primary_channel:
             try:
-                primary_canvas_id = self._canvas.ensure_primary_canvas(primary_channel)
+                primary_canvas_id = self._primary_asset_index_canvas_id or self._canvas.ensure_primary_canvas(primary_channel)
                 self._canvas.index_batch(
                     GroupIndexRequest(
                         channel_id=summary.channel_id,

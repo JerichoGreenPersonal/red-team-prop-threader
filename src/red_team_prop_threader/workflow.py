@@ -186,6 +186,7 @@ class Workflow:
         clock: Clock,
         shotgrid_base_url: str,
         primary_asset_index_channel_id: str = "C04H4QZEYUE",
+        primary_asset_index_canvas_id: str | None = "F0BKLFG5S0M",
         session: Session | None = None,
         drafts: DraftBook | None = None,
     ) -> None:
@@ -198,7 +199,8 @@ class Workflow:
             leases: channel lease repository.
             clock: utc clock.
             shotgrid_base_url: absolute HTTPS ShotGrid base URL.
-            primary_asset_index_channel_id: channel id for the primary asset index canvas.
+            primary_asset_index_channel_id: channel id for the primary asset index home.
+            primary_asset_index_canvas_id: optional Slack canvas file id to edit.
             session: optional sqlalchemy session for persistence hooks.
             drafts: optional draft book; a new one is created when omitted.
         """
@@ -210,6 +212,7 @@ class Workflow:
         self.shotgrid_base_url = shotgrid_base_url.rstrip("/")
         self.shotgrid_host = self.shotgrid_base_url.removeprefix("https://").removeprefix("http://")
         self._primary_asset_index_channel_id = primary_asset_index_channel_id
+        self._primary_asset_index_canvas_id = (primary_asset_index_canvas_id or "").strip() or None
         self.session = session
         self.drafts = drafts or DraftBook()
 
@@ -522,6 +525,7 @@ class Workflow:
         return {
             "canvas_id": draft.canvas_id,
             "primary_asset_index_channel_id": self._primary_asset_index_channel_id,
+            "primary_asset_index_canvas_id": self._primary_asset_index_canvas_id or "",
             "group_title": title,
             "group_animator_id": draft.group_animator_id or "",
             "group_additional_ids": list(draft.group_additional_ids),
