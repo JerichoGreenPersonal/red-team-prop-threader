@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sys
 import logging
+from datetime import date
 
 from PySide6.QtWidgets import QApplication
 
@@ -11,6 +12,7 @@ from review_prep.state import StateRepo
 from review_prep.worker_main import db_path, app_data_dir, settings_path
 from review_prep.ui.main_window import MainWindow
 from review_prep.ui.summary_dialog import SummaryDialog
+from review_prep.launch_coordinator import run_dashboard_auto_launch
 from review_prep.ui.settings_wizard import SettingsWizard, needs_first_run_setup
 
 
@@ -72,6 +74,9 @@ def main(argv: list[str] | None = None) -> int:
     shown = show_unacked_summary_if_needed(repo, parent=window)
     if shown is not None:
         _logger.info("Acknowledged prep summary for run %s", shown)
+
+    # Cadet auto-launch for today's READY_TO_LAUNCH routes (exactly-once leases).
+    run_dashboard_auto_launch(repo=repo, settings_file=settings_file, local_date=date.today())
 
     return int(app.exec())
 

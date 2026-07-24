@@ -215,6 +215,19 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Prepare", msg)
         else:
             QMessageBox.information(self, "Prepare", msg)
+
+        # After a successful Prepare, attempt Cadet auto-launch for today.
+        if not result.hard_failure and result.launchable_files:
+            from review_prep.launch_coordinator import run_dashboard_auto_launch
+
+            launch_report = run_dashboard_auto_launch(
+                repo=self._repo,
+                settings_file=self._settings_file,
+                local_date=date.today(),
+            )
+            if launch_report is not None and launch_report.blocked_cadet:
+                _logger.warning("Prepare finished but Cadet auto-launch blocked: %s", "; ".join(launch_report.messages))
+
         self.refresh_cards()
 
     def _on_open_again(self) -> None:

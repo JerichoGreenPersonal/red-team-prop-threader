@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import json
 from typing import TYPE_CHECKING
+from datetime import date
 from unittest.mock import MagicMock
 
 from review_prep.state import StateRepo
 from review_prep.models import RouteState, DeliveryRouteKind
-from review_prep.settings import AppSettings
-from review_prep.launch_coordinator import _CADET_MISSING_PROMPT, LaunchCoordinator
+from review_prep.settings import AppSettings, save_settings
+from review_prep.launch_coordinator import _CADET_MISSING_PROMPT, LaunchCoordinator, run_dashboard_auto_launch
 
 
 if TYPE_CHECKING:
@@ -149,3 +150,52 @@ def test_open_again_bypasses_lease(tmp_path: Path, monkeypatch: pytest.MonkeyPat
     assert report.blocked_cadet is False
     assert len(report.launched) == 1
     assert len(pops) == 1
+
+
+def test_run_dashboard_auto_launch_wires_eligible(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Dashboard auto-launch helper loads settings and launches eligible files (no Qt)."""
+    scene = tmp_path / "hero.ma"
+    scene.write_text("//maya", encoding="utf-8")
+    settings_file = tmp_path / "settings.json"
+    save_settings(settings_file, _settings())
+
+    repo = StateRepo(tmp_path / "prep.db")
+    repo.ensure_schema()
+    _seed_ready_file(repo, local_date="2026-07-23", card_id=42, path=scene)
+
+    pops: list[list[str]] = []
+
+    def fake_popen(argv: list[str], **kwargs: object) -> MagicMock:
+        pops.append(list(argv))
+        return MagicMock()
+
+    monkeypatch.setattr(LaunchCoordinator, "cadet_available", lambda self: True)
+    monkeypatch.setattr("review_prep.launch_coordinator.subprocess.Popen", fake_popen)
+
+    report = run_dashboard_auto_launch(repo=repo, settings_file=settings_file, local_date=date(2026, 7, 23))
+
+    assert report is not None
+    assert report.blocked_cadet is False
+    assert len(report.launched) == 1
+    assert len(pops) == 1
+
+
+def test_run_dashboard_auto_launch_reports_blocked_cadet(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Auto-launch helper surfaces blocked_cadet without consuming leases."""
+    scene = tmp_path / "hero.ma"
+    scene.write_text("//maya", encoding="utf-8")
+    settings_file = tmp_path / "settings.json"
+    save_settings(settings_file, _settings())
+
+    repo = StateRepo(tmp_path / "prep.db")
+    repo.ensure_schema()
+    _seed_ready_file(repo, local_date="2026-07-23", card_id=42, path=scene)
+
+    monkeypatch.setattr(LaunchCoordinator, "cadet_available", lambda self: False)
+
+    report = run_dashboard_auto_launch(repo=repo, settings_file=settings_file, local_date=date(2026, 7, 23))
+
+    assert report is not None
+    assert report.blocked_cadet is True
+    assert report.launched == []
+    assert _CADET_MISSING_PROMPT in report.messages

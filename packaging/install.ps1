@@ -52,6 +52,22 @@ Write-Host "Installed:"
 Write-Host "  $WorkerDst"
 Write-Host "  $DashDst"
 
+# Ship ShotGrid query stub under LOCALAPPDATA (filters remain a human checkpoint).
+$ConfigsDir = Join-Path $AppRoot "configs"
+New-Item -ItemType Directory -Force -Path $ConfigsDir | Out-Null
+$QueryDst = Join-Path $ConfigsDir "default_shotgrid_query.json"
+$QueryCandidates = @(
+    (Join-Path $DistDir "configs\default_shotgrid_query.json"),
+    (Join-Path $RepoRoot "configs\default_shotgrid_query.json")
+)
+$QuerySrc = $QueryCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+if ($QuerySrc) {
+    Copy-Item -Force $QuerySrc $QueryDst
+    Write-Host "  $QueryDst"
+} else {
+    Write-Warning "ShotGrid query JSON not found next to dist or repo; skipping copy."
+}
+
 # Start Menu shortcut (per-user)
 $Programs = Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs"
 New-Item -ItemType Directory -Force -Path $Programs | Out-Null
@@ -139,7 +155,7 @@ if (-not $RegisteredViaPython) {
     try {
         & schtasks /Create /TN "ReviewPrep\DailyPrep" /XML $XmlPath /F | Out-Host
         if ($LASTEXITCODE -ne 0) { throw "schtasks DailyPrep failed: $LASTEXITCODE" }
-        & schtasks /Create /F /TN "ReviewPrep\OpenDashboard" /SC ONLOGON /RL LIMITED /TR $DashDst /RU $User | Out-Host
+        & schtasks /Create /F /TN "ReviewPrep\OpenDashboard" /SC ONLOGON /RL LIMITED /TR "`"$DashDst`"" /RU $User | Out-Host
         if ($LASTEXITCODE -ne 0) { throw "schtasks OpenDashboard failed: $LASTEXITCODE" }
         Write-Host "Registered ReviewPrep\DailyPrep and ReviewPrep\OpenDashboard via schtasks."
     } finally {

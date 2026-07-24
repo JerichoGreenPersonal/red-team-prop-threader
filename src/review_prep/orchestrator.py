@@ -256,8 +256,9 @@ class PrepOrchestrator:
         if all_skipped:
             return RouteState.PARTIAL, []
         if any_skipped:
-            if policy is ClPolicy.SYNC_AND_OPEN:
-                return RouteState.SYNCED_ONLY, launchable
+            # Partial sync with launchables is still openable (siblings may be skipped).
+            if policy is ClPolicy.SYNC_AND_OPEN and launchable:
+                return RouteState.READY_TO_LAUNCH, launchable
             return RouteState.SYNCED_ONLY, []
         if policy is ClPolicy.SYNC_AND_OPEN:
             return RouteState.READY_TO_LAUNCH, launchable

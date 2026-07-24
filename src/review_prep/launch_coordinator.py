@@ -7,10 +7,12 @@ import shlex
 from typing import TYPE_CHECKING
 import logging
 from pathlib import Path
+from datetime import date
 import subprocess
 from dataclasses import field, dataclass
 
 from review_prep.models import RouteState
+from review_prep.settings import load_settings
 
 
 if TYPE_CHECKING:
@@ -201,6 +203,59 @@ class LaunchCoordinator:
         if not argv:
             raise ValueError(f"empty Cadet launch command for {path}")
         return argv
+
+
+def run_dashboard_auto_launch(
+    *,
+    repo: StateRepo,
+    settings_file: Path,
+    local_date: date | None = None,
+) -> LaunchReport | None:
+    """Load settings and run :meth:`LaunchCoordinator.launch_eligible` for a day.
+
+    Used on dashboard start and after a successful Prepare. Does not require a Qt
+    display; suitable for unit tests with Cadet availability mocked.
+
+    Args:
+        repo (StateRepo): SQLite state repository.
+        settings_file (Path): Path to ``settings.json``.
+        local_date (date | None): Calendar date for leases; defaults to today.
+
+    Returns:
+        (LaunchReport | None) Launch report, or None if settings could not load.
+    """
+    settings_file = Path(settings_file)
+    if not settings_file.is_file():
+        _logger.warning("Auto-launch skipped: settings not found at %s", settings_file)
+        return None
+
+    try:
+        settings = load_settings(settings_file)
+    except (OSError, ValueError, TypeError, KeyError) as exc:
+        _logger.error("Auto-launch skipped: failed to load settings: %s", exc)
+        return None
+
+    day = (local_date or date.today()).isoformat()
+    coordinator = LaunchCoordinator(settings=settings, state=repo)
+    report = coordinator.launch_eligible(day)
+
+    if report.blocked_cadet:
+        _logger.warning(
+            "Auto-launch blocked_cadet for %s: %s",
+            day,
+            "; ".join(report.messages) if report.messages else "Cadet not available",
+        )
+    else:
+        _logger.info(
+            "Auto-launch for %s: launched=%s skipped_leased=%s errors=%s",
+            day,
+            len(report.launched),
+            len(report.skipped_leased),
+            len(report.errors),
+        )
+    for err in report.errors:
+        _logger.warning("Auto-launch error: %s", err)
+    return report
 
 
 def _file_key(path: Path) -> str:

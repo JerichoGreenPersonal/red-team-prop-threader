@@ -56,19 +56,48 @@ def settings_path() -> Path:
     return app_data_dir() / "settings.json"
 
 
-def _resolve_query_path(settings: AppSettings) -> Path:
-    """Resolve ShotGrid query path relative to CWD or app data when needed."""
-    query_path = Path(settings.shotgrid_query_path)
-    if query_path.is_file():
+def resolve_shotgrid_query_path(configured: str | Path, *, app_data: Path | None = None) -> Path:
+    """Resolve ShotGrid query JSON path; prefer ``%LOCALAPPDATA%/ReviewPrep``.
+
+    Absolute configured paths are used as-is. Relative paths search in order:
+    1. Under ``app_data`` (default: ``%LOCALAPPDATA%/ReviewPrep``)
+    2. Next to the frozen executable (packaged install)
+    3. PyInstaller ``_MEIPASS`` bundle
+    4. Current working directory
+
+    Args:
+        configured (str | Path): Path from settings (often ``configs/default_shotgrid_query.json``).
+        app_data (Path | None): App data root override; defaults to :func:`app_data_dir`.
+
+    Returns:
+        (Path) First existing candidate, or the preferred LOCALAPPDATA path for errors.
+    """
+    query_path = Path(configured)
+    if query_path.is_absolute():
         return query_path
-    if not query_path.is_absolute():
-        under_app = app_data_dir() / query_path
-        if under_app.is_file():
-            return under_app
-        cwd_candidate = Path.cwd() / query_path
-        if cwd_candidate.is_file():
-            return cwd_candidate
-    return query_path
+
+    base = Path(app_data) if app_data is not None else app_data_dir()
+    preferred = base / query_path
+    candidates: list[Path] = [preferred]
+
+    if getattr(sys, "frozen", False):
+        candidates.append(Path(sys.executable).resolve().parent / query_path)
+
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        candidates.append(Path(meipass) / query_path)
+
+    candidates.append(Path.cwd() / query_path)
+
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    return preferred
+
+
+def _resolve_query_path(settings: AppSettings) -> Path:
+    """Resolve ShotGrid query path from settings (LOCALAPPDATA preferred)."""
+    return resolve_shotgrid_query_path(settings.shotgrid_query_path)
 
 
 def wire_adapters(settings: AppSettings) -> tuple[ShotGridAdapter, P4Adapter]:

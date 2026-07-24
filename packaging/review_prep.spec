@@ -30,12 +30,16 @@ _common_hidden = [
     "review_prep.ui.summary_dialog",
 ]
 
+# Ship ShotGrid query stub inside both onefile EXEs (install.ps1 also copies to LOCALAPPDATA).
+_query_json = ROOT / "configs" / "default_shotgrid_query.json"
+_query_datas = [(str(_query_json), "configs")] if _query_json.is_file() else []
+
 # --- Worker (console, onefile) -------------------------------------------------
 worker_a = Analysis(
     [str(SPECDIR / "entry_worker.py")],
     pathex=[SRC],
     binaries=[],
-    datas=[],
+    datas=list(_query_datas),
     hiddenimports=_common_hidden,
     hookspath=[],
     hooksconfig={},
@@ -74,7 +78,7 @@ dash_a = Analysis(
     [str(SPECDIR / "entry_dashboard.py")],
     pathex=[SRC],
     binaries=pyside_binaries,
-    datas=pyside_datas,
+    datas=list(pyside_datas) + list(_query_datas),
     hiddenimports=_common_hidden + list(pyside_hiddenimports),
     hookspath=[],
     hooksconfig={},

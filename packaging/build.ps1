@@ -52,9 +52,19 @@ $Dash = Join-Path $DistPath "review-prep.exe"
 if (-not (Test-Path $Worker)) { throw "Missing $Worker" }
 if (-not (Test-Path $Dash)) { throw "Missing $Dash" }
 
+$QuerySrc = Join-Path $RepoRoot "configs\default_shotgrid_query.json"
+$QueryDistDir = Join-Path $DistPath "configs"
+if (Test-Path $QuerySrc) {
+    New-Item -ItemType Directory -Force -Path $QueryDistDir | Out-Null
+    Copy-Item -Force $QuerySrc (Join-Path $QueryDistDir "default_shotgrid_query.json")
+}
+
 Write-Host ""
 Write-Host "Build OK:"
 Write-Host "  $Worker"
 Write-Host "  $Dash"
+if (Test-Path (Join-Path $QueryDistDir "default_shotgrid_query.json")) {
+    Write-Host "  $(Join-Path $QueryDistDir 'default_shotgrid_query.json')"
+}
 Write-Host ""
 Write-Host "Install with: .\packaging\install.ps1"

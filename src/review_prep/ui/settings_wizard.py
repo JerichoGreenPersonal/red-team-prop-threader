@@ -11,6 +11,7 @@ from PySide6.QtWidgets import QLabel, QDialog, QLineEdit, QFormLayout, QHBoxLayo
 
 from review_prep.settings import AppSettings, load_settings, save_settings
 from review_prep.credentials import get_shotgrid_api_key, set_shotgrid_api_key
+from review_prep.worker_main import resolve_shotgrid_query_path
 from review_prep.shotgun_adapter import ShotGridAdapter, load_shotgrid_query
 
 
@@ -48,18 +49,8 @@ def needs_first_run_setup(settings_file: Path) -> bool:
 
 
 def _resolve_query_path(settings: AppSettings, app_data: Path) -> Path:
-    """Resolve ShotGrid query path relative to CWD or app data when needed."""
-    query_path = Path(settings.shotgrid_query_path)
-    if query_path.is_file():
-        return query_path
-    if not query_path.is_absolute():
-        under_app = app_data / query_path
-        if under_app.is_file():
-            return under_app
-        cwd_candidate = Path.cwd() / query_path
-        if cwd_candidate.is_file():
-            return cwd_candidate
-    return query_path
+    """Resolve ShotGrid query path; prefer app data (LOCALAPPDATA)."""
+    return resolve_shotgrid_query_path(settings.shotgrid_query_path, app_data=app_data)
 
 
 def run_test_query(settings: AppSettings, *, app_data: Path, api_key: str | None = None) -> tuple[bool, str]:

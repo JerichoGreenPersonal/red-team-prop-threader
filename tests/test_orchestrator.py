@@ -139,6 +139,49 @@ def test_source_art_cl_is_sync_only_not_launchable(tmp_path: Path, monkeypatch: 
     assert fake_p4.synced == ["//depot/art.ma@99"]
 
 
+def test_partial_wip_sync_with_launchables_is_ready_to_launch(tmp_path: Path) -> None:
+    """WIP sync_and_open with some siblings skipped still marks READY_TO_LAUNCH when launchables exist."""
+    staging = tmp_path / "staging"
+    ok_local = tmp_path / "ws" / "ok.ma"
+    blocked_local = tmp_path / "ws" / "blocked.ma"
+    ok_local.parent.mkdir(parents=True)
+    ok_local.write_text("//maya", encoding="utf-8")
+    blocked_local.write_text("//maya", encoding="utf-8")
+
+    card_id = 88
+    ok_depot = "//depot/ok.ma"
+    blocked_depot = "//depot/blocked.ma"
+    fake_sg = FakeShotgun(
+        worklist=[{"id": card_id, "code": "partial_wip", "image": None}],
+        attachments_by_card={card_id: []},
+        notes_by_card={card_id: [{"id": 1, "content": "WIP CL 400", "created_at": "2026-07-23T11:00:00"}]},
+    )
+    fake_p4 = FakeP4(
+        describe={400: [ok_depot, blocked_depot]},
+        map={ok_depot: str(ok_local), blocked_depot: str(blocked_local)},
+        opened={blocked_depot},
+    )
+
+    repo = StateRepo(tmp_path / "prep.db")
+    repo.ensure_schema()
+    orch = PrepOrchestrator(
+        settings=_settings(staging),
+        state=repo,
+        shotgun=ShotGridAdapter(fake_sg, entity_type="Asset"),
+        p4=P4Adapter(client="test_client", runner=fake_p4),
+        local_date=date(2026, 7, 23),
+        trigger="test",
+    )
+    result = orch.prepare_cards([card_id])
+
+    routes = repo.get_routes_for_card(card_id)
+    assert len(routes) == 1
+    assert routes[0]["state"] == RouteState.READY_TO_LAUNCH.value
+    assert routes[0]["state"] != RouteState.SYNCED_ONLY.value
+    assert any(Path(p).name == "ok.ma" for p in result.launchable_files)
+    assert fake_p4.synced == [f"{ok_depot}@400"]
+
+
 def test_all_skipped_cl_route_is_partial_not_failed(tmp_path: Path) -> None:
     """When every CL file is skipped (open/writable/sync_error), route is PARTIAL not FAILED."""
     staging = tmp_path / "staging"
