@@ -8,7 +8,7 @@ from dataclasses import field, dataclass
 
 import pytest
 
-from red_team_prop_threader.canvas import CANVAS_TITLE, IndexedAsset, CanvasService, PreflightState, GroupIndexRequest, DuplicateThreadRequest
+from red_team_prop_threader.canvas import CANVAS_TITLE, PRIMARY_CANVAS_TITLE, IndexedAsset, CanvasService, PreflightState, GroupIndexRequest, DuplicateThreadRequest
 from red_team_prop_threader.domain import SupportingLink
 
 
@@ -255,6 +255,25 @@ def test_preflight_rename_confirmation_for_other_title(fake_slack: FakeSlackGate
     result = CanvasService(fake_slack).preflight("C0B4GJSA1G8")
     assert result.state is PreflightState.RENAME_CONFIRMATION_REQUIRED
     assert result.current_title == "Channel Notes"
+
+
+def test_ensure_primary_canvas_creates_when_missing() -> None:
+    """Primary channel gets PRIMARY ASSET INDEX canvas when none exists."""
+    fake = FakeSlackGateway(channel_canvas_id=None)
+    svc = CanvasService(fake)
+    canvas_id = svc.ensure_primary_canvas("C04H4QZEYUE")
+    assert canvas_id == "Fnew"
+    assert fake.canvas_title == PRIMARY_CANVAS_TITLE
+
+
+def test_ensure_primary_canvas_renames_wrong_title() -> None:
+    """Primary channel renames mismatched canvas to PRIMARY ASSET INDEX."""
+    fake = FakeSlackGateway(channel_canvas_id="Fcanvas", canvas_title="Old Title")
+    svc = CanvasService(fake)
+    canvas_id = svc.ensure_primary_canvas("C04H4QZEYUE")
+    assert canvas_id == "Fcanvas"
+    assert fake.canvas_title == PRIMARY_CANVAS_TITLE
+    assert any(e.operation == "rename" for e in fake.canvas_edits)
 
 
 def test_preflight_blocked_on_permission_error(fake_slack: FakeSlackGateway) -> None:

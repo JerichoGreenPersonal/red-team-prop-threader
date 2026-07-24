@@ -142,11 +142,12 @@ class CanvasService:
         """
         self._slack = slack
 
-    def preflight(self, channel_id: str) -> PreflightResult:
+    def preflight(self, channel_id: str, *, title: str = CANVAS_TITLE) -> PreflightResult:
         """Inspect the channel canvas before import/data entry.
 
         Args:
             channel_id: slack channel id.
+            title: expected canonical canvas title.
 
         Returns:
             PreflightResult: READY, create/rename confirmation, or BLOCKED.
@@ -169,18 +170,26 @@ class CanvasService:
         except ExternalServiceError as exc:
             return PreflightResult(PreflightState.BLOCKED, canvas_id, detail=str(exc))
 
-        title = str(file_info.get("title") or file_info.get("name") or "")
-        if titles_match(title, CANVAS_TITLE):
-            return PreflightResult(PreflightState.READY, canvas_id, current_title=title)
-        return PreflightResult(PreflightState.RENAME_CONFIRMATION_REQUIRED, canvas_id, current_title=title)
+        current_title = str(file_info.get("title") or file_info.get("name") or "")
+        if titles_match(current_title, title):
+            return PreflightResult(PreflightState.READY, canvas_id, current_title=current_title)
+        return PreflightResult(PreflightState.RENAME_CONFIRMATION_REQUIRED, canvas_id, current_title=current_title)
 
-    def ensure_canvas(self, channel_id: str, *, create: bool = False, rename: bool = False) -> str:
+    def ensure_canvas(
+        self,
+        channel_id: str,
+        *,
+        create: bool = False,
+        rename: bool = False,
+        title: str = CANVAS_TITLE,
+    ) -> str:
         """Create or rename the channel canvas after explicit confirmation.
 
         Args:
             channel_id: slack channel id.
             create: create a missing canvas when True.
             rename: rename an existing mismatched title when True.
+            title: expected canonical canvas title for create/rename/checks.
 
         Returns:
             str: canvas id ready for indexing.
@@ -188,15 +197,23 @@ class CanvasService:
         Raises:
             ExternalServiceError: when canvas cannot be prepared.
         """
-        result = self.preflight(channel_id)
+        result = self.preflight(channel_id, title=title)
         if result.state is PreflightState.READY and result.canvas_id:
             return result.canvas_id
         if result.state is PreflightState.CREATE_CONFIRMATION_REQUIRED and create:
-            return self._slack.create_channel_canvas(channel_id, title=CANVAS_TITLE)
+            return self._slack.create_channel_canvas(channel_id, title=title)
         if result.state is PreflightState.RENAME_CONFIRMATION_REQUIRED and rename and result.canvas_id:
-            self._slack.rename_canvas(result.canvas_id, title=CANVAS_TITLE)
+            self._slack.rename_canvas(result.canvas_id, title=title)
             return result.canvas_id
         raise ExternalServiceError("canvas is not ready for indexing")
+
+    def ensure_primary_canvas(self, channel_id: str) -> str:
+        """Ensure the primary channel has a canvas titled PRIMARY ASSET INDEX.
+
+        Creates or renames as needed. Raises ExternalServiceError / PermissionDeniedError
+        on Slack failures (caller treats as best-effort).
+        """
+        return self.ensure_canvas(channel_id, create=True, rename=True, title=PRIMARY_CANVAS_TITLE)
 
     def index_batch(self, request: GroupIndexRequest) -> None:
         """Index a group and its assets using one edit operation.
