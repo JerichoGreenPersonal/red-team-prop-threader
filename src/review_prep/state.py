@@ -151,6 +151,50 @@ class StateRepo:
             ).fetchall()
             return [dict(row) for row in rows]
 
+    def list_routes_for_date(self, local_date: str) -> list[dict[str, object]]:
+        """Return all routes belonging to prep runs on a local date.
+
+        Args:
+            local_date (str): Local calendar date (YYYY-MM-DD).
+
+        Returns:
+            (list[dict[str, object]]) Route rows as plain dicts.
+        """
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT r.id, r.prep_run_id, r.card_sg_id, r.route_kind, r.route_key,
+                       r.state, r.detail, r.updated_at
+                FROM routes r
+                JOIN prep_runs p ON p.id = r.prep_run_id
+                WHERE p.local_date = ?
+                ORDER BY r.id
+                """,
+                (local_date,),
+            ).fetchall()
+            return [dict(row) for row in rows]
+
+    def has_launch_lease(self, file_key: str, local_date: str) -> bool:
+        """Return whether a launch lease exists for the file on that date.
+
+        Args:
+            file_key (str): Stable key for the file.
+            local_date (str): Local calendar date (YYYY-MM-DD).
+
+        Returns:
+            (bool) True if a lease row exists.
+        """
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT 1
+                FROM launch_leases
+                WHERE file_key = ? AND local_date = ?
+                """,
+                (file_key, local_date),
+            ).fetchone()
+            return row is not None
+
     def record_launch_lease(self, file_key: str, local_date: str) -> bool:
         """Record a launch lease; return False if already held for that day.
 
