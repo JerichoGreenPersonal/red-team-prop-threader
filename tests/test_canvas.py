@@ -155,25 +155,31 @@ def test_manual_conflict_appends_and_warns_without_replacing_section(fake_slack:
 
 
 def test_render_group_markdown_uses_h3_asset_name_and_emoji_links() -> None:
-    """Asset sections use plain H3 names with ShotGrid and Slack emoji links."""
+    """Asset sections use plain H3 names with ShotGrid and slack3 emoji links."""
     from red_team_prop_threader.canvas import render_group_markdown
 
     md = render_group_markdown(sample_new_group())
-    assert "### Prop A" in md or "### " in md
+    assert "### Prop A" in md
     assert ":shotgrid:" in md
-    assert ":Slack:" in md
+    assert ":slack3:" in md
+    assert ":Slack:" not in md
     assert "### [Prop A]" not in md
 
 
-def test_render_group_markdown_primary_includes_channel_in_h2() -> None:
-    """Primary canvas groups include source channel in the H2 and metadata line."""
+def test_render_group_markdown_primary_matches_ledger_layout() -> None:
+    """Primary canvas groups match PRIMARY ASSET INDEX slack3 / SG Link / Thread layout."""
     from red_team_prop_threader.canvas import render_group_markdown
 
     req = sample_new_group(for_primary=True, source_channel_display="red-props")
     md = render_group_markdown(req)
-    assert md.startswith("## ")
-    assert "(red-props)" in md.splitlines()[0]
-    assert "**Source channel:**" in md
+    assert md.startswith("## SEASON 31 PROP REQUEST THREADS\n")
+    assert "(red-props)" not in md.splitlines()[0]
+    assert "**Source channel:**" not in md
+    assert "**Creative Stakeholder:**" not in md
+    assert ":slack3: Prop A" in md
+    assert "* SG Link -" in md
+    assert "* Thread -" in md
+    assert "https://slack.example/archives/C/p1" in md
 
 
 def test_group_markdown_starts_with_title_and_separates_groups() -> None:

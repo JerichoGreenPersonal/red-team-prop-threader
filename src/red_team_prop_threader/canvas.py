@@ -21,6 +21,7 @@ if TYPE_CHECKING:
 __all__ = (
     "CANVAS_TITLE",
     "PRIMARY_CANVAS_TITLE",
+    "SLACK_THREAD_EMOJI",
     "CanvasService",
     "DuplicateThreadRequest",
     "DuplicateThreadResult",
@@ -29,11 +30,13 @@ __all__ = (
     "PreflightResult",
     "PreflightState",
     "format_canvas_timestamp",
+    "render_group_markdown",
     "titles_match",
 )
 
 CANVAS_TITLE = "INDEX OF PROP REQUESTS"
 PRIMARY_CANVAS_TITLE = "PRIMARY ASSET INDEX"
+SLACK_THREAD_EMOJI = ":slack3:"
 _CANVAS_TZ = ZoneInfo("America/Los_Angeles")
 _WHITESPACE_RE = re.compile(r"\s+")
 
@@ -218,14 +221,16 @@ class CanvasService:
             request: group and asset content to index.
         """
         markdown = render_group_markdown(request)
-        title = normalize_group_title(request.group_title)
-        if request.for_primary:
-            display = (request.source_channel_display or request.channel_id).strip()
-            lookup_title = f"{title} ({display})"
-        else:
-            lookup_title = title
+        # Primary canvas groups use the same bare group title as the existing
+        # PRIMARY ASSET INDEX ledger (e.g. "S31 Wildcard"), so edits replace
+        # in place instead of creating duplicate channel-suffixed sections.
+        lookup_title = normalize_group_title(request.group_title)
         sections = self._slack.lookup_sections(request.canvas_id, contains_text=lookup_title, section_types=("h1", "h2", "any_header"))
         section_id = _first_section_id(sections)
+        if section_id is None and request.for_primary:
+            # Existing ledger groups may be plain text / non-header sections.
+            sections = self._slack.lookup_sections(request.canvas_id, contains_text=lookup_title, section_types=())
+            section_id = _first_section_id(sections)
         if section_id is None:
             self._slack.edit_canvas(request.canvas_id, operation="insert_at_start", markdown=markdown)
             return
@@ -296,6 +301,10 @@ def format_canvas_timestamp(value: datetime) -> str:
 def render_group_markdown(request: GroupIndexRequest) -> str:
     """Render a full group section for canvas insert/replace.
 
+    Satellite canvases use collapsible H2/H3 with ShotGrid emoji links.
+    Primary canvases match the existing PRIMARY ASSET INDEX ledger shape:
+    group H2, ``:slack3:`` asset lines, and ``SG Link`` / ``Thread`` bullets.
+
     Args:
         request: group index request.
 
@@ -303,12 +312,15 @@ def render_group_markdown(request: GroupIndexRequest) -> str:
         str: markdown document fragment for the group, ending with two blank
         lines so consecutive groups stay visually separated on the canvas.
     """
-    title = normalize_group_title(request.group_title)
     if request.for_primary:
-        display = (request.source_channel_display or request.channel_id).strip()
-        heading = f"## {title} ({display})"
-    else:
-        heading = f"## {title}"
+        return _render_primary_group_markdown(request)
+    return _render_satellite_group_markdown(request)
+
+
+def _render_satellite_group_markdown(request: GroupIndexRequest) -> str:
+    """Render INDEX OF PROP REQUESTS group markdown."""
+    title = normalize_group_title(request.group_title)
+    heading = f"## {title}"
     people_parts = [part for part in (request.animator_display, *request.additional_displays) if part and part.strip()]
     people = ", ".join(people_parts) if people_parts else "unassigned"
     link_lines = "\n".join(f"- [{_escape_md(link.label)}]({link.url})" for link in request.links)
@@ -322,24 +334,51 @@ def render_group_markdown(request: GroupIndexRequest) -> str:
         if asset.prior_permalink and asset.prior_created_at is not None:
             lines.append(f"- {_asset_thread_line(asset.prior_permalink, asset.prior_created_at, is_latest=False)}")
         asset_parts.append("\n".join(lines))
-    sections = [heading]
-    if request.for_primary:
-        src = (request.source_channel_display or request.channel_id).strip()
-        sections.append(f"**Source channel:** #{src}")
-    sections.append(f"**Creative Stakeholder:** {people}")
+    sections = [heading, f"**Creative Stakeholder:** {people}"]
     if link_lines:
         sections.append("**Group Links:**\n" + link_lines)
     if asset_parts:
         sections.append("\n\n".join(asset_parts))
-    # Two trailing blank lines separate this group from the previous group below.
     return "\n\n".join(sections) + "\n\n\n"
 
 
+def _render_primary_group_markdown(request: GroupIndexRequest) -> str:
+    """Render PRIMARY ASSET INDEX group markdown (ledger layout)."""
+    title = normalize_group_title(request.group_title)
+    asset_parts: list[str] = []
+    for asset in request.assets:
+        sg_label = _sg_link_label(asset)
+        lines = [
+            f"{SLACK_THREAD_EMOJI} {_escape_md(asset.name)}",
+            f"* SG Link - [{_escape_md(sg_label)}]({asset.asset_url})",
+            f"* Thread - [{format_canvas_timestamp(asset.created_at)}]({asset.permalink})"
+            + (" — Latest" if asset.is_latest else ""),
+        ]
+        if asset.prior_permalink and asset.prior_created_at is not None:
+            lines.append(f"* Thread - [{format_canvas_timestamp(asset.prior_created_at)}]({asset.prior_permalink})")
+        asset_parts.append("\n".join(lines))
+    body = "\n\n".join(asset_parts) if asset_parts else ""
+    if body:
+        return f"## {title}\n\n{body}\n\n\n"
+    return f"## {title}\n\n\n"
+
+
+def _sg_link_label(asset: IndexedAsset) -> str:
+    """Prefer a short ShotGrid code/name for PRIMARY ASSET INDEX SG Link lines."""
+    url = (asset.asset_url or "").rstrip("/")
+    if "/" in url:
+        tail = url.rsplit("/", 1)[-1].strip()
+        if tail and not tail.isdigit():
+            return tail
+    name = (asset.name or "").strip()
+    return name if name else "ShotGrid"
+
+
 def _asset_thread_line(permalink: str, created_at: datetime, *, is_latest: bool) -> str:
-    """Render one timestamped thread link line."""
+    """Render one timestamped thread link line for satellite canvases."""
     stamp = format_canvas_timestamp(created_at)
     latest = " — Latest" if is_latest else ""
-    return f":Slack: [{stamp}]({permalink}){latest}"
+    return f"{SLACK_THREAD_EMOJI} [{stamp}]({permalink}){latest}"
 
 
 def _normalize_title(value: str) -> str:

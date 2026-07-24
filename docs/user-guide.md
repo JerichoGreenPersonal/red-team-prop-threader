@@ -156,7 +156,7 @@ Each group is an **H2** heading (collapse it to hide all assets in that batch). 
 
 Satellite channels keep their local **INDEX OF PROP REQUESTS** canvas as today. The app also mirrors each batch to a **PRIMARY ASSET INDEX** canvas in a dedicated primary channel configured by admins (`PRIMARY_ASSET_INDEX_CHANNEL_ID`, default `C04H4QZEYUE`).
 
-Primary updates are best-effort: if the primary write fails, your channel threads and local index still succeed. Primary sections use the same H2/H3 collapse layout and add **Source channel** plus a channel name in the group heading so batches from different channels stay distinct.
+Primary updates are best-effort: if the primary write fails, your channel threads and local index still succeed. The primary ledger uses group headings with `:slack3:` asset lines and `SG Link` / `Thread` bullets (matching the existing PRIMARY ASSET INDEX canvas). Satellite channel indexes keep the collapsible H2/H3 layout with `:shotgrid:` and `:slack3:` markers.
 
 The bot must be a member of the primary channel. Ask an admin to invite it if local indexes update but the primary canvas does not.
 

@@ -336,7 +336,8 @@ def test_group_edit_updates_primary_canvas(repositories: Repositories, fake_slac
     service.apply_group_edit(sample_group_edit(repositories, session, clock))
     primary_edits = [edit for edit in fake_slack.canvas_edits if edit["canvas_id"] == "Fprimary"]
     assert primary_edits
-    assert any("Source channel:" in str(edit.get("markdown") or "") for edit in primary_edits)
+    assert any(":slack3:" in str(edit.get("markdown") or "") for edit in primary_edits)
+    assert any("SG Link -" in str(edit.get("markdown") or "") for edit in primary_edits)
 
 
 def test_group_edit_primary_failure_does_not_raise(repositories: Repositories, fake_slack: FakeSlackGateway, session: Session, clock: FakeClock) -> None:
