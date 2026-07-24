@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
+from datetime import date, timedelta
 
 from review_prep.state import StateRepo
 from review_prep.models import RouteState, DeliveryRouteKind
@@ -59,6 +60,34 @@ def test_format_summary_text_includes_route_states(tmp_path: Path) -> None:
     assert "ready_to_launch: 1" in text
     assert "failed: 1" in text
     assert "Close this dialog to acknowledge." in text
+
+
+def test_format_summary_text_uses_unacked_run_local_date_not_today(tmp_path: Path) -> None:
+    """Unacked run dated other than today still lists that day's routes."""
+    repo = StateRepo(tmp_path / "prep.db")
+    repo.ensure_schema()
+    today = date.today().isoformat()
+    other_day = (date.today() - timedelta(days=3)).isoformat()
+    assert other_day != today
+
+    run_id = repo.start_prep_run(other_day, "scheduled")
+    assert repo.latest_unacked_run() == run_id
+    repo.upsert_route(
+        prep_run_id=run_id,
+        card_sg_id=2002,
+        route_kind=DeliveryRouteKind.ATTACHMENT_ARCHIVE.value,
+        route_key="att:42",
+        state=RouteState.READY_TO_LAUNCH.value,
+        detail='{"launchable":[]}',
+    )
+
+    # Default lookup (as SummaryDialog / startup does) must use the run date.
+    text = format_summary_text(repo, run_id)
+
+    assert f"Prep run {run_id} ({other_day})" in text
+    assert "ready_to_launch: 1" in text
+    assert f"No route rows recorded for this run on {today}." not in text
+    assert today not in text.split("\n")[0]
 
 
 def test_newer_unacked_run_survives_ack_of_older(tmp_path: Path) -> None:

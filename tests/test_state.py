@@ -3,8 +3,8 @@ import sqlite3
 
 import pytest
 
-from review_prep.models import DeliveryRouteKind, RouteState
 from review_prep.state import StateRepo
+from review_prep.models import RouteState, DeliveryRouteKind
 
 
 def test_launch_lease_is_exactly_once(tmp_path: Path):
@@ -31,6 +31,14 @@ def test_summary_ack(tmp_path: Path):
     assert repo.latest_unacked_run() == run_id
     repo.ack_summary(run_id)
     assert repo.latest_unacked_run() is None
+
+
+def test_get_prep_run_local_date(tmp_path: Path):
+    repo = StateRepo(tmp_path / "prep.db")
+    repo.ensure_schema()
+    run_id = repo.start_prep_run("2026-07-21", "manual")
+    assert repo.get_prep_run_local_date(run_id) == "2026-07-21"
+    assert repo.get_prep_run_local_date(99999) is None
 
 
 def test_route_upsert_roundtrip(tmp_path: Path):

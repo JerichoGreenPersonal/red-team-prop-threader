@@ -30,7 +30,8 @@ def show_unacked_summary_if_needed(repo: StateRepo, parent: MainWindow | None = 
     run_id = repo.latest_unacked_run()
     if run_id is None:
         return None
-    dialog = SummaryDialog(repo, run_id, parent=parent)
+    local_date = repo.get_prep_run_local_date(run_id)
+    dialog = SummaryDialog(repo, run_id, parent=parent, local_date=local_date)
     dialog.exec()
     return run_id
 

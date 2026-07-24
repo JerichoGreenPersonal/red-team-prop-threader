@@ -62,18 +62,20 @@ def _resolve_query_path(settings: AppSettings, app_data: Path) -> Path:
     return query_path
 
 
-def run_test_query(settings: AppSettings, *, app_data: Path) -> tuple[bool, str]:
+def run_test_query(settings: AppSettings, *, app_data: Path, api_key: str | None = None) -> tuple[bool, str]:
     """Execute the configured ShotGrid worklist query as a connectivity check.
 
     Args:
         settings (AppSettings): Current (possibly unsaved) settings values.
         app_data (Path): Application data directory for relative query paths.
+        api_key (str | None): Optional key override (e.g. typed in the wizard).
+            When omitted, uses the key stored in Credential Manager.
 
     Returns:
         (tuple[bool, str]) Success flag and a short result message.
     """
-    api_key = get_shotgrid_api_key()
-    if not api_key:
+    resolved_key = (api_key or "").strip() or get_shotgrid_api_key()
+    if not resolved_key:
         return False, "ShotGrid API key is not stored in Credential Manager yet."
     if not settings.shotgrid_script_name.strip():
         return False, "ShotGrid script name is empty."
@@ -87,7 +89,12 @@ def run_test_query(settings: AppSettings, *, app_data: Path) -> tuple[bool, str]
         site_url = str(query.get("site_url") or "").strip()
         if not site_url:
             return False, f"site_url missing from ShotGrid query config: {query_path}"
-        adapter = ShotGridAdapter.from_query_file(site_url=site_url, script_name=settings.shotgrid_script_name.strip(), api_key=api_key, query_path=query_path)
+        adapter = ShotGridAdapter.from_query_file(
+            site_url=site_url,
+            script_name=settings.shotgrid_script_name.strip(),
+            api_key=resolved_key,
+            query_path=query_path,
+        )
         cards = adapter.find_worklist()
     except Exception as exc:
         _logger.exception("Test query failed: %s", exc)
@@ -200,12 +207,10 @@ class SettingsWizard(QDialog):
         )
 
     def _on_test_query(self) -> None:
-        """Save API key if typed, then run the ShotGrid worklist query."""
-        typed_key = self._api_key.text().strip()
-        if typed_key:
-            set_shotgrid_api_key(typed_key)
+        """Run the ShotGrid worklist query using the typed key without persisting it."""
         settings = self._build_settings()
-        ok, message = run_test_query(settings, app_data=self._app_data)
+        typed_key = self._api_key.text().strip() or None
+        ok, message = run_test_query(settings, app_data=self._app_data, api_key=typed_key)
         self._test_status.setText(message)
         if not ok:
             QMessageBox.warning(self, "Test query", message)

@@ -267,3 +267,23 @@ class StateRepo:
                 """
             ).fetchone()
             return int(row["id"]) if row is not None else None
+
+    def get_prep_run_local_date(self, run_id: int) -> str | None:
+        """Return the local calendar date for a prep run.
+
+        Args:
+            run_id (int): Prep run id.
+
+        Returns:
+            (str | None) Local date (YYYY-MM-DD), or None if the run does not exist.
+        """
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT local_date
+                FROM prep_runs
+                WHERE id = ?
+                """,
+                (run_id,),
+            ).fetchone()
+            return str(row["local_date"]) if row is not None else None

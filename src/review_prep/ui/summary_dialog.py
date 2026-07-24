@@ -32,12 +32,17 @@ def format_summary_text(repo: StateRepo, prep_run_id: int, local_date: str | Non
     Args:
         repo (StateRepo): SQLite state repository.
         prep_run_id (int): Prep run id to summarize.
-        local_date (str | None): Local date (YYYY-MM-DD); defaults to today.
+        local_date (str | None): Local date (YYYY-MM-DD); defaults to the run's
+            stored date, then today.
 
     Returns:
         (str) Human-readable summary lines.
     """
-    day = local_date if local_date is not None else date.today().isoformat()
+    day = local_date
+    if day is None:
+        day = repo.get_prep_run_local_date(prep_run_id)
+    if day is None:
+        day = date.today().isoformat()
     routes: list[dict[str, object]] = []
     for route in repo.list_routes_for_date(day):
         run_raw = route.get("prep_run_id")
@@ -45,7 +50,7 @@ def format_summary_text(repo: StateRepo, prep_run_id: int, local_date: str | Non
             routes.append(route)
     lines = [f"Prep run {prep_run_id} ({day})", ""]
     if not routes:
-        lines.append("No route rows recorded for this run on today's date.")
+        lines.append(f"No route rows recorded for this run on {day}.")
         lines.append("Close this dialog to acknowledge.")
         return "\n".join(lines)
 
@@ -67,18 +72,27 @@ def format_summary_text(repo: StateRepo, prep_run_id: int, local_date: str | Non
 class SummaryDialog(QDialog):
     """Modal summary of an unacked prep run; any close acks the run."""
 
-    def __init__(self, repo: StateRepo, prep_run_id: int, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        repo: StateRepo,
+        prep_run_id: int,
+        parent: QWidget | None = None,
+        *,
+        local_date: str | None = None,
+    ) -> None:
         """Build the summary dialog for ``prep_run_id``.
 
         Args:
             repo (StateRepo): State repository used for routes and ack.
             prep_run_id (int): Unacked prep run to display.
             parent (QWidget | None): Optional Qt parent.
+            local_date (str | None): Prep run local date; looked up from repo when omitted.
         """
         super().__init__(parent)
         self._repo = repo
         self._prep_run_id = prep_run_id
         self._acked = False
+        day = local_date if local_date is not None else repo.get_prep_run_local_date(prep_run_id)
 
         self.setWindowTitle(f"Prep summary — run {prep_run_id}")
         self.resize(640, 420)
@@ -88,7 +102,7 @@ class SummaryDialog(QDialog):
 
         body = QPlainTextEdit()
         body.setReadOnly(True)
-        body.setPlainText(format_summary_text(repo, prep_run_id))
+        body.setPlainText(format_summary_text(repo, prep_run_id, local_date=day))
         layout.addWidget(body)
 
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
