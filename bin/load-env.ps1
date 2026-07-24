@@ -51,7 +51,7 @@ if ($envFile) {
     _LoadEnvFile $envFile
 }
 else {
-    Write-Warning "load-env: .env not found — skipping."
+    Write-Warning "load-env: .env not found - skipping."
 }
 
 # --- locate and load .shell.env (optional) --------------------------------
@@ -64,6 +64,6 @@ if (Test-Path $shellEnv) {
 $devPaths = @(
     $repoRoot
     (Join-Path $repoRoot 'bin')
-    (Join-Path $repoRoot '.venv' 'Scripts')
+    (Join-Path (Join-Path $repoRoot '.venv') 'Scripts')
 )
 $env:PATH = ($devPaths -join ';') + ";$env:PATH"
