@@ -1,0 +1,77 @@
+{
+    "skillListingBudgetFraction": 0.02,
+    "env": {
+        "CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS": "1",
+        "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1",
+        "CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR": "1",
+        "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+        "CLAUDE_CODE_ENABLE_TELEMETRY": "0",
+        "CLAUDE_CODE_ATTRIBUTION_HEADER": "0",
+        "CLAUDE_CODE_PERFORCE_MODE": "1"
+    },
+    "includeGitInstructions": false,
+    "permissions": {
+        "allow": [
+            "Bash(*ast-grep.exe *)",
+            "Bash(basename *)",
+            "Bash(cat *)",
+            "Bash(cd *)",
+            "Bash(cut *)",
+            "Bash(diff *)",
+            "Bash(dir *)",
+            "Bash(dirname *)",
+            "Bash(echo *)",
+            "Bash(fd *)",
+            "Bash(file *)",
+            "Bash(head *)",
+            "Bash(ls *)",
+            "Bash(perl *)",
+            "Bash(pwd)",
+            "Bash(realpath *)",
+            "Bash(rg *)",
+            "Bash(sort *)",
+            "Bash(tail *)",
+            "Bash(test *)",
+            "Bash(tr *)",
+            "Bash(uniq *)",
+            "Bash(wc *)",
+            "Bash(where *)",
+            "Bash(which *)",
+            "Bash(tasklist *)",
+            "Bash(npx vitest *)",
+            "Bash(powershell -File bin/build.ps1)",
+            "Bash(uv *)"
+        ],
+        "deny": [
+            "Bash(find *)",
+            "Bash(grep *)",
+            "Bash(python *)",
+            "Bash(python3 *)",
+            "Bash(py *)",
+            "Bash(pip *)",
+            "Bash(pip3 *)",
+            "Bash(pytest *)",
+            "Bash(ruff *)",
+            "Bash(ty *)"
+        ]
+    },
+    "hooks": {
+        "SessionStart": [
+            {
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "powershell -NonInteractive -Command \"if (-not (Test-Path '.claude/skills')) { New-Item -ItemType Junction -Path '.claude/skills' -Target '.agents/skills' | Out-Null }\""
+                    }
+                ]
+            }
+        ]
+    },
+    "spinnerTipsEnabled": false,
+    "effortLevel": "medium",
+    "promptSuggestionEnabled": false,
+    "showThinkingSummaries": false,
+    "enabledPlugins": {
+        "superpowers@claude-plugins-official": true
+    }
+}

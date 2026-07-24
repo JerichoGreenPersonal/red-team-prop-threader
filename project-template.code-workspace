@@ -1,0 +1,196 @@
+{
+    "folders": [
+        {
+            "path": ".",
+        },
+    ],
+    "extensions": {
+        "recommendations": [
+            // python Development
+            "ms-python.python",
+            "ms-python.debugpy",
+            "ms-python.vscode-pylance",
+            "charliermarsh.ruff",
+            "jannchie.ruff-ignore-explainer",
+            "astral-sh.ty",
+
+            // typeScript & react Development
+            "dbaeumer.vscode-eslint",
+            "dsznajder.es7-react-js-snippets",
+            "styled-components.vscode-styled-components",
+            "yoavbls.pretty-ts-errors",
+            "ms-vscode.vscode-typescript-next",
+
+            // testing
+            "vitest.explorer",
+            "playwright.playwright",
+
+            // code quality & Productivity
+            "formulahendry.auto-rename-tag",
+            "christian-kohler.path-intellisense",
+
+            // terminal and OS
+            "ms-vscode.powershell",
+
+            // syntax highlighting, formatting, and linting
+            "esbenp.prettier-vscode",
+            "coenraads.bracket-pair-colorizer-2",
+            "bradlc.vscode-tailwindcss",
+            "github.vscode-pull-request-github",
+
+            // other languages and markup
+            "redhat.vscode-xml",
+            "redhat.vscode-yaml",
+            "tamasfe.even-better-toml",
+            "samuelcolvin.jinjahtml",
+            "yzhang.markdown-all-in-one",
+
+            // utilities
+            "mohammadbaqer.better-folding",
+            "sndst00m.vscode-native-svg-preview",
+        ],
+        "unwantedRecommendations": [
+            // avoid conflicts with Ruff
+            "ms-python.flake8",
+            "ms-python.pylint",
+            "ms-python.black-formatter",
+            "ms-pyright.pyright",
+
+            // avoid conflicts with Prettier
+            "hookyqr.beautify",
+
+            // avoid Python extension conflicts
+            "ms-python.isort",
+        ],
+    },
+    "settings": {
+        // env settings
+        "python.envFile": "${workspaceFolder}/.env",
+        "terminal.integrated.defaultProfile.windows": "PowerShell",
+        "terminal.integrated.profiles.windows": {
+            "PowerShell": {
+                "source": "PowerShell",
+                "args": [
+                    "-NoExit",
+                    "-Command",
+                    ". '${workspaceFolder}/bin/load-env.ps1'",
+                ],
+                "icon": "terminal-powershell",
+            },
+        },
+        "terminal.integrated.env.windows": {
+            "PATH": "${workspaceFolder};${workspaceFolder}/bin;${workspaceFolder}/.venv/Scripts;${env:PATH};",
+            "PYTHONPATH": "${workspaceFolder}/.venv/Lib/site-packages;${workspaceFolder}/src;${workspaceFolder}/scripts",
+            "RUST_LOG": "ruff_linter::rules::isort::categorize=debug",
+        },
+
+        // file settings
+        "files.trimTrailingWhitespace": true,
+        "files.insertFinalNewline": true,
+        "files.trimFinalNewlines": false,
+        "files.exclude": {
+            "**/__pycache__": true,
+            ".idea": false,
+            ".github": false,
+            ".python-version": true,
+            "**/.DS_Store": true,
+            ".git": true,
+            "**/%SystemDrive%": true,
+            "**/.uv_cache": true,
+            "**/.ruff_cache": true,
+            "**/.ty_cache": true,
+        },
+        "files.watcherExclude": {
+            "**/*_rc.py": true,
+            "**/ui_*.py": true,
+        },
+        "search.exclude": {
+            "**/*_rc.py": true,
+            "**/ui_*.py": true,
+        },
+        "files.associations": {
+            "*.json": "json",
+            "*.gs": "javascript",
+            "*.yaml.template": "yaml",
+        },
+
+        // editor settings
+        "editor.insertSpaces": true,
+        "editor.suggest.showStatusBar": false,
+        "workbench.hover.delay": 1000,
+
+        // prettier settings
+        "prettier.tabWidth": 4,
+        "prettier.useTabs": false,
+
+        // json settings
+        "[json]": {
+            "editor.tabSize": 4,
+            "editor.insertSpaces": true,
+            "editor.formatOnSave": true,
+            "editor.defaultFormatter": "esbenp.prettier-vscode",
+        },
+        "[jsonc]": {
+            "editor.tabSize": 4,
+            "editor.insertSpaces": true,
+            "editor.formatOnSave": true,
+            "editor.defaultFormatter": "esbenp.prettier-vscode",
+        },
+
+        // toml settings
+        "[toml]": {
+            "editor.tabSize": 4,
+            "editor.insertSpaces": true,
+            "editor.formatOnSave": true,
+            "editor.defaultFormatter": "esbenp.prettier-vscode",
+        },
+
+        // yaml settings
+        "yaml.schemaStore.url": "https://json.schemastore.org/yamllint.json",
+        "[yaml]": {
+            "editor.tabSize": 4,
+            "editor.insertSpaces": true,
+            "editor.formatOnSave": true,
+            "editor.defaultFormatter": "esbenp.prettier-vscode",
+        },
+
+        // javascript settings
+        "[javascript]": {
+            "editor.defaultFormatter": "esbenp.prettier-vscode",
+            "editor.formatOnSave": true,
+        },
+
+        // python settings
+        "windsurfPyright.analysis.exclude": ["**/*_rc.py"],
+        "python.terminal.useEnvFile": true,
+        "python.defaultInterpreterPath": "${workspaceFolder}/.venv/Scripts/python.exe",
+        "python.globalModuleInstallation": false,
+        "python.autoComplete.extraPaths": [],
+        "[python]": {
+            "editor.formatOnType": false,
+            "editor.wordBasedSuggestions": "allDocuments",
+            "diffEditor.ignoreTrimWhitespace": false,
+            "editor.defaultFormatter": "charliermarsh.ruff",
+            "editor.formatOnSave": true,
+            "editor.codeActionsOnSave": {
+                "source.fixAll": "always",
+                "source.organizeImports": "always",
+            },
+
+            // ruff settings
+            "ruff.interpreter": ["${workspaceFolder}/.venv/Scripts/python.exe"],
+            "ruff.configuration": "ruff.toml",
+            "ruff.enable": true,
+            "ruff.lint.preview": false,
+            "ruff.fixAll": true,
+            "ruff.organizeImports": false,
+
+            // ty settings
+            "ty.configurationFile": "ty.toml",
+            "ty.enable": true,
+
+            // git settings
+            "git.autofetch": true,
+        },
+    },
+}

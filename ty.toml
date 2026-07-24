@@ -1,0 +1,75 @@
+# ty - Python type checker configuration
+# https://docs.astral.sh/ty/reference/configuration/
+
+[environment]
+python-version = "3.11"
+root = ["./src", "./scripts"]
+
+[src]
+include = [
+    "./src",
+    "./scripts",
+    "./tests",
+    "./examples",
+]
+exclude = [
+    "**/__pycache__/",
+    "**/_build/",
+    "**/_dist/",
+    "**/_deprecated/",
+    "**/_provisional/",
+    "**/site-packages/",
+    "**/tests/",
+    "**/thirdparty/",
+    "**/vendored/",
+    "**/stubs/",
+    "tmp/",
+]
+
+[rules]
+# hard errors: these catch unambiguous bugs
+unresolved-import = "error"
+unresolved-reference = "error"
+missing-argument = "error"
+too-many-positional-arguments = "warn"
+unknown-argument = "warn"
+call-non-callable = "error"
+not-iterable = "warn"
+not-subscriptable = "error"
+invalid-type-form = "error"
+invalid-base = "error"
+invalid-context-manager = "error"
+invalid-raise = "error"
+invalid-exception-caught = "warn"
+conflicting-declarations = "error"
+invalid-declaration = "error"
+division-by-zero = "error"
+invalid-overload = "error"
+invalid-type-guard-definition = "error"
+invalid-type-guard-call = "error"
+duplicate-base = "error"
+cyclic-class-definition = "error"
+
+# warnings: real findings that require incremental annotation fixes
+# promote these to "error" as type coverage improves
+invalid-assignment = "warn"
+invalid-return-type = "warn"
+invalid-argument-type = "warn"
+invalid-method-override = "warn"
+unresolved-attribute = "warn"
+possibly-unresolved-reference = "warn"
+possibly-missing-attribute = "warn"
+possibly-missing-import = "warn"
+redundant-cast = "warn"
+unused-ignore-comment = "warn"
+unsupported-operator = "warn"
+no-matching-overload = "warn"
+
+[analysis]
+# suppress unresolved-import for third-party packages that lack type stubs
+allowed-unresolved-imports = []
+
+[[overrides]]
+include = ["scripts/**"]
+[overrides.rules]
+possibly-unresolved-reference = "ignore"

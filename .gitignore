@@ -1,0 +1,122 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+build/
+_build/
+
+# C extensions
+*.so
+
+# Distribution / packaging
+.Python
+develop-eggs/
+dist/
+_dist/
+downloads/
+eggs/
+.eggs/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# PyInstaller
+*.manifest
+*.spec
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+
+# Translations
+*.mo
+*.pot
+
+# Logs
+*.log
+logs/
+
+# Sphinx documentation
+docs/_build/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# Environments
+**/.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Type checkers
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.pyre/
+
+# IDEs
+.idea/*
+!.idea/runConfigurations/
+!.idea/codeStyles/
+!.idea/inspectionProfiles/
+!.idea/dictionaries/
+!.idea/vcs.xml
+!.idea/modules.xml
+!.idea/*.iml
+!.idea/ruff.xml
+
+.vs
+.vscode
+!.vscode/tasks.json
+
+# astral
+.ruff_cache/
+.uv_cache/
+.ty_cache/
+uv.exe
+uvw.exe
+uvx.exe
+
+
+# uv-generated lock in site-packages (not portable)
+**/site-packages/.lock
+
+# Secrets and credentials (never commit)
+.secrets/
+
+# Misc
+tmp/
+local/
+usr/
+.worktrees/
+
+settings.local.json
+.superpowers
+.pytest_cache
+
+
+*.local.code-workspace

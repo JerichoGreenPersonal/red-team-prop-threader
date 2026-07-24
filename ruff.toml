@@ -1,0 +1,217 @@
+cache-dir = ".ruff_cache"
+exclude = [
+    ".bzr",
+    ".direnv",
+    ".github",
+    ".git",
+    ".git-rewrite",
+    ".hg",
+    ".ipynb_checkpoints",
+    ".mypy_cache",
+    ".pants.d",
+    ".pyenv",
+    ".pytest_cache",
+    ".pytype",
+    ".ruff_cache",
+    ".svn",
+    "__pypackages__",
+    "buck-out",
+    "node_modules",
+    "site-packages",
+    "stubs",
+    "_provisional",
+    "_deprecated",
+    "vendored",
+]
+fix = true
+include = [
+    "pyproject.toml",
+    "scripts/**/*.py",
+    "src/**/*.py",
+    "tests/**/*.py",
+    "examples/**/*.py",
+]
+indent-width = 4
+line-length = 160
+namespace-packages = ["<project-name>"]
+src = [
+    "src",
+]
+target-version = "py311"
+unsafe-fixes = false # some fixes are only applied when this is true, ie type checking
+
+[format]
+docstring-code-format = false
+docstring-code-line-length = "dynamic"
+indent-style = "space"
+line-ending = "auto"
+preview = true
+quote-style = "double"
+skip-magic-trailing-comma = true
+
+[lint]
+dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
+logger-objects = ["_logger"]
+typing-modules = []
+
+# docs to all the rules for select, ignore, fixable, etc ...
+# https://docs.astral.sh/ruff/rules/
+#extend-select = []
+exclude = [
+    "**/__pycache__/**",
+    "**/_build/**",
+    "**/_deprecated/**",
+    "**/_dist/**",
+    "**/_provisional/**",
+    "**/*_rc.py",
+    "**/lib/stubs/**",
+    "**/site-packages/**",
+    "**/thirdparty/**",
+    "**/vendored/**",
+]
+fixable = [
+    "ANN201", # Missing return type annotation for public function.
+    "ANN202", # Missing return type annotation for private function.
+    "ANN205", # Missing return type annotation for staticmethod.
+    "ANN206", # Missing return type annotation for classmethod.
+    "B905", # zip() without an explicit strict= parameter.
+    "D101", # No blank lines allowed after function docstring.
+    "D202", # No blank lines allowed after function docstring.
+    "D206", # Docstring should be indented with spaces, not tabs
+    "D209", # Multi-line docstring closing quotes should be on a separate line.
+    "D212", # Multi-line docstring summary should start at the first line.
+    "D301", # Use r""" if any backslashes in a docstring.
+    "D214", # Section is over-indented.
+    "D403", # First word of the docstring should be capitalized.
+    "D405", # Section name should be properly capitalized.
+    "D411", # Missing blank line after section.
+    "D412", # No blank lines between section header and its comment.
+    "E201", # Whitespace after '{' or before '}'.
+    "E202", # Whitespace before ','.
+    "E203", # Whitespace before ':'.
+    "E221", # Multiple spaces before operator.
+    "E222", # Multiple spaces after operator.
+    "E223", # Tab before operator.
+    "E224", # Tab after operator.
+    "E305", # Expected 2 blank lines after class or function definition, found 1.
+    "E703", # Statement ends with a semicolon.
+    "E711", # Comparison to None should be 'if cond is None:' or 'if cond is not None:'.
+    "E712", # Comparison to False should be 'if cond is False:' or 'if cond is not False:'.
+    "E721", # Do not compare types, use 'isinstance()' instead.  # "F401",   # Remove unused imports.
+    "F541", # f-string is missing placeholders.
+    "I001", # Fix imports, which are removed in 1.24.
+    "NPY001", # Fix numpy types, which are removed in 1.24.  # "RUF051",   # Use pop instead of key in dict followed by del dict[key]
+    "Q", # flake8-quotes
+    "RET", # flake8-return
+    "RUF100", # Remove unused noqa comments.
+    "RUF022", # Sort all
+    "RUF013", # PEP 484 prohibits implicit Optional
+    "SIM108", # Use ternary operator {contents} instead of if-else-block
+    "SIM110", # Use {replacement} instead of for loop
+    "TC001", # Move application import {} into a type-checking block.
+    "TC002", # Move third-party import {} into a type-checking block.
+    "TC003", # Move standard library import {} into a type-checking block.
+    "TC004", # Move import {qualified_name} out of type-checking block. Import is used for more than type hinting
+    "TC005", # Found empty type-checking block
+    "TC006", # Add quotes to type expression in typing.cast()
+    "TC007", # Add quotes to type alias
+    "TC008", # Remove quotes from type alias
+    "UP015", # Unnecessary mode argument in open() call.
+    #    "UP038", # Allow using if x == False, as it's not always equivalent to if x.
+    "W291", # Trailing whitespace.
+    "W292", # No newline at end of file.
+    "W293", # Blank line contains whitespace.
+    "W391", # Too many new lines at end of file.
+]
+ignore = [
+    "ANN002", # Missing type annotation for *{name}
+    "ANN003", # Missing type annotation for **{name}
+    "ANN202", # Missing return type annotation for private function.
+    "ANN204", # Missing return type annotation for special method.
+    "ANN401", # Usage of typing.Any
+    "B007", # Loop control variable name not used within loop body.
+    "D100", # Missing docstring in public module.
+    "D200", # One-line docstring should fit on one line
+    "D205", # 1 blank line required between summary line and description.
+    "D415", # First line should end with a period, question mark, or exclamation point.
+    "E402", # Allow imports from sitecustomize.py
+    "E501", # Suppress line-too-long warnings
+    "E712", # Allow using if x == False, as it's not always equivalent to if x.
+    "PTH101", # Use Path.chmod() instead of os.chmod()
+    "PTH123", # open() should be replaced by Path.open()
+    "PTH111", # open() should be replaced by Path.open()
+    "RUF052", # Local dummy variable _{name} used.
+    "TD003", # Missing issue link for this TODO
+    "UP017", # Allow timezone.utc instead of datetime.UTC.
+    "UP037", # Ignore quotes around type annotations,
+]
+select = [
+    "A", # prevent using keywords that clobber python builtins
+    "ANN", # type annotations
+    "B", # bugbear: security warnings
+    "D", # docstring conventions
+    "E", # pycodestyle
+    "F", # pyflakes
+    "I", # isort
+    "ISC", # implicit string concatenation
+    "PTH", # Warn when os module is used instead of pathlib
+    "Q", # flake8-quotes https://docs.astral.sh/ruff/settings/#lintflake8-quotes
+    "RUF", # the ruff developer's own rules
+    "SIM", # Checks code that can be simplified
+    "TC", # flake8-type-checking  https://docs.astral.sh/ruff/settings/#lintflake8-type-checking
+    "T201", # `print` found in code.
+    "TD", # TODO comments
+    "UP", # Alert you when better syntax is available in your python version
+    "RET", # flake8-return
+]
+task-tags = ["HACK", "TODO", "FIXME", "DEBUG", "NOTE", "REVIEW"]
+unfixable = [
+    "B", # Bugbear: security warnings
+    "E501", # Ignore line too long errors, as we have a line length of 160.
+]
+
+[lint.per-file-ignores]
+# print() is allowed in examples and tests -- they are consumer-facing
+# scripts, not library code (Q14).
+"examples/**/*.py" = ["T201"]
+"tests/**/*.py" = ["T201"]
+"scripts/**/*.py" = ["T201"]
+
+[lint.pydocstyle]
+convention = "google"
+ignore-var-parameters = true
+
+[lint.pydoclint]
+ignore-one-line-docstrings = true
+
+[lint.isort]
+case-sensitive = true
+combine-as-imports = true
+force-sort-within-sections = true
+force-wrap-aliases = true
+length-sort = true
+length-sort-straight = true
+lines-after-imports = 2
+# lines-between-types = 1  # this is ignored when force-sort-within-sections is set to true
+no-lines-before = ["future"]
+order-by-type = true
+split-on-trailing-comma = true
+
+known-third-party = ["vendored.*"]
+section-order = [
+    "future",
+    "standard-library",
+    "third-party",
+    "first-party",
+    "local-folder",
+]
+
+[lint.flake8-quotes]
+docstring-quotes = "double"
+inline-quotes = "double"
+multiline-quotes = "double"
+
+[lint.flake8-type-checking]
+exempt-modules = ["typing", "typing_extensions"]
+quote-annotations = true
+strict = true
