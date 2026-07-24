@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from review_prep.p4_adapter import P4Error
+
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -23,6 +25,8 @@ class FakeP4:
         opened: set[str] | frozenset[str] | None = None,
         map: Mapping[str, str] | None = None,  # noqa: A002 — brief API uses map=
         writable: set[str] | frozenset[str] | None = None,
+        sync_clobber: set[str] | frozenset[str] | None = None,
+        sync_errors: set[str] | frozenset[str] | None = None,
     ) -> None:
         """Configure injected describe/opened/where/writable responses.
 
@@ -30,12 +34,16 @@ class FakeP4:
             describe (Mapping[int, Sequence[str]] | None): CL → depot paths.
             opened (set[str] | frozenset[str] | None): Depot paths open on the client.
             map (Mapping[str, str] | None): Depot → local path for ``where``.
-            writable (set[str] | frozenset[str] | None): Depot paths with writable conflicts.
+            writable (set[str] | frozenset[str] | None): Depot paths with writable conflicts (dry-run).
+            sync_clobber (set[str] | frozenset[str] | None): Depot paths that return clobber on real sync (exit 0).
+            sync_errors (set[str] | frozenset[str] | None): Depot paths that raise ``P4Error`` on real sync.
         """
         self._describe = {int(cl): list(files) for cl, files in (describe or {}).items()}
         self._opened = set(opened or ())
         self._map = dict(map or {})
         self._writable = set(writable or ())
+        self._sync_clobber = set(sync_clobber or ())
+        self._sync_errors = set(sync_errors or ())
         self.synced: list[str] = []
 
     def run(self, args: Sequence[str]) -> str:
@@ -49,6 +57,7 @@ class FakeP4:
 
         Raises:
             (ValueError) If the command is unsupported or data is missing.
+            (P4Error) If a configured sync failure is triggered.
         """
         tokens = _strip_p4_prefix(list(args))
         if not tokens:
@@ -111,6 +120,10 @@ class FakeP4:
             raise ValueError(f"refusing sync of open file {depot}")
         if depot in self._writable:
             raise ValueError(f"refusing sync of writable conflict {depot}")
+        if depot in self._sync_errors:
+            raise P4Error(f"p4 exited 1: sync failed for {depot}")
+        if depot in self._sync_clobber:
+            return f"{local} - can't clobber writable file {local}\n"
         self.synced.append(spec)
         return f"{spec} - refreshed\n"
 

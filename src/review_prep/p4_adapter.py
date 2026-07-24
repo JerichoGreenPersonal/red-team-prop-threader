@@ -16,6 +16,12 @@ _DESCRIBE_FILE_RE = re.compile(r"^\.\.\.\s+(\S+)#\d+\s+(\S+)")
 _FORBIDDEN_FLAGS = frozenset({"-f", "--force"})
 
 
+def _looks_like_clobber(text: str) -> bool:
+    """Return True if P4 output indicates a writable clobber/skip."""
+    lowered = text.lower()
+    return "can't clobber" in lowered or "cannot clobber" in lowered
+
+
 class P4Error(Exception):
     """Raised when a ``p4`` command fails or returns unusable output."""
 
@@ -87,10 +93,15 @@ class SubprocessP4Runner:
             (P4Error) If the process exits non-zero.
         """
         completed = subprocess.run(list(args), capture_output=True, text=True, check=False)
+        stdout = completed.stdout or ""
+        stderr = completed.stderr or ""
         if completed.returncode != 0:
-            detail = (completed.stderr or completed.stdout or "").strip()
+            detail = (stderr or stdout).strip()
             raise P4Error(f"p4 exited {completed.returncode}: {detail}")
-        return completed.stdout or ""
+        # Include stderr so clobber/skip messages are visible even when exit code is 0.
+        if stderr.strip():
+            return f"{stdout}\n{stderr}" if stdout else stderr
+        return stdout
 
 
 class P4Adapter:
@@ -155,9 +166,7 @@ class P4Adapter:
 
     def _has_writable_conflict(self, depot: str, cl: int) -> bool:
         """Detect writable local conflict via dry-run ``sync -n`` (never clobber)."""
-        dry = self._run("sync", "-n", f"{depot}@{cl}")
-        lowered = dry.lower()
-        return "can't clobber" in lowered or "cannot clobber" in lowered
+        return _looks_like_clobber(self._run("sync", "-n", f"{depot}@{cl}"))
 
     def preview_sync(self, cl: int) -> list[P4FilePlan]:
         """Build a safety plan for exact-CL sync.
@@ -195,6 +204,17 @@ class P4Adapter:
                 results.append(P4SyncResult(depot=plan.depot, local=plan.local, skipped=True, skip_reason=plan.skip_reason))
                 continue
             # Exact-CL sync only — never -f / clobber / revert.
-            self._run("sync", f"{plan.depot}@{cl}")
+            try:
+                sync_out = self._run("sync", f"{plan.depot}@{cl}")
+            except P4Error as exc:
+                results.append(
+                    P4SyncResult(depot=plan.depot, local=plan.local, skipped=True, skip_reason=f"sync_error: {exc}")
+                )
+                continue
+            if _looks_like_clobber(sync_out):
+                results.append(
+                    P4SyncResult(depot=plan.depot, local=plan.local, skipped=True, skip_reason="writable_conflict")
+                )
+                continue
             results.append(P4SyncResult(depot=plan.depot, local=plan.local, skipped=False, skip_reason=None))
         return results
