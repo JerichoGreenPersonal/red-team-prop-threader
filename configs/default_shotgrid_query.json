@@ -1,0 +1,10 @@
+{
+  "site_url": "https://respawn.shotgunstudio.com",
+  "reference_page": "https://respawn.shotgunstudio.com/page/12787?layout=layout_3",
+  "sample_card": "https://respawn.shotgunstudio.com/page/12787#Asset_38811",
+  "entity_type": "Asset",
+  "filters": [],
+  "fields": ["id", "code", "image", "sg_status_list"],
+  "order": [{"field_name": "id", "direction": "asc"}],
+  "notes": "Replace filters/fields during implementation by inspecting layout_3 while authenticated."
+}
