@@ -4,6 +4,44 @@ Windows desktop assistant for preparing daily review routes: syncing Perforce ch
 
 Built on Python 3.12+ with PySide6, `shotgun-api3`, and `keyring`. Run tests with `uv run pytest`.
 
+## Packaging (PyInstaller)
+
+Build self-contained Windows executables (no user-installed Python required at runtime):
+
+```powershell
+# From repo root (uses uv packaging group → pyinstaller)
+.\packaging\build.ps1
+```
+
+Outputs:
+
+| Binary | Mode | Path |
+|--------|------|------|
+| `review-prep-worker.exe` | console | `packaging/dist/review-prep-worker.exe` |
+| `review-prep.exe` | windowed (PySide6) | `packaging/dist/review-prep.exe` |
+
+### Install (per-user)
+
+```powershell
+.\packaging\install.ps1
+```
+
+This will:
+
+1. Copy both EXEs to `%LOCALAPPDATA%\ReviewPrep\app\`
+2. Create a **Start Menu** shortcut: `Review Prep` → `review-prep.exe`
+3. Register Task Scheduler jobs (unless `-SkipSchedule`):
+   - `ReviewPrep\DailyPrep` — daily worker at 05:00 local (override with `-ScheduleHour` / `-ScheduleMinute`); `StartWhenAvailable` catch-up
+   - `ReviewPrep\OpenDashboard` — on-logon helper to open the dashboard
+
+First launch of `review-prep.exe` runs the empty-settings setup wizard when `settings.json` is missing under `%LOCALAPPDATA%\ReviewPrep\`.
+
+Smoke-check the worker after build:
+
+```powershell
+.\packaging\dist\review-prep-worker.exe --help
+```
+
 ---
 
 This repository started from a Python package template. The sections below document template tooling (`uv`, `ruff`, `ty`, pytest) still used during development.

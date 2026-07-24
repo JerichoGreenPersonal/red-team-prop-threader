@@ -110,13 +110,18 @@ def main(argv: list[str] | None = None) -> int:
     """Load settings, run prep orchestrator, optional retention; return exit code.
 
     Args:
-        argv (list[str] | None): Unused CLI args (reserved for future flags).
+        argv (list[str] | None): Optional CLI args. ``-h`` / ``--help`` print usage and exit 0.
 
     Returns:
         (int) ``0`` on success (including partial route errors); ``1`` on hard failure
         or configuration/startup errors.
     """
-    _ = argv
+    args = list(sys.argv[1:] if argv is None else argv)
+    if args and args[0] in {"-h", "--help"}:
+        print("usage: review-prep-worker [-h]")
+        print("Run the scheduled daily review prep pipeline (non-interactive).")
+        return 0
+
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 
     path = settings_path()
