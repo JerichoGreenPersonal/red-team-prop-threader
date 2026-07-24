@@ -254,11 +254,11 @@ class PrepOrchestrator:
         all_skipped = all(r.skipped for r in results)
         any_skipped = any(r.skipped for r in results)
         if all_skipped:
-            return RouteState.FAILED, []
+            return RouteState.PARTIAL, []
         if any_skipped:
             if policy is ClPolicy.SYNC_AND_OPEN:
-                return RouteState.PARTIAL, launchable
-            return RouteState.PARTIAL, []
+                return RouteState.SYNCED_ONLY, launchable
+            return RouteState.SYNCED_ONLY, []
         if policy is ClPolicy.SYNC_AND_OPEN:
             return RouteState.READY_TO_LAUNCH, launchable
         return RouteState.SYNCED_ONLY, []
