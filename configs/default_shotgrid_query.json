@@ -2,9 +2,11 @@
   "site_url": "https://respawn.shotgunstudio.com",
   "reference_page": "https://respawn.shotgunstudio.com/page/12787?layout=layout_3",
   "sample_card": "https://respawn.shotgunstudio.com/page/12787#Asset_38811",
+  "page_id": 12787,
+  "layout_name": "layout_3",
   "entity_type": "Asset",
   "filters": [],
   "fields": ["id", "code", "image", "sg_status_list"],
   "order": [{"field_name": "id", "direction": "asc"}],
-  "notes": "Replace filters/fields during implementation by inspecting layout_3 while authenticated."
+  "notes": "Authoritative worklist is the bookmarked page 12787 layout_3. When page_id + layout_name are set, find_worklist uses ShotGrid export_page (CSV) for that layout — not hand-copied filters. filters[] remains only as an optional find() fallback when page_id is omitted."
 }

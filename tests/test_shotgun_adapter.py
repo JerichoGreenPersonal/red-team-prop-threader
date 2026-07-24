@@ -5,7 +5,14 @@ from __future__ import annotations
 from pathlib import Path
 
 from tests.fakes.fake_shotgun import FakeShotgun
-from review_prep.shotgun_adapter import Card, Comment, Attachment, ShotGridAdapter, latest_delivery_comment
+from review_prep.shotgun_adapter import (
+    Attachment,
+    Card,
+    Comment,
+    ShotGridAdapter,
+    cards_from_export_csv,
+    latest_delivery_comment,
+)
 
 
 def test_latest_delivery_comment_skips_later_internal() -> None:
@@ -53,6 +60,36 @@ def test_find_worklist_maps_cards() -> None:
         ),
         Card(id=1, code="other", thumbnail_url=None, raw_fields={"id": 1, "code": "other", "image": None}),
     ]
+
+
+def test_find_worklist_uses_layout_3_page_export() -> None:
+    fake = FakeShotgun(
+        worklist=[
+            {"id": 38811, "code": "destruction_kit", "image": "https://example/thumb.jpg"},
+            {"id": 2, "code": "prop_b", "image": None},
+        ]
+    )
+    adapter = ShotGridAdapter(
+        fake,
+        entity_type="Asset",
+        page_id=12787,
+        layout_name="layout_3",
+        filters=[["id", "is", -1]],  # must not be used when page_id is set
+    )
+    cards = adapter.find_worklist()
+    assert fake.export_calls == [(12787, "csv", "layout_3")]
+    assert [c.id for c in cards] == [38811, 2]
+    assert cards[0].code == "destruction_kit"
+    assert cards[0].thumbnail_url == "https://example/thumb.jpg"
+
+
+def test_cards_from_export_csv_requires_id_column() -> None:
+    try:
+        cards_from_export_csv("Name\nfoo\n")
+    except ValueError as exc:
+        assert "Entity ID" in str(exc)
+    else:
+        raise AssertionError("expected ValueError")
 
 
 def test_list_comments_and_attachments() -> None:

@@ -2,16 +2,23 @@
 
 from __future__ import annotations
 
+import csv
+import io
 import json
-from typing import TYPE_CHECKING, Any, Protocol
+from dataclasses import dataclass, field
 from pathlib import Path
-from dataclasses import field, dataclass
+from typing import TYPE_CHECKING, Any, Protocol
 
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
 
 from review_prep.cl_parser import is_delivery_comment
+
+# CSV headers accepted from ShotGrid page export (layout_3 bookmark).
+_ID_ALIASES = ("entity id", "id")
+_CODE_ALIASES = ("asset name", "code", "name", "link")
+_IMAGE_ALIASES = ("image", "thumbnail", "thumb")
 
 
 @dataclass(frozen=True)
@@ -77,6 +84,10 @@ class ShotgunClient(Protocol):
         """Find entities matching filters."""
         ...
 
+    def export_page(self, page_id: int, format: str = "csv", layout_name: str | None = None) -> str:
+        """Export a saved page layout to CSV (or other format)."""
+        ...
+
     def download_attachment(
         self, attachment: dict[str, Any] | bool = False, file_path: str | None = None, attachment_id: int | None = None
     ) -> str | bytes | None:
@@ -94,6 +105,69 @@ def load_shotgrid_query(path: Path) -> dict[str, Any]:
         (dict[str, Any]) Parsed query config.
     """
     return json.loads(Path(path).read_text(encoding="utf-8"))
+
+
+def _normalize_header(name: str) -> str:
+    """Lower-case / strip a CSV header for alias matching."""
+    return " ".join(str(name).strip().lower().split())
+
+
+def _header_index(fieldnames: list[str], aliases: tuple[str, ...]) -> int | None:
+    """Return the first matching header index for any alias, else None."""
+    normalized = [_normalize_header(h) for h in fieldnames]
+    for alias in aliases:
+        if alias in normalized:
+            return normalized.index(alias)
+    return None
+
+
+def cards_from_export_csv(csv_text: str) -> list[Card]:
+    """Parse ShotGrid ``export_page`` CSV into worklist cards.
+
+    Accepts common layout column names (Entity ID / Asset Name / Image).
+
+    Args:
+        csv_text (str): Raw CSV text from ``export_page``.
+
+    Returns:
+        (list[Card]) Parsed cards (skips rows without a positive entity id).
+
+    Raises:
+        (ValueError) If the CSV has no usable Entity ID / Id column.
+    """
+    reader = csv.DictReader(io.StringIO(csv_text))
+    if not reader.fieldnames:
+        return []
+    fieldnames = list(reader.fieldnames)
+    id_idx = _header_index(fieldnames, _ID_ALIASES)
+    if id_idx is None:
+        raise ValueError("page export CSV is missing Entity ID / Id column")
+    code_idx = _header_index(fieldnames, _CODE_ALIASES)
+    image_idx = _header_index(fieldnames, _IMAGE_ALIASES)
+    id_key = fieldnames[id_idx]
+    code_key = fieldnames[code_idx] if code_idx is not None else None
+    image_key = fieldnames[image_idx] if image_idx is not None else None
+
+    cards: list[Card] = []
+    for row in reader:
+        raw_id = (row.get(id_key) or "").strip()
+        if not raw_id or not raw_id.isdigit():
+            continue
+        entity_id = int(raw_id)
+        if entity_id <= 0:
+            continue
+        code = (row.get(code_key) or "").strip() if code_key else ""
+        image_val = (row.get(image_key) or "").strip() if image_key else ""
+        thumbnail_url = image_val or None
+        cards.append(
+            Card(
+                id=entity_id,
+                code=code,
+                thumbnail_url=thumbnail_url,
+                raw_fields={k: (v if v is not None else "") for k, v in row.items()},
+            )
+        )
+    return cards
 
 
 def latest_delivery_comment(comments: Sequence[Comment]) -> Comment | None:
@@ -127,16 +201,26 @@ class ShotGridAdapter:
     """Worklist / attachments / notes adapter over ``shotgun_api3`` (or a fake)."""
 
     def __init__(
-        self, sg: Any, *, entity_type: str, filters: list[Any] | None = None, fields: list[str] | None = None, order: list[dict[str, str]] | None = None
+        self,
+        sg: Any,
+        *,
+        entity_type: str,
+        filters: list[Any] | None = None,
+        fields: list[str] | None = None,
+        order: list[dict[str, str]] | None = None,
+        page_id: int | None = None,
+        layout_name: str | None = None,
     ) -> None:
         """Initialize adapter with an injected Shotgun-like client and query.
 
         Args:
             sg (Any): Live ``Shotgun`` instance or test fake implementing find/download.
             entity_type (str): Worklist entity type (e.g. ``Asset``).
-            filters (list[Any] | None): ShotGrid find filters for the worklist.
-            fields (list[str] | None): Fields to request on worklist entities.
-            order (list[dict[str, str]] | None): Optional find order.
+            filters (list[Any] | None): ShotGrid find filters (fallback when no page_id).
+            fields (list[str] | None): Fields to request on worklist entities (find fallback).
+            order (list[dict[str, str]] | None): Optional find order (find fallback).
+            page_id (int | None): Saved page id (12787). When set, worklist uses export_page.
+            layout_name (str | None): Page layout name (``layout_3`` bookmark).
         """
         if not entity_type:
             raise ValueError("entity_type is required")
@@ -145,6 +229,8 @@ class ShotGridAdapter:
         self._filters: list[Any] = list(filters or [])
         self._fields: list[str] = list(fields or ["id", "code", "image"])
         self._order: list[dict[str, str]] = list(order or [])
+        self._page_id = int(page_id) if page_id is not None else None
+        self._layout_name = str(layout_name).strip() if layout_name else None
 
     @classmethod
     def connect(cls, *, site_url: str, script_name: str, api_key: str, query: Mapping[str, Any]) -> ShotGridAdapter:
@@ -154,7 +240,7 @@ class ShotGridAdapter:
             site_url (str): ShotGrid site URL.
             script_name (str): Script user name.
             api_key (str): Script API key.
-            query (Mapping[str, Any]): Query JSON (entity_type, filters, fields, order).
+            query (Mapping[str, Any]): Query JSON (entity_type, page_id/layout_name or filters).
 
         Returns:
             (ShotGridAdapter) Connected adapter.
@@ -162,12 +248,17 @@ class ShotGridAdapter:
         from shotgun_api3 import Shotgun
 
         sg = Shotgun(site_url, script_name=script_name, api_key=api_key)
+        raw_page = query.get("page_id")
+        page_id = int(raw_page) if raw_page is not None and str(raw_page).strip() != "" else None
+        layout = query.get("layout_name")
         return cls(
             sg,
             entity_type=str(query["entity_type"]),
             filters=list(query.get("filters") or []),
             fields=list(query.get("fields") or ["id", "code", "image"]),
             order=list(query.get("order") or []),
+            page_id=page_id,
+            layout_name=str(layout) if layout else None,
         )
 
     @classmethod
@@ -190,9 +281,18 @@ class ShotGridAdapter:
     def find_worklist(self) -> list[Card]:
         """Return worklist cards for the configured query.
 
+        When ``page_id`` is set (page 12787 + ``layout_3``), uses ``export_page`` so the
+        bookmarked layout filters are the authority. Otherwise falls back to ``find``.
+
         Returns:
             (list[Card]) Matching entities as cards.
         """
+        if self._page_id is not None:
+            csv_text = self._sg.export_page(self._page_id, "csv", layout_name=self._layout_name)
+            if not isinstance(csv_text, str):
+                raise TypeError("export_page must return CSV text")
+            return cards_from_export_csv(csv_text)
+
         records = self._sg.find(self._entity_type, self._filters, fields=self._fields, order=self._order or None)
         cards: list[Card] = []
         for record in records:

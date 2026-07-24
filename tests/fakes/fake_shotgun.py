@@ -62,6 +62,32 @@ class FakeShotgun:
         self._file_bytes = {int(k): v for k, v in (file_bytes or {}).items()}
         self._worklist_entity_type = worklist_entity_type
         self.downloaded: list[tuple[int, str]] = []
+        self.export_calls: list[tuple[int, str, str | None]] = []
+
+    def export_page(self, page_id: int, format: str = "csv", layout_name: str | None = None) -> str:
+        """Return a CSV export of the configured worklist (layout_3 path).
+
+        Args:
+            page_id (int): ShotGrid page id (e.g. 12787).
+            format (str): Export format (only ``csv`` supported in the fake).
+            layout_name (str | None): Layout bookmark name (e.g. ``layout_3``).
+
+        Returns:
+            (str) CSV text with Entity ID / Asset Name / Image columns.
+
+        Raises:
+            (ValueError) If ``format`` is not ``csv``.
+        """
+        if format != "csv":
+            raise ValueError(f"fake export_page only supports csv, got {format!r}")
+        self.export_calls.append((int(page_id), format, layout_name))
+        lines = ["Entity ID,Asset Name,Image"]
+        for record in self._worklist:
+            entity_id = record.get("id", "")
+            code = record.get("code", "")
+            image = record.get("image") or ""
+            lines.append(f"{entity_id},{code},{image}")
+        return "\n".join(lines) + "\n"
 
     def find(
         self,

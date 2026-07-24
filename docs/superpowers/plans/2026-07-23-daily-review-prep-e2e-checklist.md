@@ -20,7 +20,7 @@ Use checkbox syntax (`- [ ]`) while walking through each section. Record pass/fa
 - [ ] Everyday P4 client configured; `p4` on PATH or set in settings.
 - [ ] 7-Zip (`7z.exe`) available; path matches setup wizard default or studio install.
 - [ ] ShotGrid script name + API key with read/download access.
-- [ ] **`layout_3` human checkpoint (Task 9):** While authenticated in ShotGrid, inspect [page 12787 `layout_3`](https://respawn.shotgunstudio.com/page/12787?layout=layout_3) and update `configs/default_shotgrid_query.json` filters/fields so the API query matches the page. Empty filters return 0 or overly broad results — this is expected until filled.
+- [ ] **`layout_3` bookmark (Task 9):** Confirm `configs/default_shotgrid_query.json` has `page_id: 12787` and `layout_name: "layout_3"` (the bookmarked worklist). The app loads that layout via ShotGrid `export_page` — you do not hand-copy filter arrays.
 - [ ] Test cards identified (or create staging cards):
   - **A — Archive:** Asset with `.rar` or `.zip` attachment (no CL required).
   - **B — CL-only:** Asset with labeled CL comments only (no archive attachment).
@@ -69,16 +69,16 @@ Use checkbox syntax (`- [ ]`) while walking through each section. Record pass/fa
 
 **Goal:** Setup validates ShotGrid connectivity and the shipped query returns the same worklist as page 12787 `layout_3`.
 
-- [ ] Confirm `configs/default_shotgrid_query.json` filters were filled from a live ShotGrid session (not empty `filters: []`).
+- [ ] Confirm query JSON uses `page_id: 12787` + `layout_name: "layout_3"` (bookmarked worklist).
 - [ ] Open **Settings** from dashboard (or re-run wizard via Settings button).
 - [ ] Click **Run test query**.
 - [ ] Status shows success, e.g. `OK — N card(s): CODE(id), …` with **N > 0** on a day with review cards in `layout_3`.
 - [ ] Cross-check: card codes/IDs match cards visible on [layout_3 page](https://respawn.shotgunstudio.com/page/12787?layout=layout_3) (order may differ; set should match).
 - [ ] Optional dev check: `uv run python scripts/smoke_shotgun_worklist.py` with credentials configured.
 
-**Pass criteria:** Test query succeeds; returned cards correspond to `layout_3` worklist, not an empty or unfiltered dump.
+**Pass criteria:** Test query succeeds; returned cards correspond to the bookmarked `layout_3` worklist.
 
-**Fail hints:** Empty filters → update query JSON. Auth errors → script name/key. `0 cards` on a busy review day → filters too narrow or wrong entity type.
+**Fail hints:** Auth errors → script name/key. `export_page` / layout errors → confirm layout name is exactly `layout_3` on page 12787. `0 cards` on a busy review day → page empty or wrong page id.
 
 ---
 

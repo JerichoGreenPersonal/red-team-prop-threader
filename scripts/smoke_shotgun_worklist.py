@@ -1,7 +1,7 @@
 """Smoke: print ShotGrid worklist card ids (requires Credential Manager key).
 
-Fails gracefully when the script API key is missing or the query filters are still a stub.
-Does not invent production layout_3 filters — fill configs/default_shotgrid_query.json after a live session.
+Uses page 12787 + layout_3 via export_page when configured in
+configs/default_shotgrid_query.json (the bookmarked worklist).
 """
 
 from __future__ import annotations
@@ -53,9 +53,12 @@ def main() -> int:
 
     query = load_shotgrid_query(query_path)
     site_url = str(query.get("site_url") or "https://respawn.shotgunstudio.com")
-    filters = query.get("filters") or []
-    if not filters:
-        print("Query filters are still empty (layout_3 human checkpoint pending). Will still call find(); expect empty or broad results.")
+    page_id = query.get("page_id")
+    layout_name = query.get("layout_name")
+    if page_id is not None:
+        print(f"Using bookmarked worklist page_id={page_id} layout_name={layout_name!r} (export_page).")
+    else:
+        print("No page_id in query JSON; falling back to find() filters.")
 
     try:
         adapter = ShotGridAdapter.connect(site_url=site_url, script_name=settings.shotgrid_script_name, api_key=api_key, query=query)
