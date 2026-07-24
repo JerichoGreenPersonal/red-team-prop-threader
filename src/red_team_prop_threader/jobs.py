@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING, Any, Protocol
 from datetime import datetime, timezone, timedelta
 from dataclasses import dataclass
@@ -21,6 +22,8 @@ if TYPE_CHECKING:
 
 
 __all__ = ("BatchExecutor", "BatchPlanner", "ExecutionResult")
+
+_logger = logging.getLogger(__name__)
 
 _LEASE_TTL = timedelta(minutes=10)
 _KIND_ORDER = {
@@ -343,6 +346,8 @@ class BatchExecutor:
             return self._post_asset(batch, operation, payload)
         if operation.kind is OperationKind.INDEX_ASSET:
             return self._index_asset(batch, operation, payload)
+        if operation.kind is OperationKind.INDEX_PRIMARY_ASSET:
+            return self._index_primary_asset(batch, operation, payload)
         if operation.kind is OperationKind.RETIRE_PRIOR_LATEST:
             return self._retire_prior_latest(batch, operation, payload)
         if operation.kind is OperationKind.FINALIZE_SUMMARY:
@@ -497,6 +502,41 @@ class BatchExecutor:
         )
         self._canvas.index_batch(request)
         return {"indexed": True, "entity_id": operation.asset_entity_id}
+
+    def _index_primary_asset(self, batch: BatchRecord, operation: OperationRecord, payload: dict[str, Any]) -> dict[str, Any]:
+        """Best-effort mirror of the group onto the primary channel canvas."""
+        primary_channel = str(payload.get("primary_asset_index_channel_id") or "").strip()
+        if not primary_channel or batch.channel_id == primary_channel:
+            return {"indexed": False, "skipped": True}
+        try:
+            self._require_succeeded_asset_op(batch.id, OperationKind.POST_ASSET, operation.asset_entity_id)
+            canvas_id = self._canvas.ensure_primary_canvas(primary_channel)
+            indexed_assets = self._indexed_assets_for_group(batch, payload)
+            group_animator_id = self._group_animator_id(payload)
+            display = str(payload.get("source_channel_display") or batch.channel_id)
+            request = GroupIndexRequest(
+                channel_id=batch.channel_id,
+                canvas_id=canvas_id,
+                group_title=str(payload["group_title"]),
+                animator_display=self._display_name(group_animator_id or ""),
+                additional_displays=tuple(
+                    self._display_name(str(item)) for item in payload.get("group_additional_ids") or () if str(item).strip()
+                ),
+                links=_links_from_payload(payload.get("group_links")),
+                assets=indexed_assets,
+                for_primary=True,
+                source_channel_display=display,
+            )
+            self._canvas.index_batch(request)
+            return {"indexed": True, "entity_id": operation.asset_entity_id, "canvas_id": canvas_id}
+        except Exception as exc:  # best-effort: never fail the batch
+            _logger.warning(
+                "INDEX_PRIMARY_ASSET failed for batch %s entity %s: %s",
+                batch.id,
+                operation.asset_entity_id,
+                exc,
+            )
+            return {"indexed": False, "error": str(exc)[:500]}
 
     def _retire_prior_latest(self, batch: BatchRecord, operation: OperationRecord, payload: dict[str, Any]) -> dict[str, Any]:
         """Remove the Latest marker from the prior bot-authored asset root."""

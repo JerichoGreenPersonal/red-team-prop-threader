@@ -58,6 +58,8 @@ class FakeSlackGateway:
     _fail_queue: list[tuple[str, bool]] = field(default_factory=list)
     _ts_counter: int = 0
     section_lookup_result: list[dict[str, str]] = field(default_factory=list)
+    channel_canvas_ids: dict[str, str] = field(default_factory=dict)
+    fail_edit_canvas_id: str | None = None
 
     def fail_next(self, method: str, *, retryable: bool = False) -> None:
         """Queue a failure for the next matching method call."""
@@ -118,7 +120,8 @@ class FakeSlackGateway:
 
     def get_conversation_info(self, channel_id: str) -> dict[str, object]:
         """Return channel info with a canvas id."""
-        return {"id": channel_id, "properties": {"canvas": {"file_id": "Fcanvas", "is_empty": False}}}
+        canvas_id = self.channel_canvas_ids.get(channel_id, "Fcanvas")
+        return {"id": channel_id, "properties": {"canvas": {"file_id": canvas_id, "is_empty": False}}}
 
     def get_file_info(self, file_id: str) -> dict[str, object]:
         """Return canvas file metadata."""
@@ -131,6 +134,8 @@ class FakeSlackGateway:
 
     def edit_canvas(self, canvas_id: str, *, operation: str, markdown: str | None = None, section_id: str | None = None, title: str | None = None) -> None:
         """Record a canvas edit, optionally failing when queued."""
+        if self.fail_edit_canvas_id and canvas_id == self.fail_edit_canvas_id:
+            raise PermissionDeniedError(f"edit_canvas denied for {canvas_id}")
         self._raise_if_queued("edit_canvas")
         self.canvas_edits.append({"canvas_id": canvas_id, "operation": operation, "markdown": markdown, "section_id": section_id, "title": title})
 
@@ -227,6 +232,9 @@ def _sample_payload(*, assets: list[dict[str, Any]] | None = None, lease_token: 
     }
 
 
+_PRIMARY_CHANNEL = "C04H4QZEYUE"
+
+
 def sample_confirmed_batch(
     repositories: Repositories, leases: ChannelLeaseRepository, session: Session, clock: FakeClock, *, payload: dict[str, Any] | None = None
 ) -> str:
@@ -240,6 +248,42 @@ def sample_confirmed_batch(
     batch = repositories.batches.create(group_id=group.id, workspace_id="W1", channel_id="C1", submitter_user_id="Usubmit", payload=body, now=now)
     session.flush()
     lease = leases.acquire("C1", "Usubmit", now, timedelta(minutes=10), workspace_id="W1")
+    assert lease.acquired and lease.token is not None
+    body = {**body, "lease_token": lease.token}
+    repositories.batches.update_payload(batch.id, body)
+    BatchPlanner(repositories).plan(batch.id, now=now)
+    session.flush()
+    return batch.id
+
+
+def sample_satellite_batch_with_primary(
+    repositories: Repositories, leases: ChannelLeaseRepository, session: Session, clock: FakeClock, *, payload: dict[str, Any] | None = None
+) -> str:
+    """Create a leased satellite batch that mirrors onto the primary channel canvas."""
+    now = clock.now()
+    body = payload if payload is not None else {
+        **_sample_payload(assets=[_sample_payload()["assets"][0]]),
+        "primary_asset_index_channel_id": _PRIMARY_CHANNEL,
+        "source_channel_display": "red-props",
+    }
+    group = repositories.groups.create(
+        workspace_id="W1",
+        channel_id="C_satellite",
+        display_title="SEASON 31 PROP REQUEST THREADS",
+        normalized_title="season 31 prop request threads",
+        now=now,
+    )
+    session.flush()
+    batch = repositories.batches.create(
+        group_id=group.id,
+        workspace_id="W1",
+        channel_id="C_satellite",
+        submitter_user_id="Usubmit",
+        payload=body,
+        now=now,
+    )
+    session.flush()
+    lease = leases.acquire("C_satellite", "Usubmit", now, timedelta(minutes=10), workspace_id="W1")
     assert lease.acquired and lease.token is not None
     body = {**body, "lease_token": lease.token}
     repositories.batches.update_payload(batch.id, body)
@@ -279,9 +323,6 @@ def test_planner_creates_ordered_operations(repositories: Repositories, leases: 
     assert kinds.count(OperationKind.INDEX_ASSET) == 2
     assert kinds.count(OperationKind.RETIRE_PRIOR_LATEST) == 2
     assert all(op.status is OperationStatus.PENDING for op in ops)
-
-
-_PRIMARY_CHANNEL = "C04H4QZEYUE"
 
 
 def test_plan_includes_index_primary_asset_after_each_index(
@@ -348,6 +389,54 @@ def test_plan_skips_index_primary_when_channel_is_primary(
     session.flush()
     ops = BatchPlanner(repositories).plan(batch.id, now=now)
     assert all(op.kind is not OperationKind.INDEX_PRIMARY_ASSET for op in ops)
+
+
+def test_index_primary_asset_writes_primary_canvas(
+    repositories: Repositories,
+    leases: ChannelLeaseRepository,
+    session: Session,
+    clock: FakeClock,
+    fake_slack: FakeSlackGateway,
+    executor: BatchExecutor,
+) -> None:
+    """Satellite execution indexes the group onto the primary channel canvas."""
+    fake_slack.channel_canvas_ids = {"C_satellite": "Fcanvas", _PRIMARY_CHANNEL: "Fprimary"}
+    batch_id = sample_satellite_batch_with_primary(repositories, leases, session, clock)
+    result = executor.execute(batch_id)
+    assert result.status is BatchStatus.SUCCEEDED
+    primary_edits = [edit for edit in fake_slack.canvas_edits if edit["canvas_id"] == "Fprimary"]
+    assert primary_edits
+    assert any(edit["operation"] == "insert_at_start" for edit in primary_edits)
+    primary_op = next(
+        op for op in repositories.operations.get_for_batch(batch_id) if op.kind is OperationKind.INDEX_PRIMARY_ASSET
+    )
+    assert primary_op.status is OperationStatus.SUCCEEDED
+    assert primary_op.result is not None
+    assert primary_op.result["indexed"] is True
+    assert primary_op.result["canvas_id"] == "Fprimary"
+
+
+def test_index_primary_failure_does_not_fail_batch(
+    repositories: Repositories,
+    leases: ChannelLeaseRepository,
+    session: Session,
+    clock: FakeClock,
+    fake_slack: FakeSlackGateway,
+    executor: BatchExecutor,
+) -> None:
+    """Primary canvas failures succeed the op with indexed false and leave the batch succeeded."""
+    fake_slack.channel_canvas_ids = {"C_satellite": "Fcanvas", _PRIMARY_CHANNEL: "Fprimary"}
+    fake_slack.fail_edit_canvas_id = "Fprimary"
+    batch_id = sample_satellite_batch_with_primary(repositories, leases, session, clock)
+    result = executor.execute(batch_id)
+    assert result.status is BatchStatus.SUCCEEDED
+    primary_op = next(
+        op for op in repositories.operations.get_for_batch(batch_id) if op.kind is OperationKind.INDEX_PRIMARY_ASSET
+    )
+    assert primary_op.status is OperationStatus.SUCCEEDED
+    assert primary_op.result is not None
+    assert primary_op.result["indexed"] is False
+    assert "error" in primary_op.result
 
 
 # ---------------------------------------------------------------------------
