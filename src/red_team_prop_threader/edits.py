@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING, Any, Protocol
 from dataclasses import dataclass
 
@@ -122,7 +123,15 @@ class AssetEditRequest:
 class EditService:
     """guards and applies latest-only group/asset detail edits."""
 
-    def __init__(self, *, repositories: Repositories, slack: EditSlackGateway, canvas_slack: Any, clock: Clock) -> None:
+    def __init__(
+        self,
+        *,
+        repositories: Repositories,
+        slack: EditSlackGateway,
+        canvas_slack: Any,
+        clock: Clock,
+        primary_asset_index_channel_id: str = "",
+    ) -> None:
         """Wire repositories, slack, canvas gateway, and clock.
 
         Args:
@@ -130,11 +139,13 @@ class EditService:
             slack: messaging gateway for updates and membership checks.
             canvas_slack: gateway satisfying CanvasService needs.
             clock: utc clock.
+            primary_asset_index_channel_id: channel id for the primary asset index canvas.
         """
         self._repos = repositories
         self._slack = slack
         self._canvas = CanvasService(canvas_slack)
         self._clock = clock
+        self._primary_asset_index_channel_id = primary_asset_index_channel_id.strip()
 
     def open_asset_editor(self, ref: MessageRef) -> EditOpenResult:
         """Open the asset editor, or refuse a historical root.
@@ -249,6 +260,29 @@ class EditService:
                     assets=self._indexed_assets(roots),
                 )
             )
+
+        primary_channel = self._primary_asset_index_channel_id
+        if primary_channel and summary.channel_id != primary_channel:
+            try:
+                primary_canvas_id = self._canvas.ensure_primary_canvas(primary_channel)
+                self._canvas.index_batch(
+                    GroupIndexRequest(
+                        channel_id=summary.channel_id,
+                        canvas_id=primary_canvas_id,
+                        group_title=str(summary_snapshot["group_title"]),
+                        animator_display=str(summary_snapshot["group_animator_display"]),
+                        additional_displays=tuple(str(item) for item in summary_snapshot.get("group_additional_displays") or ()),
+                        links=tuple(
+                            SupportingLink(str(item["label"]), str(item["url"]))
+                            for item in summary_snapshot.get("group_links") or ()
+                        ),
+                        assets=self._indexed_assets(roots),
+                        for_primary=True,
+                        source_channel_display=str(summary_snapshot.get("source_channel_display") or summary.channel_id),
+                    )
+                )
+            except Exception:
+                logging.getLogger(__name__).warning("primary asset index update failed", exc_info=True)
 
     def _open_editor(self, ref: MessageRef, *, expected_kind: MessageKind, callback_id: str, title: str) -> EditOpenResult:
         """Shared open path for asset/group editors."""

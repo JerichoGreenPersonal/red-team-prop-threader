@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 
 from red_team_prop_threader.edits import MessageRef, EditService, AssetEditRequest, GroupEditRequest, decode_edit_submission
 from red_team_prop_threader.tables import Base
-from red_team_prop_threader._errors import ValidationError
+from red_team_prop_threader._errors import ValidationError, PermissionDeniedError
 from red_team_prop_threader.repositories import MessageKind, Repositories, NewMessageInput
 
 
@@ -20,6 +20,9 @@ if TYPE_CHECKING:
     from collections.abc import Generator
 
     from sqlalchemy import Engine
+
+
+_PRIMARY_CHANNEL = "C04H4QZEYUE"
 
 
 @dataclass
@@ -57,6 +60,8 @@ class FakeSlackGateway:
     canvas_edits: list[dict[str, Any]] = field(default_factory=list)
     opened_views: list[dict[str, Any]] = field(default_factory=list)
     section_lookup_result: list[dict[str, str]] = field(default_factory=list)
+    channel_canvas_ids: dict[str, str] = field(default_factory=dict)
+    fail_edit_canvas_id: str | None = None
 
     @property
     def updated_summary(self) -> MessageUpdate | None:
@@ -103,15 +108,29 @@ class FakeSlackGateway:
 
     def edit_canvas(self, canvas_id: str, *, operation: str, markdown: str | None = None, section_id: str | None = None, title: str | None = None) -> None:
         """Record canvas edits from group updates."""
+        if self.fail_edit_canvas_id and canvas_id == self.fail_edit_canvas_id:
+            raise PermissionDeniedError(f"edit_canvas denied for {canvas_id}")
         self.canvas_edits.append({"canvas_id": canvas_id, "operation": operation, "markdown": markdown, "section_id": section_id, "title": title})
 
     def get_conversation_info(self, channel_id: str) -> dict[str, object]:
-        """Unused canvas preflight helper."""
-        return {"id": channel_id, "properties": {"canvas": {"file_id": "Fcanvas"}}}
+        """Return channel info with a canvas id."""
+        canvas_id = self.channel_canvas_ids.get(channel_id, "Fcanvas")
+        return {"id": channel_id, "properties": {"canvas": {"file_id": canvas_id, "is_empty": False}}}
 
     def get_file_info(self, file_id: str) -> dict[str, object]:
-        """Unused canvas helper."""
-        return {"id": file_id, "title": "INDEX OF PROP REQUESTS"}
+        """Return canvas file metadata."""
+        if file_id == "Fprimary":
+            return {"id": file_id, "title": "PRIMARY ASSET INDEX", "name": "PRIMARY ASSET INDEX"}
+        return {"id": file_id, "title": "INDEX OF PROP REQUESTS", "name": "INDEX OF PROP REQUESTS"}
+
+    def create_channel_canvas(self, channel_id: str, *, title: str) -> str:
+        """Create a channel canvas for preflight tests."""
+        del channel_id, title
+        return "Fcanvas"
+
+    def rename_canvas(self, canvas_id: str, *, title: str) -> None:
+        """Rename a canvas for preflight tests."""
+        del canvas_id, title
 
 
 @pytest.fixture
@@ -161,10 +180,14 @@ def edit_service(repositories: Repositories, fake_slack: FakeSlackGateway, clock
     return EditService(repositories=repositories, slack=fake_slack, canvas_slack=fake_slack, clock=clock)
 
 
-def _seed_group(repositories: Repositories, session: Session, clock: FakeClock) -> str:
+def _seed_group(repositories: Repositories, session: Session, clock: FakeClock, *, channel_id: str = "C1") -> str:
     """Create a group and return its id."""
     group = repositories.groups.create(
-        workspace_id="W1", channel_id="C1", display_title="SEASON 31 PROP REQUEST THREADS", normalized_title="season 31 prop request threads", now=clock.now()
+        workspace_id="W1",
+        channel_id=channel_id,
+        display_title="SEASON 31 PROP REQUEST THREADS",
+        normalized_title="season 31 prop request threads",
+        now=clock.now(),
     )
     session.flush()
     return group.id
@@ -309,6 +332,125 @@ def test_group_edit_updates_latest_roots_without_notifications(
     assert len(fake_slack.updated_latest_roots) == 3
     assert all(update.sends_notifications is False for update in fake_slack.updates)
     assert fake_slack.canvas_edits
+
+
+def test_group_edit_updates_primary_canvas(
+    repositories: Repositories, fake_slack: FakeSlackGateway, session: Session, clock: FakeClock
+) -> None:
+    """Satellite group edits mirror onto the primary channel canvas."""
+    fake_slack.channel_canvas_ids = {"C1": "Fcanvas", _PRIMARY_CHANNEL: "Fprimary"}
+    service = EditService(
+        repositories=repositories,
+        slack=fake_slack,
+        canvas_slack=fake_slack,
+        clock=clock,
+        primary_asset_index_channel_id=_PRIMARY_CHANNEL,
+    )
+    service.apply_group_edit(sample_group_edit(repositories, session, clock))
+    primary_edits = [edit for edit in fake_slack.canvas_edits if edit["canvas_id"] == "Fprimary"]
+    assert primary_edits
+    assert any("Source channel:" in str(edit.get("markdown") or "") for edit in primary_edits)
+
+
+def test_group_edit_primary_failure_does_not_raise(
+    repositories: Repositories, fake_slack: FakeSlackGateway, session: Session, clock: FakeClock
+) -> None:
+    """Primary canvas failures are logged but do not fail the edit."""
+    fake_slack.channel_canvas_ids = {"C1": "Fcanvas", _PRIMARY_CHANNEL: "Fprimary"}
+    fake_slack.fail_edit_canvas_id = "Fprimary"
+    service = EditService(
+        repositories=repositories,
+        slack=fake_slack,
+        canvas_slack=fake_slack,
+        clock=clock,
+        primary_asset_index_channel_id=_PRIMARY_CHANNEL,
+    )
+    service.apply_group_edit(sample_group_edit(repositories, session, clock))
+    satellite_edits = [edit for edit in fake_slack.canvas_edits if edit["canvas_id"] == "Fcanvas"]
+    assert satellite_edits
+
+
+def test_group_edit_skips_primary_when_channel_is_primary(
+    repositories: Repositories, fake_slack: FakeSlackGateway, session: Session, clock: FakeClock
+) -> None:
+    """Primary-channel group edits skip the primary mirror."""
+    fake_slack.channel_canvas_ids = {_PRIMARY_CHANNEL: "Fprimary"}
+    group_id = _seed_group(repositories, session, clock, channel_id=_PRIMARY_CHANNEL)
+    batch = repositories.batches.create(
+        group_id=group_id,
+        workspace_id="W1",
+        channel_id=_PRIMARY_CHANNEL,
+        submitter_user_id="Ueditor",
+        payload={},
+        now=clock.now(),
+    )
+    session.flush()
+    repositories.history.record(
+        NewMessageInput(
+            workspace_id="W1",
+            channel_id=_PRIMARY_CHANNEL,
+            group_id=group_id,
+            batch_id=batch.id,
+            kind=MessageKind.GROUP_SUMMARY,
+            asset_entity_id=None,
+            slack_ts="200.1",
+            permalink="https://slack.example/summary",
+            canvas_metadata={
+                "canvas_id": "Fprimary",
+                "edit": {
+                    "kind": "group_summary",
+                    "canvas_id": "Fprimary",
+                    "group_title": "SEASON 31 PROP REQUEST THREADS",
+                    "group_animator_id": "Uanim",
+                    "group_additional_ids": [],
+                    "group_links": [{"label": "Brief", "url": "https://example.com/brief"}],
+                    "group_animator_display": "Name Uanim",
+                    "group_additional_displays": [],
+                    "included_asset_count": 1,
+                    "processing_status": "Complete",
+                    "completion_count": 1,
+                    "failure_count": 0,
+                    "message_identity": batch.id,
+                },
+            },
+            now=clock.now(),
+        )
+    )
+    repositories.history.record(
+        NewMessageInput(
+            workspace_id="W1",
+            channel_id=_PRIMARY_CHANNEL,
+            group_id=group_id,
+            batch_id=batch.id,
+            kind=MessageKind.ASSET_ROOT,
+            asset_entity_id=1001,
+            slack_ts="201.1",
+            permalink="https://slack.example/1001",
+            canvas_metadata={"edit": _asset_snapshot(1001)},
+            now=clock.now(),
+        )
+    )
+    session.flush()
+    service = EditService(
+        repositories=repositories,
+        slack=fake_slack,
+        canvas_slack=fake_slack,
+        clock=clock,
+        primary_asset_index_channel_id=_PRIMARY_CHANNEL,
+    )
+    service.apply_group_edit(
+        GroupEditRequest(
+            workspace_id="W1",
+            channel_id=_PRIMARY_CHANNEL,
+            user_id="Ueditor",
+            message_ts="200.1",
+            animator_id="Uanim",
+            additional_ids=(),
+            links_text="",
+        )
+    )
+    assert len(fake_slack.canvas_edits) == 1
+    assert fake_slack.canvas_edits[0]["canvas_id"] == "Fprimary"
 
 
 def test_asset_edit_updates_one_latest_root(

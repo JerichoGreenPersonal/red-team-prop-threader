@@ -143,7 +143,13 @@ def create_app(settings: Settings | None = None, *, engine: Engine | None = None
 
     def edit_factory() -> EditService:
         session = Session(db_engine)
-        return EditService(repositories=Repositories.from_session(session), slack=slack, canvas_slack=slack, clock=clock)
+        return EditService(
+            repositories=Repositories.from_session(session),
+            slack=slack,
+            canvas_slack=slack,
+            clock=clock,
+            primary_asset_index_channel_id=cfg.primary_asset_index_channel_id,
+        )
 
     register_listeners(bolt_app, workflow_factory, edit_factory)
     handler = SlackRequestHandler(bolt_app)
