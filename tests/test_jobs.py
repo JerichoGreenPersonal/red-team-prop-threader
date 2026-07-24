@@ -261,27 +261,20 @@ def sample_satellite_batch_with_primary(
 ) -> str:
     """Create a leased satellite batch that mirrors onto the primary channel canvas."""
     now = clock.now()
-    body = payload if payload is not None else {
-        **_sample_payload(assets=[_sample_payload()["assets"][0]]),
-        "primary_asset_index_channel_id": _PRIMARY_CHANNEL,
-        "source_channel_display": "red-props",
-    }
+    body = (
+        payload
+        if payload is not None
+        else {
+            **_sample_payload(assets=[_sample_payload()["assets"][0]]),
+            "primary_asset_index_channel_id": _PRIMARY_CHANNEL,
+            "source_channel_display": "red-props",
+        }
+    )
     group = repositories.groups.create(
-        workspace_id="W1",
-        channel_id="C_satellite",
-        display_title="SEASON 31 PROP REQUEST THREADS",
-        normalized_title="season 31 prop request threads",
-        now=now,
+        workspace_id="W1", channel_id="C_satellite", display_title="SEASON 31 PROP REQUEST THREADS", normalized_title="season 31 prop request threads", now=now
     )
     session.flush()
-    batch = repositories.batches.create(
-        group_id=group.id,
-        workspace_id="W1",
-        channel_id="C_satellite",
-        submitter_user_id="Usubmit",
-        payload=body,
-        now=now,
-    )
+    batch = repositories.batches.create(group_id=group.id, workspace_id="W1", channel_id="C_satellite", submitter_user_id="Usubmit", payload=body, now=now)
     session.flush()
     lease = leases.acquire("C_satellite", "Usubmit", now, timedelta(minutes=10), workspace_id="W1")
     assert lease.acquired and lease.token is not None
@@ -330,26 +323,12 @@ def test_plan_includes_index_primary_asset_after_each_index(
 ) -> None:
     """Satellite batches plan INDEX_PRIMARY_ASSET immediately after each INDEX_ASSET."""
     now = clock.now()
-    payload = {
-        **_sample_payload(assets=[_sample_payload()["assets"][0]]),
-        "primary_asset_index_channel_id": _PRIMARY_CHANNEL,
-    }
+    payload = {**_sample_payload(assets=[_sample_payload()["assets"][0]]), "primary_asset_index_channel_id": _PRIMARY_CHANNEL}
     group = repositories.groups.create(
-        workspace_id="W1",
-        channel_id="C_satellite",
-        display_title="SEASON 31 PROP REQUEST THREADS",
-        normalized_title="season 31 prop request threads",
-        now=now,
+        workspace_id="W1", channel_id="C_satellite", display_title="SEASON 31 PROP REQUEST THREADS", normalized_title="season 31 prop request threads", now=now
     )
     session.flush()
-    batch = repositories.batches.create(
-        group_id=group.id,
-        workspace_id="W1",
-        channel_id="C_satellite",
-        submitter_user_id="Usubmit",
-        payload=payload,
-        now=now,
-    )
+    batch = repositories.batches.create(group_id=group.id, workspace_id="W1", channel_id="C_satellite", submitter_user_id="Usubmit", payload=payload, now=now)
     session.flush()
     ops = BatchPlanner(repositories).plan(batch.id, now=now)
     kinds = [op.kind for op in ops]
@@ -366,10 +345,7 @@ def test_plan_skips_index_primary_when_channel_is_primary(
 ) -> None:
     """Primary-channel batches skip INDEX_PRIMARY_ASSET entirely."""
     now = clock.now()
-    payload = {
-        **_sample_payload(assets=[_sample_payload()["assets"][0]]),
-        "primary_asset_index_channel_id": _PRIMARY_CHANNEL,
-    }
+    payload = {**_sample_payload(assets=[_sample_payload()["assets"][0]]), "primary_asset_index_channel_id": _PRIMARY_CHANNEL}
     group = repositories.groups.create(
         workspace_id="W1",
         channel_id=_PRIMARY_CHANNEL,
@@ -379,12 +355,7 @@ def test_plan_skips_index_primary_when_channel_is_primary(
     )
     session.flush()
     batch = repositories.batches.create(
-        group_id=group.id,
-        workspace_id="W1",
-        channel_id=_PRIMARY_CHANNEL,
-        submitter_user_id="Usubmit",
-        payload=payload,
-        now=now,
+        group_id=group.id, workspace_id="W1", channel_id=_PRIMARY_CHANNEL, submitter_user_id="Usubmit", payload=payload, now=now
     )
     session.flush()
     ops = BatchPlanner(repositories).plan(batch.id, now=now)
@@ -392,12 +363,7 @@ def test_plan_skips_index_primary_when_channel_is_primary(
 
 
 def test_index_primary_asset_writes_primary_canvas(
-    repositories: Repositories,
-    leases: ChannelLeaseRepository,
-    session: Session,
-    clock: FakeClock,
-    fake_slack: FakeSlackGateway,
-    executor: BatchExecutor,
+    repositories: Repositories, leases: ChannelLeaseRepository, session: Session, clock: FakeClock, fake_slack: FakeSlackGateway, executor: BatchExecutor
 ) -> None:
     """Satellite execution indexes the group onto the primary channel canvas."""
     fake_slack.channel_canvas_ids = {"C_satellite": "Fcanvas", _PRIMARY_CHANNEL: "Fprimary"}
@@ -407,9 +373,7 @@ def test_index_primary_asset_writes_primary_canvas(
     primary_edits = [edit for edit in fake_slack.canvas_edits if edit["canvas_id"] == "Fprimary"]
     assert primary_edits
     assert any(edit["operation"] == "insert_at_start" for edit in primary_edits)
-    primary_op = next(
-        op for op in repositories.operations.get_for_batch(batch_id) if op.kind is OperationKind.INDEX_PRIMARY_ASSET
-    )
+    primary_op = next(op for op in repositories.operations.get_for_batch(batch_id) if op.kind is OperationKind.INDEX_PRIMARY_ASSET)
     assert primary_op.status is OperationStatus.SUCCEEDED
     assert primary_op.result is not None
     assert primary_op.result["indexed"] is True
@@ -417,12 +381,7 @@ def test_index_primary_asset_writes_primary_canvas(
 
 
 def test_index_primary_failure_does_not_fail_batch(
-    repositories: Repositories,
-    leases: ChannelLeaseRepository,
-    session: Session,
-    clock: FakeClock,
-    fake_slack: FakeSlackGateway,
-    executor: BatchExecutor,
+    repositories: Repositories, leases: ChannelLeaseRepository, session: Session, clock: FakeClock, fake_slack: FakeSlackGateway, executor: BatchExecutor
 ) -> None:
     """Primary canvas failures succeed the op with indexed false and leave the batch succeeded."""
     fake_slack.channel_canvas_ids = {"C_satellite": "Fcanvas", _PRIMARY_CHANNEL: "Fprimary"}
@@ -430,9 +389,7 @@ def test_index_primary_failure_does_not_fail_batch(
     batch_id = sample_satellite_batch_with_primary(repositories, leases, session, clock)
     result = executor.execute(batch_id)
     assert result.status is BatchStatus.SUCCEEDED
-    primary_op = next(
-        op for op in repositories.operations.get_for_batch(batch_id) if op.kind is OperationKind.INDEX_PRIMARY_ASSET
-    )
+    primary_op = next(op for op in repositories.operations.get_for_batch(batch_id) if op.kind is OperationKind.INDEX_PRIMARY_ASSET)
     assert primary_op.status is OperationStatus.SUCCEEDED
     assert primary_op.result is not None
     assert primary_op.result["indexed"] is False

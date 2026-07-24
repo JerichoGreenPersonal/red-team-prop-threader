@@ -175,14 +175,7 @@ class CanvasService:
             return PreflightResult(PreflightState.READY, canvas_id, current_title=current_title)
         return PreflightResult(PreflightState.RENAME_CONFIRMATION_REQUIRED, canvas_id, current_title=current_title)
 
-    def ensure_canvas(
-        self,
-        channel_id: str,
-        *,
-        create: bool = False,
-        rename: bool = False,
-        title: str = CANVAS_TITLE,
-    ) -> str:
+    def ensure_canvas(self, channel_id: str, *, create: bool = False, rename: bool = False, title: str = CANVAS_TITLE) -> str:
         """Create or rename the channel canvas after explicit confirmation.
 
         Args:

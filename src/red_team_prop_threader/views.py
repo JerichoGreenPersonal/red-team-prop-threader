@@ -41,11 +41,11 @@ __all__ = (
     "ImportContext",
     "decode_asset_page_state",
     "render_asset_page",
-    "with_form_error_notice",
     "render_canvas_loading_view",
     "render_canvas_preflight_view",
     "render_confirmation_view",
     "render_import_view",
+    "with_form_error_notice",
 )
 
 # ---------------------------------------------------------------------------
@@ -416,12 +416,7 @@ def _users_select(action_id: str, placeholder: str, initial_user: str | None, me
         dict[str, object]: Slack static_select element.
     """
     options = _member_options(members)
-    elem: dict[str, object] = {
-        "type": "static_select",
-        "action_id": action_id,
-        "placeholder": _plain(placeholder),
-        "options": options,
-    }
+    elem: dict[str, object] = {"type": "static_select", "action_id": action_id, "placeholder": _plain(placeholder), "options": options}
     initial = _option_for_user(members, initial_user)
     if initial is not None:
         elem["initial_option"] = initial
@@ -441,12 +436,7 @@ def _multi_users_select(action_id: str, placeholder: str, initial_users: tuple[s
         dict[str, object]: Slack multi_static_select element.
     """
     options = _member_options(members)
-    elem: dict[str, object] = {
-        "type": "multi_static_select",
-        "action_id": action_id,
-        "placeholder": _plain(placeholder),
-        "options": options,
-    }
+    elem: dict[str, object] = {"type": "multi_static_select", "action_id": action_id, "placeholder": _plain(placeholder), "options": options}
     initial = [_option_for_user(members, user_id) for user_id in initial_users]
     initial_options = [option for option in initial if option is not None]
     if initial_options:
@@ -499,12 +489,7 @@ def _plain_text_input(action_id: str, placeholder: str, initial_value: str | Non
 
 def _form_errors_block() -> dict[str, object]:
     """Bottom input used only as a sink for modal-wide validation notices."""
-    return _input_block(
-        BID_FORM_ERRORS,
-        "Notice",
-        _plain_text_input(BID_FORM_ERRORS, "Leave blank", None),
-        optional=True,
-    )
+    return _input_block(BID_FORM_ERRORS, "Notice", _plain_text_input(BID_FORM_ERRORS, "Leave blank", None), optional=True)
 
 
 def with_form_error_notice(errors: dict[str, str]) -> dict[str, str]:
@@ -659,10 +644,7 @@ def _asset_blocks(asset: ImportedAsset, sel: AssetSelection, members: tuple[Chan
             hint="Only people already in this channel are listed.",
         ),
         _input_block(
-            f"asset_{eid}_links",
-            "Links",
-            _plain_text_input(f"asset_{eid}_links", "Label: https://...", sel.links_text or None, multiline=True),
-            optional=True,
+            f"asset_{eid}_links", "Links", _plain_text_input(f"asset_{eid}_links", "Label: https://...", sel.links_text or None, multiline=True), optional=True
         ),
     ]
 

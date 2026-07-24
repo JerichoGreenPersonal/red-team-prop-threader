@@ -94,12 +94,7 @@ class FakeSlackGateway:
 
     def get_user_info(self, user_id: str) -> dict[str, object]:
         """Return a display name profile."""
-        return {
-            "id": user_id,
-            "name": user_id.lower(),
-            "is_bot": False,
-            "profile": {"display_name": f"Name {user_id}", "real_name": f"Name {user_id}"},
-        }
+        return {"id": user_id, "name": user_id.lower(), "is_bot": False, "profile": {"display_name": f"Name {user_id}", "real_name": f"Name {user_id}"}}
 
     def lookup_sections(self, canvas_id: str, *, contains_text: str | None = None, section_types: tuple[str, ...] = ("any_header",)) -> list[dict[str, str]]:
         """Return canvas sections for group replace."""
@@ -334,55 +329,32 @@ def test_group_edit_updates_latest_roots_without_notifications(
     assert fake_slack.canvas_edits
 
 
-def test_group_edit_updates_primary_canvas(
-    repositories: Repositories, fake_slack: FakeSlackGateway, session: Session, clock: FakeClock
-) -> None:
+def test_group_edit_updates_primary_canvas(repositories: Repositories, fake_slack: FakeSlackGateway, session: Session, clock: FakeClock) -> None:
     """Satellite group edits mirror onto the primary channel canvas."""
     fake_slack.channel_canvas_ids = {"C1": "Fcanvas", _PRIMARY_CHANNEL: "Fprimary"}
-    service = EditService(
-        repositories=repositories,
-        slack=fake_slack,
-        canvas_slack=fake_slack,
-        clock=clock,
-        primary_asset_index_channel_id=_PRIMARY_CHANNEL,
-    )
+    service = EditService(repositories=repositories, slack=fake_slack, canvas_slack=fake_slack, clock=clock, primary_asset_index_channel_id=_PRIMARY_CHANNEL)
     service.apply_group_edit(sample_group_edit(repositories, session, clock))
     primary_edits = [edit for edit in fake_slack.canvas_edits if edit["canvas_id"] == "Fprimary"]
     assert primary_edits
     assert any("Source channel:" in str(edit.get("markdown") or "") for edit in primary_edits)
 
 
-def test_group_edit_primary_failure_does_not_raise(
-    repositories: Repositories, fake_slack: FakeSlackGateway, session: Session, clock: FakeClock
-) -> None:
+def test_group_edit_primary_failure_does_not_raise(repositories: Repositories, fake_slack: FakeSlackGateway, session: Session, clock: FakeClock) -> None:
     """Primary canvas failures are logged but do not fail the edit."""
     fake_slack.channel_canvas_ids = {"C1": "Fcanvas", _PRIMARY_CHANNEL: "Fprimary"}
     fake_slack.fail_edit_canvas_id = "Fprimary"
-    service = EditService(
-        repositories=repositories,
-        slack=fake_slack,
-        canvas_slack=fake_slack,
-        clock=clock,
-        primary_asset_index_channel_id=_PRIMARY_CHANNEL,
-    )
+    service = EditService(repositories=repositories, slack=fake_slack, canvas_slack=fake_slack, clock=clock, primary_asset_index_channel_id=_PRIMARY_CHANNEL)
     service.apply_group_edit(sample_group_edit(repositories, session, clock))
     satellite_edits = [edit for edit in fake_slack.canvas_edits if edit["canvas_id"] == "Fcanvas"]
     assert satellite_edits
 
 
-def test_group_edit_skips_primary_when_channel_is_primary(
-    repositories: Repositories, fake_slack: FakeSlackGateway, session: Session, clock: FakeClock
-) -> None:
+def test_group_edit_skips_primary_when_channel_is_primary(repositories: Repositories, fake_slack: FakeSlackGateway, session: Session, clock: FakeClock) -> None:
     """Primary-channel group edits skip the primary mirror."""
     fake_slack.channel_canvas_ids = {_PRIMARY_CHANNEL: "Fprimary"}
     group_id = _seed_group(repositories, session, clock, channel_id=_PRIMARY_CHANNEL)
     batch = repositories.batches.create(
-        group_id=group_id,
-        workspace_id="W1",
-        channel_id=_PRIMARY_CHANNEL,
-        submitter_user_id="Ueditor",
-        payload={},
-        now=clock.now(),
+        group_id=group_id, workspace_id="W1", channel_id=_PRIMARY_CHANNEL, submitter_user_id="Ueditor", payload={}, now=clock.now()
     )
     session.flush()
     repositories.history.record(
@@ -431,22 +403,10 @@ def test_group_edit_skips_primary_when_channel_is_primary(
         )
     )
     session.flush()
-    service = EditService(
-        repositories=repositories,
-        slack=fake_slack,
-        canvas_slack=fake_slack,
-        clock=clock,
-        primary_asset_index_channel_id=_PRIMARY_CHANNEL,
-    )
+    service = EditService(repositories=repositories, slack=fake_slack, canvas_slack=fake_slack, clock=clock, primary_asset_index_channel_id=_PRIMARY_CHANNEL)
     service.apply_group_edit(
         GroupEditRequest(
-            workspace_id="W1",
-            channel_id=_PRIMARY_CHANNEL,
-            user_id="Ueditor",
-            message_ts="200.1",
-            animator_id="Uanim",
-            additional_ids=(),
-            links_text="",
+            workspace_id="W1", channel_id=_PRIMARY_CHANNEL, user_id="Ueditor", message_ts="200.1", animator_id="Uanim", additional_ids=(), links_text=""
         )
     )
     assert len(fake_slack.canvas_edits) == 1
@@ -516,9 +476,7 @@ def test_open_editor_omits_empty_initial_user(edit_service: EditService, reposit
         )
     )
     session.flush()
-    result = edit_service.open_asset_editor(
-        MessageRef(workspace_id="W1", channel_id="C1", user_id="Ueditor", message_ts=root.slack_ts, message_identity="a")
-    )
+    result = edit_service.open_asset_editor(MessageRef(workspace_id="W1", channel_id="C1", user_id="Ueditor", message_ts=root.slack_ts, message_identity="a"))
     assert not result.refused
     assert result.view is not None
     animator_block = result.view["blocks"][0]
@@ -532,6 +490,7 @@ def test_open_editor_omits_empty_initial_user(edit_service: EditService, reposit
     assert "initial_users" not in additional_block["element"]
     assert any("@ueditor" in opt["text"]["text"] for opt in animator_block["element"]["options"])
     assert any("Name Ueditor" in opt["text"]["text"] for opt in animator_block["element"]["options"])
+
 
 def test_open_latest_editors_return_views(edit_service: EditService, repositories: Repositories, session: Session, clock: FakeClock) -> None:
     """Latest asset/group editors return modal views."""

@@ -8,7 +8,15 @@ from dataclasses import field, dataclass
 
 import pytest
 
-from red_team_prop_threader.canvas import CANVAS_TITLE, PRIMARY_CANVAS_TITLE, IndexedAsset, CanvasService, PreflightState, GroupIndexRequest, DuplicateThreadRequest
+from red_team_prop_threader.canvas import (
+    CANVAS_TITLE,
+    PRIMARY_CANVAS_TITLE,
+    IndexedAsset,
+    CanvasService,
+    PreflightState,
+    GroupIndexRequest,
+    DuplicateThreadRequest,
+)
 from red_team_prop_threader.domain import SupportingLink
 
 

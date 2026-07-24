@@ -17,7 +17,15 @@ from red_team_prop_threader.edits import (
     decode_edit_submission,
     edit_validation_errors,
 )
-from red_team_prop_threader.views import AID_NAV_BACK, AID_NAV_NEXT, AID_NAV_CONFIRM, AID_CANVAS_CREATE, AID_CANVAS_RENAME, AID_CANVAS_DECLINE, with_form_error_notice
+from red_team_prop_threader.views import (
+    AID_NAV_BACK,
+    AID_NAV_NEXT,
+    AID_NAV_CONFIRM,
+    AID_CANVAS_CREATE,
+    AID_CANVAS_RENAME,
+    AID_CANVAS_DECLINE,
+    with_form_error_notice,
+)
 from red_team_prop_threader._errors import ValidationError, ExternalServiceError, ImportValidationError
 
 
@@ -222,10 +230,7 @@ def register_listeners(app: App, workflow_factory: Callable[[], Workflow], edit_
         if field_errors:
             # Confirmation modal inputs: title + trailing notice sink.
             message = field_errors.get("group_animator") or field_errors.get("group_title") or next(iter(field_errors.values()))
-            ack(
-                response_action="errors",
-                errors=with_form_error_notice({"confirm_group_title": message}),
-            )
+            ack(response_action="errors", errors=with_form_error_notice({"confirm_group_title": message}))
             return
         response = workflow.confirm_batch(draft)
         if not response.accepted:

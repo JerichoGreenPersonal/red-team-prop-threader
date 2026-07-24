@@ -26,8 +26,8 @@ from red_team_prop_threader.views import (
     AssetDraft,
     ImportContext,
     AssetSelection,
-    ChannelMemberOption,
     DecodedAssetPage,
+    ChannelMemberOption,
     ConfirmationContext,
     CanvasPreflightContext,
     render_asset_page,
@@ -514,10 +514,7 @@ def test_asset_page_initial_users_set_for_additional() -> None:
         group_additional_ids=(),
         group_links_text="",
         selections=selections,
-        channel_members=(
-            ChannelMemberOption("U_ADD1", "Add One (@uadd1)"),
-            ChannelMemberOption("U_ADD2", "Add Two (@uadd2)"),
-        ),
+        channel_members=(ChannelMemberOption("U_ADD1", "Add One (@uadd1)"), ChannelMemberOption("U_ADD2", "Add Two (@uadd2)")),
     )
     view = render_asset_page(draft, page_index=0)
     add_block = next(b for b in view["blocks"] if b.get("block_id") == "asset_100_additional")  # type: ignore[union-attr]
@@ -686,7 +683,7 @@ def test_decode_user_select_empty_string_is_none() -> None:
 
 def test_asset_and_confirm_views_include_form_errors_notice_sink() -> None:
     """Trailing Notice input exists so validation can surface off-screen errors."""
-    from red_team_prop_threader.views import BID_FORM_ERRORS, ConfirmationContext, FORM_ERRORS_NOTICE, render_confirmation_view, with_form_error_notice
+    from red_team_prop_threader.views import BID_FORM_ERRORS, FORM_ERRORS_NOTICE, ConfirmationContext, with_form_error_notice, render_confirmation_view
 
     draft = sample_draft(asset_count=1)
     asset_view = render_asset_page(draft, 0)

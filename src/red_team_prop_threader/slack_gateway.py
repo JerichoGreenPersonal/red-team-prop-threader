@@ -440,7 +440,7 @@ def _slack_error_detail(response: object) -> str:
         return ""
     data: object = None
     if hasattr(response, "data"):
-        data = getattr(response, "data")
+        data = response.data
     elif isinstance(response, dict):
         data = response
     if not isinstance(data, dict):

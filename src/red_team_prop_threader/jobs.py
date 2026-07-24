@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import logging
 from typing import TYPE_CHECKING, Any, Protocol
+import logging
 from datetime import datetime, timezone, timedelta
 from dataclasses import dataclass
 
@@ -519,9 +519,7 @@ class BatchExecutor:
                 canvas_id=canvas_id,
                 group_title=str(payload["group_title"]),
                 animator_display=self._display_name(group_animator_id or ""),
-                additional_displays=tuple(
-                    self._display_name(str(item)) for item in payload.get("group_additional_ids") or () if str(item).strip()
-                ),
+                additional_displays=tuple(self._display_name(str(item)) for item in payload.get("group_additional_ids") or () if str(item).strip()),
                 links=_links_from_payload(payload.get("group_links")),
                 assets=indexed_assets,
                 for_primary=True,
@@ -530,12 +528,7 @@ class BatchExecutor:
             self._canvas.index_batch(request)
             return {"indexed": True, "entity_id": operation.asset_entity_id, "canvas_id": canvas_id}
         except Exception as exc:  # best-effort: never fail the batch
-            _logger.warning(
-                "INDEX_PRIMARY_ASSET failed for batch %s entity %s: %s",
-                batch.id,
-                operation.asset_entity_id,
-                exc,
-            )
+            _logger.warning("INDEX_PRIMARY_ASSET failed for batch %s entity %s: %s", batch.id, operation.asset_entity_id, exc)
             return {"indexed": False, "error": str(exc)[:500]}
 
     def _retire_prior_latest(self, batch: BatchRecord, operation: OperationRecord, payload: dict[str, Any]) -> dict[str, Any]:

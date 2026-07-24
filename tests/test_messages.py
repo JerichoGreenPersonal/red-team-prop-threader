@@ -266,12 +266,9 @@ def test_asset_root_threadparrot_bookends_title_line() -> None:
 
 
 def test_asset_root_includes_shotgrid_emoji_and_threadparrot() -> None:
+    """Asset roots keep :threadparrot: and add :shotgrid: on the ShotGrid link."""
     message = render_asset_root(sample_asset_context())
-    rendered = "\n".join(
-        block["text"]["text"]
-        for block in message["blocks"]
-        if block.get("type") == "section" and isinstance(block.get("text"), dict)
-    )
+    rendered = "\n".join(block["text"]["text"] for block in message["blocks"] if block.get("type") == "section" and isinstance(block.get("text"), dict))
     assert ":threadparrot:" in rendered
     assert ":shotgrid:" in rendered
     assert ":shotgrid: <https://sg.example.com/12345|Prop A>" in rendered

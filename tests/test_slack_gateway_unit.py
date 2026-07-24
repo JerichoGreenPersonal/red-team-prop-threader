@@ -25,13 +25,7 @@ class _Resp:
         return self.data.get(key, default)
 
 
-def _api_error(
-    code: str,
-    *,
-    status_code: int = 400,
-    headers: dict[str, Any] | None = None,
-    data: dict[str, Any] | None = None,
-) -> SlackApiError:
+def _api_error(code: str, *, status_code: int = 400, headers: dict[str, Any] | None = None, data: dict[str, Any] | None = None) -> SlackApiError:
     payload = {"ok": False, "error": code}
     if data:
         payload.update(data)
@@ -72,6 +66,7 @@ def test_from_settings_builds_client() -> None:
         worker_poll_seconds=2,
         tunnel_command=None,
         tunnel_health_url=None,
+        primary_asset_index_channel_id="C04H4QZEYUE",
     )
     gw = SlackGateway.from_settings(settings)
     assert isinstance(gw, SlackGateway)
@@ -121,9 +116,7 @@ def test_canvas_helpers(gateway: SlackGateway, client: MagicMock) -> None:
     assert gateway.create_channel_canvas("C1", title="INDEX OF PROP REQUESTS") == "Fcanvas"
     sections = gateway.lookup_sections("Fcanvas", contains_text="Latest", section_types=("any_header",))
     assert sections == [{"id": "S1"}]
-    client.canvases_sections_lookup.assert_called_with(
-        canvas_id="Fcanvas", criteria={"section_types": ["any_header"], "contains_text": "Latest"}
-    )
+    client.canvases_sections_lookup.assert_called_with(canvas_id="Fcanvas", criteria={"section_types": ["any_header"], "contains_text": "Latest"})
     gateway.lookup_sections("Fcanvas", contains_text="Latest", section_types=())
     client.canvases_sections_lookup.assert_called_with(canvas_id="Fcanvas", criteria={"contains_text": "Latest"})
     gateway.edit_canvas("Fcanvas", operation="insert_at_start", markdown="# hi")
@@ -135,9 +128,7 @@ def test_canvas_helpers(gateway: SlackGateway, client: MagicMock) -> None:
 def test_invalid_arguments_includes_response_metadata(gateway: SlackGateway, client: MagicMock) -> None:
     """Slack invalid_arguments errors surface response_metadata.messages."""
     client.canvases_sections_lookup.side_effect = _api_error(
-        "invalid_arguments",
-        status_code=400,
-        data={"response_metadata": {"messages": ["[ERROR] must be a valid enum value"]}},
+        "invalid_arguments", status_code=400, data={"response_metadata": {"messages": ["[ERROR] must be a valid enum value"]}}
     )
     with pytest.raises(ExternalServiceError, match="must be a valid enum value"):
         gateway.lookup_sections("Fcanvas", contains_text="Latest", section_types=())

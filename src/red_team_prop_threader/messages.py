@@ -370,12 +370,7 @@ def render_asset_root(context: AssetRootContext) -> dict[str, object]:
     pocs.extend(_escape(name) for name in context.group_additional_displays if name.strip())
     pocs_str = ", ".join(pocs) if pocs else "unassigned"
 
-    header_lines = (
-        asset_line,
-        f"*Group:* {_escape(context.group_title)}",
-        requestor_line,
-        f"*Group POCs:* {pocs_str}",
-    )
+    header_lines = (asset_line, f"*Group:* {_escape(context.group_title)}", requestor_line, f"*Group POCs:* {pocs_str}")
     blocks.append(_section("ar_header", _mrkdwn("\n".join(header_lines))))
 
     # Asset-level links only (group links stay on the group summary).

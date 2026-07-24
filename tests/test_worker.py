@@ -28,6 +28,7 @@ def _settings() -> Settings:
         worker_poll_seconds=0,
         tunnel_command=None,
         tunnel_health_url=None,
+        primary_asset_index_channel_id="C04H4QZEYUE",
     )
 
 

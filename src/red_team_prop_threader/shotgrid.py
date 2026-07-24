@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-import csv
 import io
-import logging
 import re
+import csv
 from typing import TYPE_CHECKING, Any
+import logging
 from urllib.parse import urlparse
 
 from red_team_prop_threader.domain import ImportResult, ImportedAsset
@@ -32,8 +32,7 @@ _RETIRED_PAGE_RE = re.compile(r"retired\s+page", re.IGNORECASE)
 _NOT_FOUND_RE = re.compile(r"(not\s+found|does\s+not\s+exist|unknown\s+page)", re.IGNORECASE)
 _PERMISSION_RE = re.compile(r"(permission|not\s+allowed|access\s+denied|forbidden)", re.IGNORECASE)
 _NOT_EXPORTABLE_RE = re.compile(
-    r"(not\s+exportable|cannot\s+export|unable\s+to\s+export|export\s+is\s+not\s+supported|export\s+for\s+page\b.+\bnot\s+available)",
-    re.IGNORECASE,
+    r"(not\s+exportable|cannot\s+export|unable\s+to\s+export|export\s+is\s+not\s+supported|export\s+for\s+page\b.+\bnot\s+available)", re.IGNORECASE
 )
 
 
@@ -368,8 +367,5 @@ def _safe_export_failure_message(page_id: int, exc: BaseException) -> str:
     if _PERMISSION_RE.search(text):
         return f"ShotGrid script cannot export page {page_id} (permission denied)"
     if _NOT_EXPORTABLE_RE.search(text):
-        return (
-            f"ShotGrid page {page_id} is not API-exportable "
-            "(Canvas/Design pages cannot be exported; use an Asset grid/list page)"
-        )
+        return f"ShotGrid page {page_id} is not API-exportable (Canvas/Design pages cannot be exported; use an Asset grid/list page)"
     return "shotgrid export_page call failed"

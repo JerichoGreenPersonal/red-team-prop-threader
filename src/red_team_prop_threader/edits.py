@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import logging
 from typing import TYPE_CHECKING, Any, Protocol
+import logging
 from dataclasses import dataclass
 
 from red_team_prop_threader.canvas import IndexedAsset, CanvasService, GroupIndexRequest
@@ -124,13 +124,7 @@ class EditService:
     """guards and applies latest-only group/asset detail edits."""
 
     def __init__(
-        self,
-        *,
-        repositories: Repositories,
-        slack: EditSlackGateway,
-        canvas_slack: Any,
-        clock: Clock,
-        primary_asset_index_channel_id: str = "",
+        self, *, repositories: Repositories, slack: EditSlackGateway, canvas_slack: Any, clock: Clock, primary_asset_index_channel_id: str = ""
     ) -> None:
         """Wire repositories, slack, canvas gateway, and clock.
 
@@ -272,10 +266,7 @@ class EditService:
                         group_title=str(summary_snapshot["group_title"]),
                         animator_display=str(summary_snapshot["group_animator_display"]),
                         additional_displays=tuple(str(item) for item in summary_snapshot.get("group_additional_displays") or ()),
-                        links=tuple(
-                            SupportingLink(str(item["label"]), str(item["url"]))
-                            for item in summary_snapshot.get("group_links") or ()
-                        ),
+                        links=tuple(SupportingLink(str(item["label"]), str(item["url"])) for item in summary_snapshot.get("group_links") or ()),
                         assets=self._indexed_assets(roots),
                         for_primary=True,
                         source_channel_display=str(summary_snapshot.get("source_channel_display") or summary.channel_id),
@@ -462,14 +453,7 @@ def _summary_context_from_snapshot(snapshot: dict[str, Any], message: MessageRec
 
 
 def _render_edit_view(
-    *,
-    callback_id: str,
-    title: str,
-    channel_id: str,
-    message_ts: str,
-    snapshot: dict[str, Any],
-    is_asset: bool,
-    members: tuple[tuple[str, str], ...],
+    *, callback_id: str, title: str, channel_id: str, message_ts: str, snapshot: dict[str, Any], is_asset: bool, members: tuple[tuple[str, str], ...]
 ) -> dict[str, Any]:
     """Render a people/links edit modal limited to channel members."""
     if is_asset:
@@ -640,11 +624,6 @@ def edit_validation_errors(exc: ValidationError) -> dict[str, str]:
     Link parse failures must surface on Supporting Links — not Animator.
     """
     message = str(exc)
-    if (
-        message.startswith("line ")
-        or "Supporting links require a label" in message
-        or message.startswith("URL ")
-        or " URL " in message
-    ):
+    if message.startswith("line ") or "Supporting links require a label" in message or message.startswith("URL ") or " URL " in message:
         return {_BID_LINKS: message}
     return {_BID_ANIMATOR: message}

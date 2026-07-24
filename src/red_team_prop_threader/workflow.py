@@ -565,10 +565,7 @@ class Workflow:
             if not user_id or user_id in members:
                 return
             label = self._display_name(user_id)
-            errors.setdefault(
-                block_id,
-                f"{label} must be a member of this channel (invite them or pick someone already in the channel)",
-            )
+            errors.setdefault(block_id, f"{label} must be a member of this channel (invite them or pick someone already in the channel)")
 
         _note_missing(draft.group_animator_id, "group_animator")
         for user_id in draft.group_additional_ids:
