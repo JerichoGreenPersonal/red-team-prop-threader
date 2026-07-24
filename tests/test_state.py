@@ -1,4 +1,7 @@
 from pathlib import Path
+import sqlite3
+
+import pytest
 
 from review_prep.models import DeliveryRouteKind, RouteState
 from review_prep.state import StateRepo
@@ -35,3 +38,17 @@ def test_route_upsert_roundtrip(tmp_path: Path):
     )
     routes = repo.get_routes_for_card(38811)
     assert routes[0]["state"] == RouteState.SYNCED_ONLY.value
+
+
+def test_orphan_route_insert_raises_integrity_error(tmp_path: Path):
+    repo = StateRepo(tmp_path / "prep.db")
+    repo.ensure_schema()
+    with pytest.raises(sqlite3.IntegrityError):
+        repo.upsert_route(
+            prep_run_id=99999,
+            card_sg_id=38811,
+            route_kind=DeliveryRouteKind.P4_CL.value,
+            route_key="WIP:orphan",
+            state=RouteState.SYNCED_ONLY.value,
+            detail="orphan",
+        )
