@@ -10,8 +10,8 @@ from collections.abc import Mapping, Sequence
 
 __all__ = ("RedactionFilter",)
 
-# matches all xox* slack token prefixes followed by non-whitespace
-_SLACK_TOKEN_RE = re.compile(r"xox[bpars]-\S+")
+# matches slack bot/user tokens and app-level socket mode tokens
+_SLACK_TOKEN_RE = re.compile(r"(?:xox[bpars]-|xapp-)\S+")
 
 # matches quoted Authorization fields in mapping-style representations
 _QUOTED_AUTH_RE = re.compile(r"""(?P<prefix>["']?Authorization["']?\s*[:=]\s*)(?P<quote>["'])(?P<value>.*?)(?P=quote)""", re.IGNORECASE)
@@ -29,7 +29,7 @@ class RedactionFilter(logging.Filter):
     """logging filter that redacts secrets from formatted log messages.
 
     Redacts:
-    - Slack token forms (xoxb-, xoxp-, xoxa-, xoxr-, xoxs-)
+    - Slack token forms (xoxb-, xoxp-, xoxa-, xoxr-, xoxs-, xapp-)
     - Authorization header values including Bearer tokens
     - URL query strings (scheme, host, and path are preserved)
     - Any extra secrets provided at construction time

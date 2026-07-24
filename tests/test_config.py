@@ -19,6 +19,7 @@ if TYPE_CHECKING:
 _ENV_KEYS = (
     "SLACK_BOT_TOKEN",
     "SLACK_SIGNING_SECRET",
+    "SLACK_APP_TOKEN",
     "SLACK_PUBLIC_BASE_URL",
     "SHOTGRID_URL",
     "SHOTGRID_SCRIPT_NAME",
@@ -47,6 +48,7 @@ def _set_required(monkeypatch: pytest.MonkeyPatch) -> None:
     """Set valid required settings."""
     monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-test")
     monkeypatch.setenv("SLACK_SIGNING_SECRET", "signing-secret")
+    monkeypatch.setenv("SLACK_APP_TOKEN", "xapp-test")
     monkeypatch.setenv("SHOTGRID_SCRIPT_NAME", "threader")
     monkeypatch.setenv("SHOTGRID_SCRIPT_KEY", "script-key")
 
@@ -58,7 +60,7 @@ def _set_required(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_settings_missing_required_all(monkeypatch: pytest.MonkeyPatch) -> None:
     """All required fields missing raises ConfigurationError."""
-    for key in ("SLACK_BOT_TOKEN", "SLACK_SIGNING_SECRET", "SHOTGRID_SCRIPT_NAME", "SHOTGRID_SCRIPT_KEY"):
+    for key in ("SLACK_BOT_TOKEN", "SLACK_SIGNING_SECRET", "SLACK_APP_TOKEN", "SHOTGRID_SCRIPT_NAME", "SHOTGRID_SCRIPT_KEY"):
         monkeypatch.delenv(key, raising=False)
     with pytest.raises(ConfigurationError):
         Settings.from_env()
@@ -68,9 +70,21 @@ def test_settings_missing_slack_bot_token(monkeypatch: pytest.MonkeyPatch) -> No
     """Missing SLACK_BOT_TOKEN raises ConfigurationError."""
     monkeypatch.delenv("SLACK_BOT_TOKEN", raising=False)
     monkeypatch.setenv("SLACK_SIGNING_SECRET", "secret")
+    monkeypatch.setenv("SLACK_APP_TOKEN", "xapp-test")
     monkeypatch.setenv("SHOTGRID_SCRIPT_NAME", "threader")
     monkeypatch.setenv("SHOTGRID_SCRIPT_KEY", "key")
     with pytest.raises(ConfigurationError, match="SLACK_BOT_TOKEN"):
+        Settings.from_env()
+
+
+def test_settings_missing_slack_app_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Missing SLACK_APP_TOKEN raises ConfigurationError."""
+    monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-test")
+    monkeypatch.setenv("SLACK_SIGNING_SECRET", "secret")
+    monkeypatch.delenv("SLACK_APP_TOKEN", raising=False)
+    monkeypatch.setenv("SHOTGRID_SCRIPT_NAME", "threader")
+    monkeypatch.setenv("SHOTGRID_SCRIPT_KEY", "key")
+    with pytest.raises(ConfigurationError, match="SLACK_APP_TOKEN"):
         Settings.from_env()
 
 
@@ -78,6 +92,7 @@ def test_settings_empty_slack_bot_token(monkeypatch: pytest.MonkeyPatch) -> None
     """Empty SLACK_BOT_TOKEN raises ConfigurationError."""
     monkeypatch.setenv("SLACK_BOT_TOKEN", "   ")
     monkeypatch.setenv("SLACK_SIGNING_SECRET", "secret")
+    monkeypatch.setenv("SLACK_APP_TOKEN", "xapp-test")
     monkeypatch.setenv("SHOTGRID_SCRIPT_NAME", "threader")
     monkeypatch.setenv("SHOTGRID_SCRIPT_KEY", "key")
     with pytest.raises(ConfigurationError):
@@ -88,6 +103,7 @@ def test_settings_strips_required_values(monkeypatch: pytest.MonkeyPatch) -> Non
     """Required values, including secrets, are stripped before storage."""
     monkeypatch.setenv("SLACK_BOT_TOKEN", "  xoxb-test  ")
     monkeypatch.setenv("SLACK_SIGNING_SECRET", "  signing-secret  ")
+    monkeypatch.setenv("SLACK_APP_TOKEN", "  xapp-test  ")
     monkeypatch.setenv("SHOTGRID_SCRIPT_NAME", "  threader  ")
     monkeypatch.setenv("SHOTGRID_SCRIPT_KEY", "  script-key  ")
 
@@ -95,17 +111,19 @@ def test_settings_strips_required_values(monkeypatch: pytest.MonkeyPatch) -> Non
 
     assert settings.slack_bot_token == "xoxb-test"
     assert settings.slack_signing_secret == "signing-secret"
+    assert settings.slack_app_token == "xapp-test"
     assert settings.shotgrid_script_name == "threader"
     assert settings.shotgrid_script_key == "script-key"
 
 
 def test_configuration_errors_never_include_secret_values(monkeypatch: pytest.MonkeyPatch) -> None:
     """Configuration errors never echo configured secret values."""
-    sentinels = ("xoxb-SENTINEL-BOT", "SENTINEL-SIGNING", "SENTINEL-SCRIPT-KEY")
+    sentinels = ("xoxb-SENTINEL-BOT", "SENTINEL-SIGNING", "xapp-SENTINEL-APP", "SENTINEL-SCRIPT-KEY")
     monkeypatch.setenv("SLACK_BOT_TOKEN", sentinels[0])
     monkeypatch.setenv("SLACK_SIGNING_SECRET", sentinels[1])
+    monkeypatch.setenv("SLACK_APP_TOKEN", sentinels[2])
     monkeypatch.setenv("SHOTGRID_SCRIPT_NAME", "threader")
-    monkeypatch.setenv("SHOTGRID_SCRIPT_KEY", sentinels[2])
+    monkeypatch.setenv("SHOTGRID_SCRIPT_KEY", sentinels[3])
     monkeypatch.setenv("WEB_PORT", "invalid")
 
     with pytest.raises(ConfigurationError) as exc_info:
@@ -123,6 +141,7 @@ def test_settings_rejects_wrong_shotgrid_host(monkeypatch: pytest.MonkeyPatch) -
     """Non-HTTPS SHOTGRID_URL raises ConfigurationError mentioning HTTPS."""
     monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-test")
     monkeypatch.setenv("SLACK_SIGNING_SECRET", "secret")
+    monkeypatch.setenv("SLACK_APP_TOKEN", "xapp-test")
     monkeypatch.setenv("SHOTGRID_URL", "http://example.com")
     monkeypatch.setenv("SHOTGRID_SCRIPT_NAME", "threader")
     monkeypatch.setenv("SHOTGRID_SCRIPT_KEY", "key")
@@ -134,6 +153,7 @@ def test_settings_rejects_wrong_host_https(monkeypatch: pytest.MonkeyPatch) -> N
     """HTTPS but wrong host raises ConfigurationError mentioning the required host."""
     monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-test")
     monkeypatch.setenv("SLACK_SIGNING_SECRET", "secret")
+    monkeypatch.setenv("SLACK_APP_TOKEN", "xapp-test")
     monkeypatch.setenv("SHOTGRID_URL", "https://example.com")
     monkeypatch.setenv("SHOTGRID_SCRIPT_NAME", "threader")
     monkeypatch.setenv("SHOTGRID_SCRIPT_KEY", "key")
@@ -145,6 +165,7 @@ def test_settings_shotgrid_url_no_trailing_slash(monkeypatch: pytest.MonkeyPatch
     """SHOTGRID_URL is normalized without a trailing slash."""
     monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-test")
     monkeypatch.setenv("SLACK_SIGNING_SECRET", "secret")
+    monkeypatch.setenv("SLACK_APP_TOKEN", "xapp-test")
     monkeypatch.setenv("SHOTGRID_SCRIPT_NAME", "threader")
     monkeypatch.setenv("SHOTGRID_SCRIPT_KEY", "key")
     monkeypatch.setenv("SHOTGRID_URL", "https://respawn.shotgunstudio.com/")
@@ -161,6 +182,7 @@ def test_settings_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     """Defaults are applied for all optional fields."""
     monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-test")
     monkeypatch.setenv("SLACK_SIGNING_SECRET", "secret")
+    monkeypatch.setenv("SLACK_APP_TOKEN", "xapp-test")
     monkeypatch.setenv("SHOTGRID_SCRIPT_NAME", "threader")
     monkeypatch.setenv("SHOTGRID_SCRIPT_KEY", "key")
     for var in (
@@ -189,6 +211,7 @@ def test_settings_optional_fields_absent(monkeypatch: pytest.MonkeyPatch) -> Non
     """Optional fields absent from environment are None."""
     monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-test")
     monkeypatch.setenv("SLACK_SIGNING_SECRET", "secret")
+    monkeypatch.setenv("SLACK_APP_TOKEN", "xapp-test")
     monkeypatch.setenv("SHOTGRID_SCRIPT_NAME", "threader")
     monkeypatch.setenv("SHOTGRID_SCRIPT_KEY", "key")
     monkeypatch.delenv("TEST_POSTGRES_URL", raising=False)
@@ -209,6 +232,7 @@ def test_settings_invalid_port(monkeypatch: pytest.MonkeyPatch) -> None:
     """Non-integer WEB_PORT raises ConfigurationError."""
     monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-test")
     monkeypatch.setenv("SLACK_SIGNING_SECRET", "secret")
+    monkeypatch.setenv("SLACK_APP_TOKEN", "xapp-test")
     monkeypatch.setenv("SHOTGRID_SCRIPT_NAME", "threader")
     monkeypatch.setenv("SHOTGRID_SCRIPT_KEY", "key")
     monkeypatch.setenv("WEB_PORT", "notanumber")
@@ -220,6 +244,7 @@ def test_settings_port_out_of_range(monkeypatch: pytest.MonkeyPatch) -> None:
     """WEB_PORT of 0 is out of valid range and raises ConfigurationError."""
     monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-test")
     monkeypatch.setenv("SLACK_SIGNING_SECRET", "secret")
+    monkeypatch.setenv("SLACK_APP_TOKEN", "xapp-test")
     monkeypatch.setenv("SHOTGRID_SCRIPT_NAME", "threader")
     monkeypatch.setenv("SHOTGRID_SCRIPT_KEY", "key")
     monkeypatch.setenv("WEB_PORT", "0")
@@ -231,6 +256,7 @@ def test_settings_invalid_worker_poll_seconds(monkeypatch: pytest.MonkeyPatch) -
     """Non-integer WORKER_POLL_SECONDS raises ConfigurationError."""
     monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-test")
     monkeypatch.setenv("SLACK_SIGNING_SECRET", "secret")
+    monkeypatch.setenv("SLACK_APP_TOKEN", "xapp-test")
     monkeypatch.setenv("SHOTGRID_SCRIPT_NAME", "threader")
     monkeypatch.setenv("SHOTGRID_SCRIPT_KEY", "key")
     monkeypatch.setenv("WORKER_POLL_SECONDS", "abc")
@@ -276,12 +302,14 @@ def test_settings_repr_hides_secrets(monkeypatch: pytest.MonkeyPatch) -> None:
     """repr(settings) must not contain any secret value."""
     monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-supersecret")
     monkeypatch.setenv("SLACK_SIGNING_SECRET", "signing-supersecret")
+    monkeypatch.setenv("SLACK_APP_TOKEN", "xapp-supersecret")
     monkeypatch.setenv("SHOTGRID_SCRIPT_NAME", "threader")
     monkeypatch.setenv("SHOTGRID_SCRIPT_KEY", "key-supersecret")
     s = Settings.from_env()
     r = repr(s)
     assert "xoxb-supersecret" not in r
     assert "signing-supersecret" not in r
+    assert "xapp-supersecret" not in r
     assert "key-supersecret" not in r
 
 
@@ -289,6 +317,7 @@ def test_settings_is_frozen(monkeypatch: pytest.MonkeyPatch) -> None:
     """Settings instances are immutable."""
     monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-test")
     monkeypatch.setenv("SLACK_SIGNING_SECRET", "secret")
+    monkeypatch.setenv("SLACK_APP_TOKEN", "xapp-test")
     monkeypatch.setenv("SHOTGRID_SCRIPT_NAME", "threader")
     monkeypatch.setenv("SHOTGRID_SCRIPT_KEY", "key")
     s = Settings.from_env()
@@ -315,8 +344,8 @@ def test_redaction_filter_slack_token_xoxb() -> None:
 
 
 def test_redaction_filter_all_slack_prefixes() -> None:
-    """All xox* prefixes are redacted."""
-    for prefix in ("xoxb-", "xoxp-", "xoxa-", "xoxr-", "xoxs-"):
+    """All xox* and xapp- prefixes are redacted."""
+    for prefix in ("xoxb-", "xoxp-", "xoxa-", "xoxr-", "xoxs-", "xapp-"):
         record = _make_record(f"token={prefix}12345")
         RedactionFilter().filter(record)
         assert prefix not in record.getMessage(), f"prefix {prefix} not redacted"

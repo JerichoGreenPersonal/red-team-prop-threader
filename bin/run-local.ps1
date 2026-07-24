@@ -38,16 +38,44 @@ function Stop-OwnedProcess([string]$Name) {
     if ($procId -match '^\d+$') {
         $proc = Get-Process -Id ([int]$procId) -ErrorAction SilentlyContinue
         if ($proc) {
-            Write-Host "Stopping owned $Name process $($proc.Id)" -ForegroundColor DarkYellow
-            Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+            Write-Host "Stopping owned $Name process tree $($proc.Id)" -ForegroundColor DarkYellow
+            # kill the powershell wrapper and all child uv/python processes
+            & taskkill.exe /PID $proc.Id /T /F 2>$null | Out-Null
         }
     }
     Remove-Item $pidFile -Force -ErrorAction SilentlyContinue
 }
 
+function Stop-OrphanPropThreaderProcesses {
+    $patterns = @(
+        'prop-threader-web',
+        'prop-threader-worker',
+        'prop-threader-web.exe',
+        'prop-threader-worker.exe'
+    )
+    $orphans = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
+        $cmd = [string]$_.CommandLine
+        $name = [string]$_.Name
+        foreach ($pattern in $patterns) {
+            if ($name -like "*$pattern*" -or $cmd -like "*$pattern*") {
+                return $true
+            }
+        }
+        return $false
+    }
+    foreach ($orphan in $orphans) {
+        Write-Host "Stopping orphan $($orphan.Name) pid $($orphan.ProcessId)" -ForegroundColor DarkYellow
+        & taskkill.exe /PID $orphan.ProcessId /T /F 2>$null | Out-Null
+    }
+}
+
 function Start-OwnedProcess([string]$Name, [string]$Command) {
     $logFile = Join-Path $logDir "$Name.log"
     $pidFile = Join-Path $pidDir "$Name.pid"
+    # replace prior log so stale socket-mode crashes are not mistaken for current failures
+    if (Test-Path $logFile) {
+        Remove-Item $logFile -Force -ErrorAction SilentlyContinue
+    }
     $proc = Start-Process -FilePath "powershell" -ArgumentList @(
         "-NoProfile",
         "-ExecutionPolicy", "Bypass",
@@ -59,20 +87,18 @@ function Start-OwnedProcess([string]$Name, [string]$Command) {
 }
 
 Assert-Command "uv"
+if (-not $env:SLACK_APP_TOKEN) {
+    throw "SLACK_APP_TOKEN must be set in .env (Socket Mode app-level token, xapp-...)"
+}
 if ($env:TUNNEL_COMMAND -and -not $SkipTunnel) {
     $tunnelBinary = ($env:TUNNEL_COMMAND -split '\s+')[0]
     Assert-Command $tunnelBinary
 }
 
-if (-not $env:SLACK_PUBLIC_BASE_URL) {
-    throw "SLACK_PUBLIC_BASE_URL must be set in .env"
-}
-$publicBase = $env:SLACK_PUBLIC_BASE_URL.TrimEnd("/")
-$eventsUrl = "$publicBase/slack/events"
-
 Stop-OwnedProcess "web"
 Stop-OwnedProcess "worker"
 Stop-OwnedProcess "tunnel"
+Stop-OrphanPropThreaderProcesses
 
 if ($Test) {
     Write-Host "Running local verification..." -ForegroundColor Cyan
@@ -117,5 +143,5 @@ $webPort = if ($env:WEB_PORT) { $env:WEB_PORT } else { "3000" }
 
 Write-Host ""
 Write-Host "RED Team Prop Threader local stack is starting." -ForegroundColor Green
-Write-Host "Slack request URL: $eventsUrl"
+Write-Host "Slack inbound mode: Socket Mode (no public Request URL required)"
 Write-Host "Local health: http://${webHost}:${webPort}/healthz"

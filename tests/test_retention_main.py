@@ -30,19 +30,28 @@ def test_retention_main_logs_result() -> None:
 
 
 def test_web_main_serves_waitress() -> None:
-    """Web main builds the app and serves via Waitress."""
+    """Web main serves health probes in a thread then blocks on Socket Mode."""
     settings = MagicMock()
     settings.web_host = "127.0.0.1"
     settings.web_port = 3000
+    settings.slack_app_token = "xapp-test"
     app = MagicMock()
+    bolt_app = MagicMock()
+    app.config = {"PROP_THREADER_BOLT_APP": bolt_app}
     with (
         patch("red_team_prop_threader.web.Settings.from_env", return_value=settings),
         patch("red_team_prop_threader.web.create_app", return_value=app) as create,
-        patch("waitress.serve") as serve,
+        patch("red_team_prop_threader.web.PropThreaderSocketModeHandler") as handler_cls,
+        patch("red_team_prop_threader.web.threading.Thread") as thread_cls,
     ):
+        handler = MagicMock()
+        handler_cls.return_value = handler
         web_main()
     create.assert_called_once_with(settings)
-    serve.assert_called_once_with(app, host="127.0.0.1", port=3000)
+    thread_cls.assert_called_once()
+    thread_cls.return_value.start.assert_called_once_with()
+    handler_cls.assert_called_once_with(bolt_app, "xapp-test")
+    handler.start.assert_called_once_with()
 
 
 def test_create_app_slack_events_route_exists() -> None:
@@ -55,6 +64,7 @@ def test_create_app_slack_events_route_exists() -> None:
     settings = Settings(
         slack_bot_token="xoxb-test",
         slack_signing_secret="secret",
+        slack_app_token="xapp-test",
         shotgrid_script_name="script",
         shotgrid_script_key="key",
         shotgrid_url="https://respawn.shotgunstudio.com",

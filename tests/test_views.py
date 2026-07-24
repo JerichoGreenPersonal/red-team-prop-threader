@@ -26,6 +26,7 @@ from red_team_prop_threader.views import (
     AssetDraft,
     ImportContext,
     AssetSelection,
+    ChannelMemberOption,
     DecodedAssetPage,
     ConfirmationContext,
     CanvasPreflightContext,
@@ -66,6 +67,15 @@ def sample_draft(asset_count: int = 5, **kwargs: Any) -> AssetDraft:
         group_additional_ids=(),
         group_links_text="",
         selections=selections,
+        channel_members=(
+            ChannelMemberOption("U_ANIM", "Animator (@uanim)"),
+            ChannelMemberOption("U_ADD1", "Add One (@uadd1)"),
+            ChannelMemberOption("U_ADD2", "Add Two (@uadd2)"),
+            ChannelMemberOption("U_GROUP_ANIM", "Group Animator (@ugroupanim)"),
+            ChannelMemberOption("U_GROUP_ADD1", "Group Add (@ugroupadd1)"),
+            ChannelMemberOption("U_ANIM1", "Anim One (@uanim1)"),
+            ChannelMemberOption("U_ANIM3", "Anim Three (@uanim3)"),
+        ),
     )
     base.update(kwargs)
     return AssetDraft(**base)
@@ -98,8 +108,13 @@ def _extract_state_from_view(view: dict[str, Any]) -> dict[str, Any]:
             values[bid] = {bid: {"type": "plain_text_input", "value": element.get("initial_value") or ""}}
         elif etype == "users_select":
             values[bid] = {bid: {"type": "users_select", "selected_user": element.get("initial_user")}}
+        elif etype == "static_select":
+            initial = element.get("initial_option") or {}
+            values[bid] = {bid: {"type": "static_select", "selected_option": initial or None}}
         elif etype == "multi_users_select":
             values[bid] = {bid: {"type": "multi_users_select", "selected_users": list(element.get("initial_users") or [])}}
+        elif etype == "multi_static_select":
+            values[bid] = {bid: {"type": "multi_static_select", "selected_options": list(element.get("initial_options") or [])}}
         elif etype == "checkboxes":
             values[bid] = {bid: {"type": "checkboxes", "selected_options": list(element.get("initial_options") or [])}}
     return {"values": values}
@@ -296,6 +311,7 @@ def test_asset_page_zero_assets() -> None:
     """Zero-asset draft renders a valid modal with no asset blocks."""
     view = render_asset_page(sample_draft(asset_count=0), page_index=0)
     assert view["type"] == "modal"
+    assert "submit" in view
     assert not any(b["block_id"].startswith("asset_") for b in view["blocks"])  # type: ignore[union-attr]
 
 
@@ -399,24 +415,33 @@ def test_asset_page_initial_checkbox_absent_when_not_included() -> None:
 
 
 def test_asset_page_initial_user_set_when_animator_present() -> None:
-    """Animator block has initial_user when animator_id is set."""
+    """Animator block has initial_option when animator_id is set."""
     assets = (_asset(0),)
     selections = (AssetSelection(entity_id=100, included=True, animator_id="U_ANIM", additional_ids=(), links_text=""),)
     draft = AssetDraft(
-        draft_id="d1", assets=assets, group_title="G", group_animator_id=None, group_additional_ids=(), group_links_text="", selections=selections
+        draft_id="d1",
+        assets=assets,
+        group_title="G",
+        group_animator_id=None,
+        group_additional_ids=(),
+        group_links_text="",
+        selections=selections,
+        channel_members=(ChannelMemberOption("U_ANIM", "Animator (@uanim)"),),
     )
     view = render_asset_page(draft, page_index=0)
     anim_block = next(b for b in view["blocks"] if b.get("block_id") == "asset_100_animator")  # type: ignore[union-attr]
-    assert anim_block["element"]["initial_user"] == "U_ANIM"  # type: ignore[index]
+    assert anim_block["element"]["type"] == "static_select"  # type: ignore[index]
+    assert anim_block["element"]["initial_option"]["value"] == "U_ANIM"  # type: ignore[index]
+    assert "@uanim" in anim_block["element"]["initial_option"]["text"]["text"]  # type: ignore[index]
 
 
-def test_asset_page_animator_input_is_required() -> None:
-    """Each per-asset animator input is visually and structurally required."""
+def test_asset_page_animator_input_is_optional() -> None:
+    """Per-asset animator input is optional so create can proceed unassigned."""
     view = render_asset_page(sample_draft(asset_count=1), page_index=0)
     animator = next(block for block in view["blocks"] if block.get("block_id") == "asset_100_animator")  # type: ignore[union-attr]
 
     assert animator["type"] == "input"
-    assert animator["optional"] is False
+    assert animator["optional"] is True
 
 
 def test_asset_page_plain_text_asset_label_preserves_special_characters() -> None:
@@ -478,15 +503,26 @@ def test_asset_context_mrkdwn_rejects_oversized_url() -> None:
 
 
 def test_asset_page_initial_users_set_for_additional() -> None:
-    """Additional block has initial_users when additional_ids are present."""
+    """Additional block has initial_options when additional_ids are present."""
     assets = (_asset(0),)
     selections = (AssetSelection(entity_id=100, included=True, animator_id=None, additional_ids=("U_ADD1", "U_ADD2"), links_text=""),)
     draft = AssetDraft(
-        draft_id="d1", assets=assets, group_title="G", group_animator_id=None, group_additional_ids=(), group_links_text="", selections=selections
+        draft_id="d1",
+        assets=assets,
+        group_title="G",
+        group_animator_id=None,
+        group_additional_ids=(),
+        group_links_text="",
+        selections=selections,
+        channel_members=(
+            ChannelMemberOption("U_ADD1", "Add One (@uadd1)"),
+            ChannelMemberOption("U_ADD2", "Add Two (@uadd2)"),
+        ),
     )
     view = render_asset_page(draft, page_index=0)
     add_block = next(b for b in view["blocks"] if b.get("block_id") == "asset_100_additional")  # type: ignore[union-attr]
-    assert add_block["element"]["initial_users"] == ["U_ADD1", "U_ADD2"]  # type: ignore[index]
+    assert add_block["element"]["type"] == "multi_static_select"  # type: ignore[index]
+    assert [o["value"] for o in add_block["element"]["initial_options"]] == ["U_ADD1", "U_ADD2"]  # type: ignore[index]
 
 
 def test_asset_page_initial_links_text_set() -> None:
@@ -502,11 +538,13 @@ def test_asset_page_initial_links_text_set() -> None:
 
 
 def test_asset_page_group_initial_animator_set() -> None:
-    """group_animator block has initial_user when group_animator_id is set."""
+    """group_animator block has initial_option when group_animator_id is set."""
     draft = sample_draft(asset_count=1, group_animator_id="U_GROUP_ANIM")
     view = render_asset_page(draft, page_index=0)
     anim_block = next(b for b in view["blocks"] if b.get("block_id") == BID_GROUP_ANIMATOR)  # type: ignore[union-attr]
-    assert anim_block["element"]["initial_user"] == "U_GROUP_ANIM"  # type: ignore[index]
+    assert anim_block["element"]["type"] == "static_select"  # type: ignore[index]
+    assert anim_block["element"]["initial_option"]["value"] == "U_GROUP_ANIM"  # type: ignore[index]
+    assert "@ugroupanim" in anim_block["element"]["initial_option"]["text"]["text"]  # type: ignore[index]
 
 
 def test_asset_page_group_initial_title_set() -> None:
@@ -639,6 +677,38 @@ def test_asset_page_json_serializable() -> None:
 # ---------------------------------------------------------------------------
 
 
+def test_decode_user_select_empty_string_is_none() -> None:
+    """Cleared users_select may submit empty string; treat as no selection."""
+    state = {"values": {"group_animator": {"group_animator": {"selected_user": "  "}}}}
+    decoded = decode_asset_page_state(state, page_index=0)
+    assert decoded.group_animator_id is None
+
+
+def test_asset_and_confirm_views_include_form_errors_notice_sink() -> None:
+    """Trailing Notice input exists so validation can surface off-screen errors."""
+    from red_team_prop_threader.views import BID_FORM_ERRORS, ConfirmationContext, FORM_ERRORS_NOTICE, render_confirmation_view, with_form_error_notice
+
+    draft = sample_draft(asset_count=1)
+    asset_view = render_asset_page(draft, 0)
+    assert any(isinstance(b, dict) and b.get("block_id") == BID_FORM_ERRORS for b in asset_view["blocks"])  # type: ignore[union-attr]
+    confirm = render_confirmation_view(
+        ConfirmationContext(
+            draft_id="d1",
+            target_channel_id="C1",
+            group_title="SEASON 31 PROP REQUEST THREADS",
+            included_count=1,
+            deduped_row_count=1,
+            existing_duplicate_thread_count=0,
+            existing_duplicate_thread_links=(),
+            warnings=(),
+        )
+    )
+    assert any(isinstance(b, dict) and b.get("block_id") == BID_FORM_ERRORS for b in confirm["blocks"])  # type: ignore[union-attr]
+    noticed = with_form_error_notice({"group_animator": "nope"})
+    assert noticed[BID_FORM_ERRORS] == FORM_ERRORS_NOTICE
+    assert noticed["group_animator"] == "nope"
+
+
 def test_decode_asset_page_strict_roundtrip() -> None:
     """Encode selections into a view then decode back to the same values."""
     assets = tuple(_asset(i) for i in range(3))
@@ -655,6 +725,13 @@ def test_decode_asset_page_strict_roundtrip() -> None:
         group_additional_ids=("U_GROUP_ADD1",),
         group_links_text="Miro: https://miro.com/1",
         selections=selections,
+        channel_members=(
+            ChannelMemberOption("U_ANIM1", "Anim One (@uanim1)"),
+            ChannelMemberOption("U_ANIM3", "Anim Three (@uanim3)"),
+            ChannelMemberOption("U_ADD1", "Add One (@uadd1)"),
+            ChannelMemberOption("U_GROUP_ANIM", "Group Animator (@ugroupanim)"),
+            ChannelMemberOption("U_GROUP_ADD1", "Group Add (@ugroupadd1)"),
+        ),
     )
     view = render_asset_page(draft, page_index=0)
     state = _extract_state_from_view(view)

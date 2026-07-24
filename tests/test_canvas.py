@@ -139,11 +139,42 @@ def test_new_group_is_inserted_at_canvas_start(fake_slack: FakeSlackGateway) -> 
 
 
 def test_manual_conflict_appends_and_warns_without_replacing_section(fake_slack: FakeSlackGateway) -> None:
-    """When section lookup fails, append and require manual cleanup without replace."""
+    """When section lookup fails, require manual cleanup without orphan appends."""
     fake_slack.section_lookup_result = []
     result = CanvasService(fake_slack).add_duplicate_thread(sample_duplicate())
     assert result.manual_cleanup_required
-    assert all(edit.operation != "replace" for edit in fake_slack.canvas_edits)
+    assert fake_slack.canvas_edits == []
+
+
+def test_group_markdown_starts_with_title_and_separates_groups() -> None:
+    """Group markdown has an h2 title and two trailing blank lines between groups."""
+    from red_team_prop_threader.canvas import render_group_markdown
+
+    md = render_group_markdown(sample_new_group())
+    assert md.startswith("## SEASON 31 PROP REQUEST THREADS\n")
+    assert md.endswith("\n\n\n")
+    assert "**Creative Stakeholder:**" in md
+
+
+def test_group_markdown_includes_prior_thread_under_asset() -> None:
+    """Re-indexed assets keep the prior thread link below the Latest line."""
+    from red_team_prop_threader.canvas import render_group_markdown
+
+    asset = IndexedAsset(
+        entity_id=1001,
+        name="Prop A",
+        asset_url="https://respawn.shotgunstudio.com/detail/Asset/1001",
+        permalink="https://slack.example/archives/C/p2",
+        created_at=datetime(2026, 7, 17, 19, 0, tzinfo=ZoneInfo("UTC")),
+        is_latest=True,
+        prior_permalink="https://slack.example/archives/C/p1",
+        prior_created_at=datetime(2026, 7, 17, 18, 0, tzinfo=ZoneInfo("UTC")),
+    )
+    md = render_group_markdown(sample_new_group(assets=(asset,)))
+    assert "https://slack.example/archives/C/p2" in md
+    assert "— Latest" in md
+    assert "https://slack.example/archives/C/p1" in md
+    assert md.index("p2") < md.index("p1")
 
 
 # ---------------------------------------------------------------------------
@@ -157,6 +188,35 @@ def test_preflight_ready_when_title_matches(fake_slack: FakeSlackGateway) -> Non
     result = CanvasService(fake_slack).preflight("C0B4GJSA1G8")
     assert result.state is PreflightState.READY
     assert result.canvas_id == "Fcanvas"
+
+
+def test_extract_canvas_id_from_channel_tab() -> None:
+    """Canvas tab entries in properties.tabs are recognized."""
+    from red_team_prop_threader.canvas import _extract_canvas_id
+
+    channel = {
+        "id": "C1",
+        "properties": {
+            "tabs": [
+                {"type": "files", "id": "files"},
+                {"id": "Ct1", "label": "INDEX OF PROP REQUESTS", "type": "canvas", "data": {"file_id": "Ftabcanvas", "shared_ts": "1"}},
+            ]
+        },
+    }
+    assert _extract_canvas_id(channel) == "Ftabcanvas"
+
+
+def test_preflight_ready_when_canvas_is_channel_tab(fake_slack: FakeSlackGateway) -> None:
+    """Channel-tab canvases with the expected title are READY."""
+
+    def tab_channel(channel_id: str) -> dict[str, object]:
+        return {"id": channel_id, "properties": {"tabs": [{"type": "canvas", "label": "INDEX OF PROP REQUESTS", "data": {"file_id": "Ftabcanvas"}}]}}
+
+    fake_slack.get_conversation_info = tab_channel  # type: ignore[method-assign]
+    fake_slack.canvas_title = "INDEX OF PROP REQUESTS"
+    result = CanvasService(fake_slack).preflight("C0B4GJSA1G8")
+    assert result.state is PreflightState.READY
+    assert result.canvas_id == "Ftabcanvas"
 
 
 def test_preflight_create_confirmation_when_missing(fake_slack: FakeSlackGateway) -> None:
@@ -207,6 +267,15 @@ def test_duplicate_clears_prior_latest_when_section_found(fake_slack: FakeSlackG
     assert result.manual_cleanup_required is False
     assert any(edit.operation == "replace" for edit in fake_slack.canvas_edits)
     assert any(edit.operation == "insert_at_end" or edit.operation == "insert_after" for edit in fake_slack.canvas_edits)
+
+
+def test_group_markdown_unassigned_when_no_people() -> None:
+    """Canvas group markdown uses Creative Stakeholder: unassigned when staffing is empty."""
+    from red_team_prop_threader.canvas import render_group_markdown
+
+    md = render_group_markdown(sample_new_group(animator_display="", additional_displays=()))
+    assert "**Creative Stakeholder:** unassigned" in md
+    assert "Ada Animator" not in md
 
 
 @pytest.fixture

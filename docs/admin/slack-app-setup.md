@@ -18,20 +18,16 @@ Usage hint (confirm in the Slack UI if prompted): `[ShotGrid page URL]`
 
 1. Open [Slack API Apps](https://api.slack.com/apps) → **Create New App** → **From a manifest**.
 2. Select the **Electronic Arts** workspace.
-3. Paste the contents of `slack-app-manifest.yaml`.
-4. Before importing, replace every occurrence of:
-
-   ```text
-   https://prop-threader-dev.example.invalid
-   ```
-
-   with the approved stable HTTPS development hostname (same host for slash-command URL and interactivity request URL). The `.example.invalid` value is intentional and non-routable so an unedited import cannot receive live traffic.
-5. Confirm the Usage Hint is `[ShotGrid page URL]` if Slack prompts for it.
-6. Create the app, then submit the scopes below for IT approval.
-7. After approval, install the app to the EA workspace and copy the **Bot User OAuth Token** and **Signing Secret** into approved secrets storage. Map them to `SLACK_BOT_TOKEN` and `SLACK_SIGNING_SECRET`.
+3. Paste the contents of `slack-app-manifest.yaml` (Socket Mode is enabled; no public Request URLs are required).
+4. Confirm the Usage Hint is `[ShotGrid page URL]` if Slack prompts for it.
+5. Create the app, then submit the scopes below for IT approval.
+6. After approval, install the app to the EA workspace and copy secrets into approved storage:
+   - **Bot User OAuth Token** → `SLACK_BOT_TOKEN` (`xoxb-...`)
+   - **Signing Secret** → `SLACK_SIGNING_SECRET`
+   - **App-Level Token** (Socket Mode, scope `connections:write`) → `SLACK_APP_TOKEN` (`xapp-...`)
+7. Enable **Socket Mode** in the Slack app settings if the imported manifest did not already enable it.
 8. Invite the bot to the private development channel `C0B4GJSA1G8`.
 9. Verify `/create-prop-threads` while viewing that channel from the EA workspace (not only from a connected external workspace).
-10. For production, replace the development request URLs with the production HTTPS base URL and rotate secrets if the development credentials must not be reused.
 
 ## Scope justification (method-by-method)
 
@@ -46,16 +42,16 @@ Only bot token scopes are requested. No user-token scopes, `chat:write.public`, 
 | `files:read` | `files.info` | Read the built-in channel-canvas file object so preflight can validate/create/rename the canvas title safely before writing. |
 | `users:read` | `users.info` | Resolve display names for non-notifying mentions and busy-owner copy. |
 | `im:write` | `conversations.open`, `chat.postMessage` / `chat.update` in the DM | Open and update a single private progress DM to the submitting user. |
-| `canvases:write` | `conversations.canvases.create`, `canvases.edit`, `canvases.sections.lookup` | Create the channel canvas when missing, look up existing group sections, and apply narrow one-operation edits to index threads. |
+| `canvases:read` | `canvases.sections.lookup` | Look up existing group/header sections before indexing so updates can replace in place instead of blindly appending. |
+| `canvases:write` | `conversations.canvases.create`, `canvases.edit` | Create the channel canvas when missing and apply narrow one-operation edits to index threads. |
 
-## Interactivity and request URLs
+## Socket Mode
 
-Both of these must point at the same HTTPS base + `/slack/events` path:
+Inbound slash commands and interactivity are delivered over Socket Mode (WebSocket), not public HTTPS Request URLs. Local development therefore does not require an approved tunnel hostname.
 
-- Slash command Request URL
-- Interactivity Request URL
+Generate an App-Level Token with scope `connections:write` and store it as `SLACK_APP_TOKEN`. Keep `SLACK_SIGNING_SECRET` configured; Bolt still uses it for payload verification.
 
-Development uses the approved tunnel hostname. Production uses the approved internal HTTPS host. Socket Mode is disabled; the app expects signed HTTPS callbacks.
+Optional: a Flask `POST /slack/events` route remains available for dual-mode debugging, but production/local primary path is Socket Mode via `prop-threader-web`.
 
 ## Secrets and rotation
 
@@ -63,14 +59,15 @@ Store at minimum:
 
 - `SLACK_BOT_TOKEN` — Bot User OAuth Token (`xoxb-...`)
 - `SLACK_SIGNING_SECRET` — used to verify Slack request signatures
-- `SLACK_PUBLIC_BASE_URL` — public HTTPS origin used in the manifest URLs
+- `SLACK_APP_TOKEN` — App-Level Token for Socket Mode (`xapp-...`)
 
 Rotation:
 
 1. Regenerate the signing secret and/or reinstall to obtain a new bot token in the Slack app settings.
-2. Update approved secrets storage.
-3. Restart web and worker processes so they load the new values.
-4. Re-verify `/create-prop-threads` in the development channel.
+2. Rotate the App-Level Token if Socket Mode credentials must change.
+3. Update approved secrets storage.
+4. Restart web and worker processes so they load the new values.
+5. Re-verify `/create-prop-threads` in the development channel.
 
 ## Private-channel invitation
 
@@ -79,7 +76,7 @@ The bot cannot discover or join private channels by itself. An EA-workspace chan
 ## IT review checklist
 
 - [ ] Manifest YAML reviewed (`slack-app-manifest.yaml`)
-- [ ] Request URLs use an approved HTTPS hostname (not `.example.invalid` in the imported app)
+- [ ] Socket Mode enabled with App-Level Token (`connections:write`)
 - [ ] Only the scopes in the table above are granted
 - [ ] No user-token scopes requested
 - [ ] App installed to the Electronic Arts workspace

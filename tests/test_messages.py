@@ -57,6 +57,7 @@ def sample_asset_context(**kwargs: object) -> AssetRootContext:
         asset_links=(),
         message_identity="msg-001",
         is_latest=True,
+        has_prior_thread=False,
         last_editor_display=None,
         updated_ts=None,
     )
@@ -144,11 +145,28 @@ def test_group_summary_included_count_in_output() -> None:
     assert "12" in rendered
 
 
-def test_group_summary_processing_status_in_output() -> None:
-    """Processing status string appears in the rendered summary."""
+def test_group_summary_processing_status_omitted() -> None:
+    """Processing status is not shown on the group summary."""
     ctx = sample_group_context(processing_status="UNIQUE_STATUS_STRING_ABC")
     rendered = json.dumps(render_group_summary(ctx))
-    assert "UNIQUE_STATUS_STRING_ABC" in rendered
+    assert "UNIQUE_STATUS_STRING_ABC" not in rendered
+    assert "*Status:*" not in rendered
+
+
+def test_group_summary_creative_stakeholder_label() -> None:
+    """Group summary uses Creative Stakeholder nomenclature."""
+    rendered = json.dumps(render_group_summary(sample_group_context()))
+    assert "Creative Stakeholder" in rendered
+    assert "*Animator:*" not in rendered
+    assert "*People:*" not in rendered
+
+
+def test_group_summary_group_links_label() -> None:
+    """Group summary labels supporting links as Group Links."""
+    links = (SupportingLink("Brief", "https://example.com/brief"),)
+    rendered = json.dumps(render_group_summary(sample_group_context(links=links)))
+    assert "*Group Links:*" in rendered
+    assert "*Links:*\\n" not in rendered
 
 
 def test_group_summary_edit_button_action_id() -> None:
@@ -235,26 +253,63 @@ def test_asset_root_has_blocks() -> None:
     assert len(message["blocks"]) > 0  # type: ignore[arg-type]
 
 
-def test_asset_root_latest_marker_when_current() -> None:
-    """Latest marker is present when is_latest=True."""
-    ctx = sample_asset_context(is_latest=True)
-    rendered = json.dumps(render_asset_root(ctx))
-    assert "Latest" in rendered or "latest" in rendered
+def test_asset_root_threadparrot_bookends_title_line() -> None:
+    """Asset title line is bookended with :threadparrot: for visibility."""
+    ctx = sample_asset_context(is_latest=True, has_prior_thread=True)
+    message = render_asset_root(ctx)
+    rendered = json.dumps(message)
+    assert rendered.count(":threadparrot:") >= 2
+    assert ":threadparrot: *Asset:*" in rendered
+    assert "(latest thread) :threadparrot:" in rendered
+    assert str(message["text"]).startswith(":threadparrot:")
+    assert str(message["text"]).endswith(":threadparrot:")
 
 
-def test_asset_root_no_latest_marker_when_not_current() -> None:
-    """Latest marker is absent when is_latest=False."""
-    ctx = sample_asset_context(is_latest=False)
+def test_asset_root_header_fields_are_single_section() -> None:
+    """Asset/Group/Requestor/Group POCs share one section (tight four-line block)."""
+    message = render_asset_root(sample_asset_context())
+    header = next(block for block in message["blocks"] if block.get("block_id") == "ar_header")  # type: ignore[union-attr]
+    text = header["text"]["text"]  # type: ignore[index]
+    lines = text.split("\n")
+    assert len(lines) == 4
+    assert lines[0].startswith(":threadparrot: *Asset:*")
+    assert lines[1].startswith("*Group:*")
+    assert "*Requestor:*" in lines[2]
+    assert lines[3].startswith("*Group POCs:*")
+    assert {block.get("block_id") for block in message["blocks"]} == {"ar_header", "ar_actions"}  # type: ignore[union-attr]
+
+
+def test_asset_root_latest_marker_when_prior_exists() -> None:
+    """Latest label appears on the Asset line only when a prior thread exists."""
+    ctx = sample_asset_context(is_latest=True, has_prior_thread=True)
     rendered = json.dumps(render_asset_root(ctx))
-    # "Latest" should not appear
+    assert "(latest thread)" in rendered
+    assert "ar_latest" not in rendered
+
+
+def test_asset_root_no_latest_marker_without_prior() -> None:
+    """Latest label is absent for the first/only thread even when is_latest=True."""
+    ctx = sample_asset_context(is_latest=True, has_prior_thread=False)
+    rendered = json.dumps(render_asset_root(ctx))
+    assert "latest thread" not in rendered
     assert "Latest" not in rendered
 
 
-def test_asset_root_creation_date_markup() -> None:
-    """Creation time appears as Slack date markup with unix timestamp."""
+def test_asset_root_no_latest_marker_when_not_current() -> None:
+    """Latest label is absent when is_latest=False."""
+    ctx = sample_asset_context(is_latest=False, has_prior_thread=True)
+    rendered = json.dumps(render_asset_root(ctx))
+    assert "latest thread" not in rendered
+    assert "Latest" not in rendered
+
+
+def test_asset_root_omits_created_timestamp() -> None:
+    """Creation time is not shown on asset roots; Slack's own header covers it."""
     ctx = sample_asset_context(created_ts=1700000000)
     rendered = json.dumps(render_asset_root(ctx))
-    assert "1700000000" in rendered
+    assert "Created" not in rendered
+    assert "1700000000" not in rendered
+    assert "ar_created" not in rendered
 
 
 def test_asset_root_asset_name_in_output() -> None:
@@ -316,31 +371,41 @@ def test_asset_root_group_pocs_label_present() -> None:
     assert "Group POCs" in rendered
 
 
-def test_asset_root_group_links_in_output() -> None:
-    """Group links appear in the rendered message."""
+def test_asset_root_omits_group_links() -> None:
+    """Group links are not duplicated onto individual asset threads."""
     links = (SupportingLink("Miro", "https://miro.com/board/unique-group-link"),)
     ctx = sample_asset_context(group_links=links)
     rendered = json.dumps(render_asset_root(ctx))
-    assert "unique-group-link" in rendered
+    assert "unique-group-link" not in rendered
+    assert "Group Links" not in rendered
 
 
 def test_asset_root_asset_links_in_output() -> None:
-    """Asset links appear in the rendered message."""
+    """Asset links appear in the rendered message as Links."""
     links = (SupportingLink("SG", "https://sg.example.com/unique-asset-link"),)
     ctx = sample_asset_context(asset_links=links)
     rendered = json.dumps(render_asset_root(ctx))
     assert "unique-asset-link" in rendered
+    assert "*Links:*" in rendered
+    assert "Asset Links" not in rendered
 
 
-def test_asset_root_group_links_and_asset_links_labelled_separately() -> None:
-    """Group and asset links appear in separate labelled sections."""
+def test_asset_root_group_links_not_mixed_with_asset_links() -> None:
+    """Only asset-level links appear on the asset thread."""
     g_links = (SupportingLink("Group Link", "https://group.example.com/1"),)
     a_links = (SupportingLink("Asset Link", "https://asset.example.com/2"),)
     ctx = sample_asset_context(group_links=g_links, asset_links=a_links)
     rendered = json.dumps(render_asset_root(ctx))
-    # Both links present
-    assert "group.example.com" in rendered
+    assert "group.example.com" not in rendered
     assert "asset.example.com" in rendered
+    assert "*Links:*" in rendered
+
+
+def test_asset_root_edit_button_label() -> None:
+    """Asset root edit button is labeled Edit POCs."""
+    rendered = json.dumps(render_asset_root(sample_asset_context()))
+    assert "Edit POCs" in rendered
+    assert "Edit Asset Details" not in rendered
 
 
 def test_asset_root_edit_button_action_id() -> None:
@@ -435,3 +500,19 @@ def test_asset_root_fallback_text_contains_asset_name() -> None:
     ctx = sample_asset_context(asset_name="UNIQUE_FALLBACK_PROP")
     message = render_asset_root(ctx)
     assert "UNIQUE_FALLBACK_PROP" in message["text"]  # type: ignore[operator]
+
+
+def test_group_summary_unassigned_people_when_empty() -> None:
+    """Empty people render a non-notifying unassigned placeholder."""
+    ctx = sample_group_context(animator_id=None, additional_ids=())
+    rendered = json.dumps(render_group_summary(ctx))
+    assert "unassigned" in rendered
+    assert "<@" not in rendered
+
+
+def test_asset_root_unassigned_people_when_empty() -> None:
+    """Empty asset and group people render unassigned placeholders."""
+    ctx = sample_asset_context(asset_animator_id="", asset_additional_ids=(), group_animator_display="", group_additional_displays=())
+    rendered = json.dumps(render_asset_root(ctx))
+    assert "unassigned" in rendered
+    assert "<@" not in rendered

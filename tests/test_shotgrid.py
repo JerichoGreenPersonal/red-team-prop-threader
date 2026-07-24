@@ -385,6 +385,32 @@ def test_parse_export_csv_case_insensitive_headers() -> None:
     assert result.assets[0].entity_id == 101
 
 
+def test_parse_export_csv_accepts_id_alias_for_entity_id() -> None:
+    """ShotGrid page exports that use Id are accepted as Entity ID."""
+    from red_team_prop_threader.shotgrid import parse_export_csv
+
+    result = parse_export_csv("Asset Name,Id\nS31 Chair,101\n", _BASE_URL)
+    assert result.assets[0].entity_id == 101
+    assert result.assets[0].name == "S31 Chair"
+
+
+def test_parse_export_csv_prefers_entity_id_over_id_alias() -> None:
+    """When both Entity ID and Id exist, Entity ID wins."""
+    from red_team_prop_threader.shotgrid import parse_export_csv
+
+    csv_text = "Asset Name,Id,Entity ID\nWrong Name,999,101\n"
+    result = parse_export_csv(csv_text, _BASE_URL)
+    assert result.assets[0].entity_id == 101
+
+
+def test_parse_export_csv_rejects_duplicate_id_alias_header() -> None:
+    """Duplicate Id headers raise ImportValidationError."""
+    from red_team_prop_threader.shotgrid import parse_export_csv
+
+    with pytest.raises(ImportValidationError, match="Entity ID"):
+        parse_export_csv("Asset Name,Id,Id\nS31 Chair,101,101\n", _BASE_URL)
+
+
 def test_parse_export_csv_whitespace_stripped_headers() -> None:
     """Headers with surrounding whitespace are matched after stripping."""
     from red_team_prop_threader.shotgrid import parse_export_csv
@@ -582,6 +608,7 @@ def test_gateway_from_settings_constructs_gateway() -> None:
     settings = Settings(
         slack_bot_token="xoxb-test",
         slack_signing_secret="signing-secret",
+        slack_app_token="xapp-test",
         shotgrid_script_name="test-script",
         shotgrid_script_key="test-key",
         shotgrid_url=_BASE_URL,
@@ -632,6 +659,29 @@ def test_gateway_export_error_does_not_leak_message_or_cause() -> None:
         gw.export_page(23280)
     assert sentinel not in str(exc_info.value)
     assert exc_info.value.__cause__ is None
+    assert str(exc_info.value) == "shotgrid export_page call failed"
+
+
+def test_gateway_export_classifies_retired_page_fault() -> None:
+    """Retired-page Faults become a concrete user-safe message."""
+    from red_team_prop_threader.shotgrid import ShotGridGateway
+
+    mock_client = MagicMock()
+    mock_client.export_page.side_effect = RuntimeError("Trying to perform export for retired Page id=99")
+    gw = ShotGridGateway(base_url=_BASE_URL, script_name="test-script", script_key="test-key", client_factory=lambda: mock_client)
+    with pytest.raises(ExternalServiceError, match="page 99 is retired"):
+        gw.export_page(99)
+
+
+def test_gateway_export_classifies_export_not_available_fault() -> None:
+    """Canvas/non-exportable page Faults become concrete guidance."""
+    from red_team_prop_threader.shotgrid import ShotGridGateway
+
+    mock_client = MagicMock()
+    mock_client.export_page.side_effect = RuntimeError("Export for Page id=23446 not available")
+    gw = ShotGridGateway(base_url=_BASE_URL, script_name="test-script", script_key="test-key", client_factory=lambda: mock_client)
+    with pytest.raises(ExternalServiceError, match="not API-exportable"):
+        gw.export_page(23446)
 
 
 def test_gateway_export_page_non_string_return_raises_external_service_error() -> None:

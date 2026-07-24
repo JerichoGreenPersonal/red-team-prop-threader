@@ -25,19 +25,24 @@ __all__ = (
     "AID_NAV_CONFIRM",
     "AID_NAV_NEXT",
     "BID_CONFIRM_GROUP_TITLE",
+    "BID_FORM_ERRORS",
     "BID_GROUP_ADDITIONAL",
     "BID_GROUP_ANIMATOR",
     "BID_GROUP_LINKS",
     "BID_GROUP_TITLE",
+    "FORM_ERRORS_NOTICE",
     "AssetDraft",
     "AssetSelection",
     "CanvasPreflightContext",
+    "ChannelMemberOption",
     "ConfirmationContext",
     "DecodedAssetPage",
     "DecodedAssetState",
     "ImportContext",
     "decode_asset_page_state",
     "render_asset_page",
+    "with_form_error_notice",
+    "render_canvas_loading_view",
     "render_canvas_preflight_view",
     "render_confirmation_view",
     "render_import_view",
@@ -66,6 +71,8 @@ BID_GROUP_ANIMATOR = "group_animator"
 BID_GROUP_ADDITIONAL = "group_additional"
 BID_GROUP_LINKS = "group_links"
 BID_CONFIRM_GROUP_TITLE = "confirm_group_title"
+BID_FORM_ERRORS = "form_errors"
+FORM_ERRORS_NOTICE = "Errors exist, see above."
 
 # ---------------------------------------------------------------------------
 # Slack limits
@@ -122,6 +129,19 @@ class ImportContext:
 
 
 @dataclass(frozen=True, slots=True)
+class ChannelMemberOption:
+    """one channel member option for people pickers.
+
+    Args:
+        user_id: Slack user ID stored as the option value.
+        label: verbose plain-text label shown in the menu (max 75 chars).
+    """
+
+    user_id: str
+    label: str
+
+
+@dataclass(frozen=True, slots=True)
 class AssetSelection:
     """immutable per-asset form selection captured from a modal page.
 
@@ -152,6 +172,7 @@ class AssetDraft:
         group_additional_ids: ordered Slack user IDs for group additional people.
         group_links_text: raw multiline supporting-link text for the group.
         selections: per-asset selections; must be parallel to assets.
+        channel_members: human channel members for people pickers (verbose labels).
 
     Raises:
         ValidationError: if asset count exceeds 30, entity IDs are duplicated, or
@@ -165,6 +186,7 @@ class AssetDraft:
     group_additional_ids: tuple[str, ...]
     group_links_text: str
     selections: tuple[AssetSelection, ...]
+    channel_members: tuple[ChannelMemberOption, ...] = ()
 
     def __post_init__(self) -> None:
         """Validate constraints on construction."""
@@ -381,38 +403,75 @@ def _button(text: str, action_id: str, value: str = "", style: str | None = None
     return btn
 
 
-def _users_select(action_id: str, placeholder: str, initial_user: str | None) -> dict[str, object]:
-    """Return a Slack users_select element.
+def _users_select(action_id: str, placeholder: str, initial_user: str | None, members: tuple[ChannelMemberOption, ...]) -> dict[str, object]:
+    """Return a static select of channel members with verbose labels.
 
     Args:
         action_id: stable action ID.
         placeholder: placeholder text.
         initial_user: Slack user ID to pre-select, or None.
+        members: channel member options (user_id + label).
 
     Returns:
-        dict[str, object]: Slack users_select element.
+        dict[str, object]: Slack static_select element.
     """
-    elem: dict[str, object] = {"type": "users_select", "action_id": action_id, "placeholder": _plain(placeholder)}
-    if initial_user is not None:
-        elem["initial_user"] = initial_user
+    options = _member_options(members)
+    elem: dict[str, object] = {
+        "type": "static_select",
+        "action_id": action_id,
+        "placeholder": _plain(placeholder),
+        "options": options,
+    }
+    initial = _option_for_user(members, initial_user)
+    if initial is not None:
+        elem["initial_option"] = initial
     return elem
 
 
-def _multi_users_select(action_id: str, placeholder: str, initial_users: tuple[str, ...]) -> dict[str, object]:
-    """Return a Slack multi_users_select element.
+def _multi_users_select(action_id: str, placeholder: str, initial_users: tuple[str, ...], members: tuple[ChannelMemberOption, ...]) -> dict[str, object]:
+    """Return a multi static select of channel members with verbose labels.
 
     Args:
         action_id: stable action ID.
         placeholder: placeholder text.
         initial_users: Slack user IDs to pre-select.
+        members: channel member options (user_id + label).
 
     Returns:
-        dict[str, object]: Slack multi_users_select element.
+        dict[str, object]: Slack multi_static_select element.
     """
-    elem: dict[str, object] = {"type": "multi_users_select", "action_id": action_id, "placeholder": _plain(placeholder)}
-    if initial_users:
-        elem["initial_users"] = list(initial_users)
+    options = _member_options(members)
+    elem: dict[str, object] = {
+        "type": "multi_static_select",
+        "action_id": action_id,
+        "placeholder": _plain(placeholder),
+        "options": options,
+    }
+    initial = [_option_for_user(members, user_id) for user_id in initial_users]
+    initial_options = [option for option in initial if option is not None]
+    if initial_options:
+        elem["initial_options"] = initial_options
     return elem
+
+
+def _member_options(members: tuple[ChannelMemberOption, ...]) -> list[dict[str, object]]:
+    """Build Slack option objects for channel members (max 100)."""
+    if not members:
+        return [{"text": _plain("No channel members available"), "value": "__none__"}]
+    options: list[dict[str, object]] = []
+    for member in members[:100]:
+        options.append({"text": _plain(member.label, max_len=75), "value": member.user_id})
+    return options
+
+
+def _option_for_user(members: tuple[ChannelMemberOption, ...], user_id: str | None) -> dict[str, object] | None:
+    """Return the matching option object for a user id, if present."""
+    if not user_id:
+        return None
+    for member in members:
+        if member.user_id == user_id:
+            return {"text": _plain(member.label, max_len=75), "value": member.user_id}
+    return None
 
 
 def _plain_text_input(action_id: str, placeholder: str, initial_value: str | None, multiline: bool = False) -> dict[str, object]:
@@ -436,6 +495,27 @@ def _plain_text_input(action_id: str, placeholder: str, initial_value: str | Non
     if initial_value:
         elem["initial_value"] = initial_value
     return elem
+
+
+def _form_errors_block() -> dict[str, object]:
+    """Bottom input used only as a sink for modal-wide validation notices."""
+    return _input_block(
+        BID_FORM_ERRORS,
+        "Notice",
+        _plain_text_input(BID_FORM_ERRORS, "Leave blank", None),
+        optional=True,
+    )
+
+
+def with_form_error_notice(errors: dict[str, str]) -> dict[str, str]:
+    """Attach a bottom-of-modal notice whenever field errors are returned.
+
+    Slack only highlights input blocks via ``response_action=errors``. A trailing
+    notice input keeps failures visible when the offending field is off-screen.
+    """
+    if not errors:
+        return errors
+    return {**errors, BID_FORM_ERRORS: FORM_ERRORS_NOTICE}
 
 
 def _checkboxes(action_id: str, included: bool) -> dict[str, object]:
@@ -519,30 +599,39 @@ def _group_blocks(draft: AssetDraft) -> list[dict[str, object]]:
     Returns:
         list[dict[str, object]]: group title, animator, additional, and links blocks.
     """
+    members = draft.channel_members
     return [
         _input_block(BID_GROUP_TITLE, "Group title", _plain_text_input(BID_GROUP_TITLE, "SEASON N PROP REQUEST THREADS", draft.group_title or None)),
-        _input_block(BID_GROUP_ANIMATOR, "Group animator", _users_select(BID_GROUP_ANIMATOR, "Select animator", draft.group_animator_id)),
+        _input_block(
+            BID_GROUP_ANIMATOR,
+            "Creative Stakeholder",
+            _users_select(BID_GROUP_ANIMATOR, "Select a channel member", draft.group_animator_id, members),
+            optional=True,
+            hint="Only people already in this channel are listed.",
+        ),
         _input_block(
             BID_GROUP_ADDITIONAL,
-            "Group additional people",
-            _multi_users_select(BID_GROUP_ADDITIONAL, "Select additional people", draft.group_additional_ids),
+            "Additional stakeholders",
+            _multi_users_select(BID_GROUP_ADDITIONAL, "Select channel members", draft.group_additional_ids, members),
             optional=True,
+            hint="Only people already in this channel are listed.",
         ),
         _input_block(
             BID_GROUP_LINKS,
-            "Group supporting links",
+            "Group links",
             _plain_text_input(BID_GROUP_LINKS, "Label: https://...", draft.group_links_text or None, multiline=True),
             optional=True,
         ),
     ]
 
 
-def _asset_blocks(asset: ImportedAsset, sel: AssetSelection) -> list[dict[str, object]]:
+def _asset_blocks(asset: ImportedAsset, sel: AssetSelection, members: tuple[ChannelMemberOption, ...]) -> list[dict[str, object]]:
     """Build the four input blocks and one context block for a single asset.
 
     Args:
         asset: the ImportedAsset for display.
         sel: the current AssetSelection for pre-filling initial values.
+        members: channel member options for people pickers.
 
     Returns:
         list[dict[str, object]]: context block followed by 4 input blocks.
@@ -555,16 +644,23 @@ def _asset_blocks(asset: ImportedAsset, sel: AssetSelection) -> list[dict[str, o
     return [
         _context_block(ctx_bid, [_mrkdwn(context_text)]),
         _input_block(f"asset_{eid}_include", f"{asset.name} (ID: {eid})", _checkboxes(f"asset_{eid}_include", sel.included), optional=True),
-        _input_block(f"asset_{eid}_animator", "Animator", _users_select(f"asset_{eid}_animator", "Select animator", sel.animator_id)),
+        _input_block(
+            f"asset_{eid}_animator",
+            "Requestor",
+            _users_select(f"asset_{eid}_animator", "Select a channel member", sel.animator_id, members),
+            optional=True,
+            hint="Only people already in this channel are listed.",
+        ),
         _input_block(
             f"asset_{eid}_additional",
-            "Additional people",
-            _multi_users_select(f"asset_{eid}_additional", "Select additional people", sel.additional_ids),
+            "Additional requestors",
+            _multi_users_select(f"asset_{eid}_additional", "Select channel members", sel.additional_ids, members),
             optional=True,
+            hint="Only people already in this channel are listed.",
         ),
         _input_block(
             f"asset_{eid}_links",
-            "Supporting links",
+            "Links",
             _plain_text_input(f"asset_{eid}_links", "Label: https://...", sel.links_text or None, multiline=True),
             optional=True,
         ),
@@ -574,6 +670,23 @@ def _asset_blocks(asset: ImportedAsset, sel: AssetSelection) -> list[dict[str, o
 # ---------------------------------------------------------------------------
 # public render functions
 # ---------------------------------------------------------------------------
+
+
+def render_canvas_loading_view(draft_id: str) -> dict[str, object]:
+    """Render a neutral loading modal while canvas preflight runs.
+
+    Args:
+        draft_id: draft identifier stored in private_metadata.
+
+    Returns:
+        dict[str, object]: Slack modal view payload without create/rename actions.
+
+    Raises:
+        ValidationError: if draft_id exceeds the maximum length.
+    """
+    _validate_draft_id(draft_id)
+    blocks: list[dict[str, object]] = [_section("preflight_loading", _mrkdwn("*Checking the channel canvas…*\n\nThis only takes a moment."))]
+    return {"type": "modal", "title": _plain("Canvas Check"), "close": _plain("Cancel"), "private_metadata": draft_id, "blocks": blocks}
 
 
 def render_canvas_preflight_view(context: CanvasPreflightContext) -> dict[str, object]:
@@ -698,7 +811,7 @@ def render_asset_page(draft: AssetDraft, page_index: int) -> dict[str, object]:
     blocks.extend(_group_blocks(draft))
 
     for asset, sel in zip(page_assets, page_sels, strict=True):
-        blocks.extend(_asset_blocks(asset, sel))
+        blocks.extend(_asset_blocks(asset, sel, draft.channel_members))
 
     # navigation actions
     nav_elements: list[dict[str, object]] = []
@@ -710,11 +823,22 @@ def render_asset_page(draft: AssetDraft, page_index: int) -> dict[str, object]:
         nav_elements.append(_button("Confirm", AID_NAV_CONFIRM, value=draft.draft_id, style="primary"))
 
     blocks.append(_actions_block("nav_actions", nav_elements))
+    blocks.append(_form_errors_block())
 
     if len(blocks) > _BLOCK_MAX:
         raise ValidationError(f"rendered {len(blocks)} blocks; maximum is {_BLOCK_MAX}")
 
-    return {"type": "modal", "title": _plain(f"Assets p.{page_index + 1}"), "close": _plain("Cancel"), "private_metadata": draft.draft_id, "blocks": blocks}
+    # Slack requires submit whenever a modal contains input blocks; without it,
+    # response_action=update is rejected client-side as "trouble connecting".
+    submit_label = "Next" if page_index < total_pages - 1 else "Confirm"
+    return {
+        "type": "modal",
+        "title": _plain(f"Assets p.{page_index + 1}"),
+        "submit": _plain(submit_label),
+        "close": _plain("Cancel"),
+        "private_metadata": draft.draft_id,
+        "blocks": blocks,
+    }
 
 
 def render_confirmation_view(context: ConfirmationContext) -> dict[str, object]:
@@ -748,6 +872,7 @@ def render_confirmation_view(context: ConfirmationContext) -> dict[str, object]:
         blocks.append(_section(f"conf_warning_{i}", _mrkdwn(f":warning: {_escape(warning)}")))
 
     blocks.append(_section("conf_disclaimer", _mrkdwn("*Note:* Once confirmed, thread posting cannot be cancelled. The process runs as a background job.")))
+    blocks.append(_form_errors_block())
 
     return {
         "type": "modal",
@@ -849,17 +974,17 @@ def _decode_plain_text(values: dict[str, object], bid: str) -> str:
 
 
 def _decode_user_select(values: dict[str, object], bid: str) -> str | None:
-    """Extract a users_select selected_user from view state values.
+    """Extract a selected user ID from users_select or static_select state.
 
     Args:
         values: the view_state.values dict.
         bid: block ID and action ID to look up.
 
     Returns:
-        str | None: the selected user ID, or None if absent.
+        str | None: the selected user ID, or None if absent/cleared.
 
     Raises:
-        ValidationError: if selected_user is present but not a string or None.
+        ValidationError: if selected value has an unexpected type.
     """
     block_entry = values.get(bid)
     if block_entry is None:
@@ -869,16 +994,30 @@ def _decode_user_select(values: dict[str, object], bid: str) -> str | None:
     action_entry = block_entry.get(bid)
     if not isinstance(action_entry, dict):
         return None
+    # Channel-member static_select
+    selected_option = action_entry.get("selected_option")
+    if isinstance(selected_option, dict):
+        val = selected_option.get("value")
+        if val is None:
+            return None
+        if not isinstance(val, str):
+            raise ValidationError(f"block '{bid}': selected_option.value must be a string or None, got {type(val).__name__}")
+        cleaned = val.strip()
+        if not cleaned or cleaned == "__none__":
+            return None
+        return cleaned
+    # Legacy users_select
     val = action_entry.get("selected_user")
     if val is None:
         return None
     if not isinstance(val, str):
         raise ValidationError(f"block '{bid}': selected_user must be a string or None, got {type(val).__name__}")
-    return val
+    cleaned = val.strip()
+    return cleaned or None
 
 
 def _decode_multi_user_select(values: dict[str, object], bid: str) -> tuple[str, ...]:
-    """Extract a multi_users_select selected_users from view state values.
+    """Extract selected user IDs from multi_users_select or multi_static_select.
 
     Args:
         values: the view_state.values dict.
@@ -888,8 +1027,7 @@ def _decode_multi_user_select(values: dict[str, object], bid: str) -> tuple[str,
         tuple[str, ...]: selected user IDs, or empty tuple if absent.
 
     Raises:
-        ValidationError: if selected_users is not a list or contains non-string
-            members.
+        ValidationError: if selected values have unexpected types.
     """
     block_entry = values.get(bid)
     if block_entry is None:
@@ -899,6 +1037,19 @@ def _decode_multi_user_select(values: dict[str, object], bid: str) -> tuple[str,
     action_entry = block_entry.get(bid)
     if not isinstance(action_entry, dict):
         return ()
+    selected_options = action_entry.get("selected_options")
+    if isinstance(selected_options, list):
+        ids: list[str] = []
+        for option in selected_options:
+            if not isinstance(option, dict):
+                raise ValidationError(f"block '{bid}': selected_options must contain option objects")
+            val = option.get("value")
+            if not isinstance(val, str):
+                raise ValidationError(f"block '{bid}': selected_options values must be strings")
+            cleaned = val.strip()
+            if cleaned and cleaned != "__none__":
+                ids.append(cleaned)
+        return tuple(ids)
     val = action_entry.get("selected_users")
     if val is None:
         return ()
@@ -906,7 +1057,7 @@ def _decode_multi_user_select(values: dict[str, object], bid: str) -> tuple[str,
         raise ValidationError(f"block '{bid}': selected_users must be a list or None, got {type(val).__name__}")
     if not all(isinstance(user_id, str) for user_id in val):
         raise ValidationError(f"block '{bid}': selected_users must contain only string user IDs")
-    return tuple(user_id for user_id in val if isinstance(user_id, str))
+    return tuple(user_id.strip() for user_id in val if isinstance(user_id, str) and user_id.strip())
 
 
 def _decode_checkbox(values: dict[str, object], bid: str, entity_id: int) -> bool:

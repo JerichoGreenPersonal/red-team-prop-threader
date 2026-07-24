@@ -14,6 +14,7 @@ def _settings() -> Settings:
     return Settings(
         slack_bot_token="xoxb-test",
         slack_signing_secret="secret",
+        slack_app_token="xapp-test",
         shotgrid_script_name="script",
         shotgrid_script_key="key",
         shotgrid_url="https://respawn.shotgunstudio.com",

@@ -65,6 +65,8 @@ class IndexedAsset:
     permalink: str
     created_at: datetime
     is_latest: bool = True
+    prior_permalink: str | None = None
+    prior_created_at: datetime | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -225,21 +227,18 @@ class CanvasService:
             DuplicateThreadResult: whether manual cleanup is required.
         """
         new_line = _asset_thread_line(request.permalink, request.created_at, is_latest=True)
-        sections = self._slack.lookup_sections(request.canvas_id, contains_text=request.prior_latest_section_hint, section_types=("any_header",))
-        # also accept non-header text matches returned by the gateway/fake
-        if not sections:
-            sections = self._slack.lookup_sections(request.canvas_id, contains_text=request.prior_latest_section_hint, section_types=())
+        # "Latest" lives on list-item/paragraph text, not headers — look up by
+        # text only (empty section_types). The gateway omits section_types when
+        # empty; sending [] makes Slack return invalid_arguments.
+        sections = self._slack.lookup_sections(request.canvas_id, contains_text=request.prior_latest_section_hint, section_types=())
         prior_id = _first_section_id(sections)
         if prior_id is None:
-            append_markdown = (
-                f"### [{_escape_md(request.asset_name)}]({request.asset_url})\n"
-                f"- {new_line}\n"
-                f"_Manual cleanup required: prior Latest marker for entity "
-                f"{request.entity_id} could not be updated precisely._\n"
+            # Do not append orphan asset fragments without a group heading —
+            # callers should fall back to index_batch for a full group rewrite.
+            return DuplicateThreadResult(
+                manual_cleanup_required=True,
+                detail=f"prior Latest marker for entity {request.entity_id} needs manual cleanup",
             )
-            self._slack.edit_canvas(request.canvas_id, operation="insert_at_end", markdown=append_markdown)
-            return DuplicateThreadResult(manual_cleanup_required=True, detail=f"prior Latest marker for entity {request.entity_id} needs manual cleanup")
-
         # clear Latest on the prior marker without rewriting unmanaged neighbors
         self._slack.edit_canvas(request.canvas_id, operation="replace", section_id=prior_id, markdown=new_line.replace(" — Latest", ""))
         self._slack.edit_canvas(
@@ -286,25 +285,29 @@ def render_group_markdown(request: GroupIndexRequest) -> str:
         request: group index request.
 
     Returns:
-        str: markdown document fragment for the group.
+        str: markdown document fragment for the group, ending with two blank
+        lines so consecutive groups stay visually separated on the canvas.
     """
     title = normalize_group_title(request.group_title)
-    people = ", ".join((request.animator_display, *request.additional_displays))
+    people_parts = [part for part in (request.animator_display, *request.additional_displays) if part and part.strip()]
+    people = ", ".join(people_parts) if people_parts else "unassigned"
     link_lines = "\n".join(f"- [{_escape_md(link.label)}]({link.url})" for link in request.links)
     asset_parts: list[str] = []
     for asset in request.assets:
-        asset_parts.append(
-            "\n".join((
-                f"### [{_escape_md(asset.name)}]({asset.asset_url})",
-                f"- {_asset_thread_line(asset.permalink, asset.created_at, is_latest=asset.is_latest)}",
-            ))
-        )
-    sections = [f"## {title}", f"**People:** {people}" if people else "**People:**"]
+        lines = [
+            f"### [{_escape_md(asset.name)}]({asset.asset_url})",
+            f"- {_asset_thread_line(asset.permalink, asset.created_at, is_latest=asset.is_latest)}",
+        ]
+        if asset.prior_permalink and asset.prior_created_at is not None:
+            lines.append(f"- {_asset_thread_line(asset.prior_permalink, asset.prior_created_at, is_latest=False)}")
+        asset_parts.append("\n".join(lines))
+    sections = [f"## {title}", f"**Creative Stakeholder:** {people}"]
     if link_lines:
-        sections.append("**Links:**\n" + link_lines)
+        sections.append("**Group Links:**\n" + link_lines)
     if asset_parts:
         sections.append("\n\n".join(asset_parts))
-    return "\n\n".join(sections) + "\n"
+    # Two trailing blank lines separate this group from the previous group below.
+    return "\n\n".join(sections) + "\n\n\n"
 
 
 def _asset_thread_line(permalink: str, created_at: datetime, *, is_latest: bool) -> str:
@@ -323,16 +326,35 @@ def _normalize_title(value: str) -> str:
 
 
 def _extract_canvas_id(channel: dict[str, object]) -> str | None:
-    """Extract the built-in channel canvas file id from conversations.info."""
+    """Extract the channel canvas file id from conversations.info.
+
+    Prefers the legacy ``properties.canvas.file_id`` field when present. Newer
+    Slack channel canvases appear only as ``properties.tabs`` /
+    ``properties.tabz`` entries with ``type == "canvas"``.
+    """
     properties = channel.get("properties")
     if not isinstance(properties, dict):
         return None
+
     canvas = properties.get("canvas")
-    if not isinstance(canvas, dict):
-        return None
-    file_id = canvas.get("file_id") or canvas.get("id")
-    if isinstance(file_id, str) and file_id:
-        return file_id
+    if isinstance(canvas, dict):
+        file_id = canvas.get("file_id") or canvas.get("id")
+        if isinstance(file_id, str) and file_id:
+            return file_id
+
+    for key in ("tabs", "tabz"):
+        tabs = properties.get(key)
+        if not isinstance(tabs, list):
+            continue
+        for tab in tabs:
+            if not isinstance(tab, dict) or tab.get("type") != "canvas":
+                continue
+            data = tab.get("data")
+            if not isinstance(data, dict):
+                continue
+            file_id = data.get("file_id") or data.get("id")
+            if isinstance(file_id, str) and file_id:
+                return file_id
     return None
 
 

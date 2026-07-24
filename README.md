@@ -11,7 +11,7 @@ Internal Slack app that creates and indexes prop-request threads from API-export
 RED Team Prop Threader:
 • Imports up to 30 assets from an API-exportable ShotGrid page via `/create-prop-threads`
 • Validates Asset Name and Entity ID columns, deduplicates Entity IDs, and preserves export order
-• Collects group-level and asset-level context in a paginated Slack modal (Animator, Additional People, supporting links)
+• Collects group-level and asset-level context in a paginated Slack modal (Creative Stakeholder, Requestor, links)
 • Lets users exclude individual assets before submission (at least one must remain included)
 • Presents a confirmation summary of channel, group title, included count, and conflict warnings
 • Creates one Slack root message per selected asset after explicit confirmation
@@ -19,6 +19,8 @@ RED Team Prop Threader:
 • Supports latest-only post-completion edits without sending new notifications
 
 The result is a consistent, discoverable set of prop-request threads that stakeholders can follow without manually copying assets from ShotGrid or rebuilding channel indexes by hand.
+
+**New users:** start with [docs/user-guide.md](docs/user-guide.md).
 
 Human-in-the-Loop Control (does not post prop threads autonomously — by design)
 All prop-request threads are assembled as a private draft and require confirmation before any public messages are created. The bot does not autonomously publish asset roots or canvas updates from a slash-command invocation alone. This ensures oversight, editorial control, and alignment with team communication standards. After confirmation, processing cannot be cancelled mid-batch; failures are reported privately with a Retry Failed path.
@@ -69,8 +71,10 @@ Copy-Item .env.example .env
 
 - [Slack app setup (IT / manifest)](docs/admin/slack-app-setup.md)
 - [Development-channel pilot procedure](docs/admin/pilot-test.md)
+- [Remote host setup (always-on Windows / RDP)](docs/admin/remote-host.md)
 - [ROI assessment / reason for the app](docs/admin/roi.md)
 - Manifest: [`slack-app-manifest.yaml`](slack-app-manifest.yaml) — replace `prop-threader-dev.example.invalid` before import
+  (Socket Mode primary path does not require a public Request URL)
 
 ## Development Commands
 

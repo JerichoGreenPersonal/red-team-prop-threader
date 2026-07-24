@@ -89,7 +89,12 @@ class FakeSlackGateway:
 
     def get_user_info(self, user_id: str) -> dict[str, object]:
         """Return a display name profile."""
-        return {"id": user_id, "profile": {"display_name": f"Name {user_id}", "real_name": f"Name {user_id}"}}
+        return {
+            "id": user_id,
+            "name": user_id.lower(),
+            "is_bot": False,
+            "profile": {"display_name": f"Name {user_id}", "real_name": f"Name {user_id}"},
+        }
 
     def lookup_sections(self, canvas_id: str, *, contains_text: str | None = None, section_types: tuple[str, ...] = ("any_header",)) -> list[dict[str, str]]:
         """Return canvas sections for group replace."""
@@ -346,6 +351,46 @@ def test_asset_edit_updates_one_latest_root(
     assert updated.last_edited_at == clock.now()
 
 
+def test_open_editor_omits_empty_initial_user(edit_service: EditService, repositories: Repositories, session: Session, clock: FakeClock) -> None:
+    """Unassigned people must not send empty initial_option (Slack rejects empty initials)."""
+    group_id = _seed_group(repositories, session, clock)
+    batch = repositories.batches.create(group_id=group_id, workspace_id="W1", channel_id="C1", submitter_user_id="Ueditor", payload={}, now=clock.now())
+    session.flush()
+    snapshot = _asset_snapshot(1001)
+    snapshot["asset_animator_id"] = ""
+    snapshot["asset_additional_ids"] = []
+    root = repositories.history.record(
+        NewMessageInput(
+            workspace_id="W1",
+            channel_id="C1",
+            group_id=group_id,
+            batch_id=batch.id,
+            kind=MessageKind.ASSET_ROOT,
+            asset_entity_id=1001,
+            slack_ts="400.1",
+            permalink="https://slack.example/400",
+            canvas_metadata={"edit": snapshot},
+            now=clock.now(),
+        )
+    )
+    session.flush()
+    result = edit_service.open_asset_editor(
+        MessageRef(workspace_id="W1", channel_id="C1", user_id="Ueditor", message_ts=root.slack_ts, message_identity="a")
+    )
+    assert not result.refused
+    assert result.view is not None
+    animator_block = result.view["blocks"][0]
+    assert animator_block["element"]["type"] == "static_select"
+    assert "initial_option" not in animator_block["element"]
+    assert "initial_user" not in animator_block["element"]
+    assert animator_block.get("optional") is True
+    additional_block = result.view["blocks"][1]
+    assert additional_block["element"]["type"] == "multi_static_select"
+    assert "initial_options" not in additional_block["element"]
+    assert "initial_users" not in additional_block["element"]
+    assert any("@ueditor" in opt["text"]["text"] for opt in animator_block["element"]["options"])
+    assert any("Name Ueditor" in opt["text"]["text"] for opt in animator_block["element"]["options"])
+
 def test_open_latest_editors_return_views(edit_service: EditService, repositories: Repositories, session: Session, clock: FakeClock) -> None:
     """Latest asset/group editors return modal views."""
     request = sample_group_edit(repositories, session, clock)
@@ -373,6 +418,17 @@ def test_non_member_cannot_open_editor(
     fake_slack.members = {"Uanim"}
     with pytest.raises(ValidationError, match="channel members"):
         edit_service.open_group_editor(MessageRef(workspace_id="W1", channel_id="C1", user_id="Ueditor", message_ts=request.message_ts, message_identity="g"))
+
+
+def test_edit_validation_errors_route_link_parse_to_links_block() -> None:
+    """Link format failures must not be attributed to the Animator block."""
+    from red_team_prop_threader.edits import edit_validation_errors
+    from red_team_prop_threader._errors import ValidationError
+
+    errors = edit_validation_errors(ValidationError("line 1: Supporting links require a label (label: link)"))
+    assert errors == {"edit_links": "line 1: Supporting links require a label (label: link)"}
+    membership = edit_validation_errors(ValidationError("selected users must be members of the target channel"))
+    assert membership == {"edit_animator": "selected users must be members of the target channel"}
 
 
 def test_decode_edit_submission_parses_metadata_and_fields() -> None:

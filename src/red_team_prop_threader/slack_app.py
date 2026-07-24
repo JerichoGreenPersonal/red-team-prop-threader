@@ -15,8 +15,9 @@ from red_team_prop_threader.edits import (
     AssetEditRequest,
     GroupEditRequest,
     decode_edit_submission,
+    edit_validation_errors,
 )
-from red_team_prop_threader.views import AID_NAV_BACK, AID_NAV_NEXT, AID_NAV_CONFIRM, AID_CANVAS_CREATE, AID_CANVAS_RENAME, AID_CANVAS_DECLINE
+from red_team_prop_threader.views import AID_NAV_BACK, AID_NAV_NEXT, AID_NAV_CONFIRM, AID_CANVAS_CREATE, AID_CANVAS_RENAME, AID_CANVAS_DECLINE, with_form_error_notice
 from red_team_prop_threader._errors import ValidationError, ExternalServiceError, ImportValidationError
 
 
@@ -30,6 +31,7 @@ if TYPE_CHECKING:
 __all__ = ("create_bolt_app", "register_listeners")
 
 _CALLBACK_IMPORT = "import_assets"
+_CALLBACK_ASSET = "asset_page"
 _CALLBACK_CONFIRM = "confirm_batch"
 
 
@@ -62,8 +64,11 @@ def register_listeners(app: App, workflow_factory: Callable[[], Workflow], edit_
 
     @app.command("/create-prop-threads")
     def handle_create_prop_threads(ack: Any, command: dict[str, Any], logger: Any) -> None:
-        """Handle /create-prop-threads by acking then running preflight."""
-        ack()
+        """Run preflight + views.open, then acknowledge the slash command.
+
+        Intended for ``process_before_response=True`` so Slack receives the
+        Socket Mode ack only after the modal is open.
+        """
         workflow = workflow_factory()
         from red_team_prop_threader.workflow import CommandRequest
 
@@ -78,26 +83,33 @@ def register_listeners(app: App, workflow_factory: Callable[[], Workflow], edit_
                     response_url=str(command.get("response_url") or ""),
                 )
             )
-        except Exception:
-            logger.exception("create-prop-threads failed")
+        except Exception as exc:
+            logger.exception("create-prop-threads failed: %s", exc)
+        ack()
 
     @app.action(AID_CANVAS_CREATE)
-    def handle_canvas_create(ack: Any, body: dict[str, Any], client: Any) -> None:
-        """Create canvas then show import modal."""
+    def handle_canvas_create(ack: Any, body: dict[str, Any], client: Any, logger: Any) -> None:
+        """Create canvas then show import or Assets p.1 (when a command URL exists)."""
         ack()
         workflow = workflow_factory()
         draft_id = _action_value(body)
-        view = workflow.confirm_canvas_create(draft_id)
-        _replace_view(client, body, view)
+        try:
+            view = workflow.confirm_canvas_create(draft_id)
+            _replace_view(client, body, view)
+        except Exception:
+            logger.exception("canvas create failed")
 
     @app.action(AID_CANVAS_RENAME)
-    def handle_canvas_rename(ack: Any, body: dict[str, Any], client: Any) -> None:
-        """Rename canvas then show import modal."""
+    def handle_canvas_rename(ack: Any, body: dict[str, Any], client: Any, logger: Any) -> None:
+        """Rename canvas then show import or Assets p.1 (when a command URL exists)."""
         ack()
         workflow = workflow_factory()
         draft_id = _action_value(body)
-        view = workflow.confirm_canvas_rename(draft_id)
-        _replace_view(client, body, view)
+        try:
+            view = workflow.confirm_canvas_rename(draft_id)
+            _replace_view(client, body, view)
+        except Exception:
+            logger.exception("canvas rename failed")
 
     @app.action(AID_CANVAS_DECLINE)
     def handle_canvas_decline(ack: Any, body: dict[str, Any]) -> None:
@@ -107,7 +119,7 @@ def register_listeners(app: App, workflow_factory: Callable[[], Workflow], edit_
         workflow.decline_canvas(_action_value(body))
 
     @app.view(_CALLBACK_IMPORT)
-    def handle_import_submit(ack: Any, body: dict[str, Any], view: dict[str, Any], client: Any) -> None:
+    def handle_import_submit(ack: Any, body: dict[str, Any], view: dict[str, Any], client: Any, logger: Any) -> None:
         """Export ShotGrid page and open asset page 0."""
         workflow = workflow_factory()
         draft_id = str(view.get("private_metadata") or "")
@@ -116,6 +128,46 @@ def register_listeners(app: App, workflow_factory: Callable[[], Workflow], edit_
             next_view = workflow.submit_import_url(draft_id=draft_id, page_url=page_url)
         except (ValidationError, ImportValidationError, ExternalServiceError) as exc:
             ack(response_action="errors", errors={"import_url": str(exc)})
+            return
+        except Exception:
+            logger.exception("import submit failed draft_id=%s", draft_id)
+            ack(response_action="errors", errors={"import_url": "import failed; try again"})
+            return
+        ack(response_action="update", view=next_view)
+
+    @app.view(_CALLBACK_ASSET)
+    def handle_asset_page_submit(ack: Any, body: dict[str, Any], view: dict[str, Any], logger: Any) -> None:
+        """Handle the required modal submit on an asset page (Next or Confirm)."""
+        workflow = workflow_factory()
+        draft_id = str(view.get("private_metadata") or "")
+        state = _as_dict(view.get("state"))
+        draft = workflow.drafts.get(draft_id)
+        page_index = draft.page_index if draft is not None else 0
+        try:
+            workflow.save_asset_page(draft_id=draft_id, page_index=page_index, view_state=state)
+        except ValidationError as exc:
+            ack(response_action="errors", errors=with_form_error_notice({"group_title": str(exc)}))
+            return
+
+        try:
+            next_view = workflow.open_asset_page(draft_id, page_index + 1)
+        except ValidationError:
+            draft = workflow.drafts.get(draft_id)
+            if draft is None:
+                ack(response_action="errors", errors=with_form_error_notice({"group_title": "draft not found or expired"}))
+                return
+            field_errors = workflow._confirm_field_errors(draft)
+            if field_errors:
+                ack(response_action="errors", errors=with_form_error_notice(field_errors))
+                return
+            try:
+                next_view = workflow.open_confirmation(draft_id)
+            except ValidationError as exc:
+                ack(response_action="errors", errors=with_form_error_notice({"group_animator": str(exc)}))
+                return
+        except Exception:
+            logger.exception("asset page submit failed draft_id=%s", draft_id)
+            ack(response_action="errors", errors=with_form_error_notice({"group_title": "could not continue; try again"}))
             return
         ack(response_action="update", view=next_view)
 
@@ -132,7 +184,7 @@ def register_listeners(app: App, workflow_factory: Callable[[], Workflow], edit_
         _navigate(workflow_factory(), body, client, delta=-1)
 
     @app.action(AID_NAV_CONFIRM)
-    def handle_nav_confirm(ack: Any, body: dict[str, Any], client: Any) -> None:
+    def handle_nav_confirm(ack: Any, body: dict[str, Any], client: Any, logger: Any) -> None:
         """Save final asset page and open confirmation."""
         ack()
         workflow = workflow_factory()
@@ -141,9 +193,18 @@ def register_listeners(app: App, workflow_factory: Callable[[], Workflow], edit_
         state = _as_dict(view.get("state"))
         draft = workflow.drafts.get(draft_id)
         page_index = draft.page_index if draft is not None else 0
-        workflow.save_asset_page(draft_id=draft_id, page_index=page_index, view_state=state)
-        next_view = workflow.open_confirmation(draft_id)
-        _replace_view(client, body, next_view)
+        try:
+            workflow.save_asset_page(draft_id=draft_id, page_index=page_index, view_state=state)
+            next_view = workflow.open_confirmation(draft_id)
+            _replace_view(client, body, next_view)
+        except ValidationError as exc:
+            draft = workflow.drafts.get(draft_id)
+            if draft is not None:
+                client.chat_postEphemeral(channel=draft.channel_id, user=draft.user_id, text=str(exc))
+            else:
+                logger.warning("nav confirm validation failed: %s", exc)
+        except Exception:
+            logger.exception("nav confirm failed")
 
     @app.view(_CALLBACK_CONFIRM)
     def handle_confirm_submit(ack: Any, body: dict[str, Any], view: dict[str, Any], client: Any) -> None:
@@ -157,10 +218,14 @@ def register_listeners(app: App, workflow_factory: Callable[[], Workflow], edit_
         title = _confirm_title_from_view(view)
         if title:
             draft.group_title = title
-        try:
-            workflow._validate_draft_for_confirm(draft)
-        except ValidationError as exc:
-            ack(response_action="errors", errors={"confirm_group_title": str(exc)})
+        field_errors = workflow._confirm_field_errors(draft)
+        if field_errors:
+            # Confirmation modal inputs: title + trailing notice sink.
+            message = field_errors.get("group_animator") or field_errors.get("group_title") or next(iter(field_errors.values()))
+            ack(
+                response_action="errors",
+                errors=with_form_error_notice({"confirm_group_title": message}),
+            )
             return
         response = workflow.confirm_batch(draft)
         if not response.accepted:
@@ -216,7 +281,7 @@ def _register_edit_listeners(app: App, edit_factory: Callable[[], EditService]) 
                 )
             )
         except ValidationError as exc:
-            ack(response_action="errors", errors={"edit_animator": str(exc)})
+            ack(response_action="errors", errors=edit_validation_errors(exc))
             return
         ack()
 
@@ -237,7 +302,7 @@ def _register_edit_listeners(app: App, edit_factory: Callable[[], EditService]) 
                 )
             )
         except ValidationError as exc:
-            ack(response_action="errors", errors={"edit_animator": str(exc)})
+            ack(response_action="errors", errors=edit_validation_errors(exc))
             return
         ack()
 

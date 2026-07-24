@@ -7,10 +7,12 @@ from typing import TYPE_CHECKING, Any, Protocol, cast
 from datetime import timedelta
 from dataclasses import dataclass
 
+from red_team_prop_threader.jobs import BatchPlanner
 from red_team_prop_threader.views import (
     AssetDraft,
     ImportContext,
     AssetSelection,
+    ChannelMemberOption,
     ConfirmationContext,
     CanvasPreflightContext,
     render_asset_page,
@@ -20,9 +22,10 @@ from red_team_prop_threader.views import (
     render_canvas_preflight_view,
 )
 from red_team_prop_threader.canvas import CANVAS_TITLE, PreflightState
-from red_team_prop_threader._errors import ValidationError, ExternalServiceError, PermissionDeniedError
+from red_team_prop_threader._errors import ValidationError, ExternalServiceError, PermissionDeniedError, ImportValidationError
 from red_team_prop_threader.shotgrid import parse_page_id, parse_export_csv
-from red_team_prop_threader.validation import infer_group_title, normalize_group_title, parse_supporting_links, validate_channel_members
+from red_team_prop_threader.validation import infer_group_title, normalize_group_title, parse_supporting_links
+from red_team_prop_threader.repositories import Repositories
 
 
 if TYPE_CHECKING:
@@ -208,11 +211,17 @@ class Workflow:
         self.drafts = drafts or DraftBook()
 
     def handle_command(self, command: CommandRequest) -> None:
-        """Acknowledge by opening preflight, then refine the modal.
+        """Run canvas preflight, then open the final modal once.
 
-        Opens a canvas_preflight modal immediately, runs canvas preflight, and
-        updates the modal to import, confirmation actions, or a blocked error.
-        ShotGrid export is intentionally deferred until import submission.
+        Uses a single ``views.open`` (no follow-up ``views.update``) so the
+        Slack client never races a loading modal into the import screen.
+        Requires the Bolt listener to finish before acknowledging the slash
+        command (``process_before_response=True``).
+
+        When the slash command includes a ShotGrid page URL and the canvas is
+        already ready, ShotGrid export runs immediately and Assets p.1 opens
+        (skipping the import confirmation modal). Otherwise export stays
+        deferred until import submission.
 
         Args:
             command: slash-command request payload.
@@ -241,18 +250,11 @@ class Workflow:
         )
         self.drafts.put(draft)
 
-        loading = render_canvas_preflight_view(CanvasPreflightContext(draft_id=draft_id, canvas_name=CANVAS_TITLE, channel_id=command.channel_id))
-        loading = {**loading, "callback_id": _CALLBACK_PREFLIGHT}
-        opened = self.slack.open_view(command.trigger_id, loading)
-        raw_view = opened.get("view")
-        view_meta = cast("dict[str, Any]", raw_view) if isinstance(raw_view, dict) else {}
-        draft.view_id = str(view_meta.get("id") or "") or None
-        draft.view_hash = str(view_meta.get("hash") or "") or None
-
         try:
             result = self.canvas.preflight(command.channel_id)
         except (PermissionDeniedError, ExternalServiceError) as exc:
-            self._update_draft_view(draft, _blocked_view(draft_id, str(exc)))
+            opened = self.slack.open_view(command.trigger_id, _blocked_view(draft_id, str(exc)))
+            self._capture_view_ids(draft, opened)
             return
 
         draft.preflight_state = result.state.value
@@ -260,18 +262,19 @@ class Workflow:
 
         if result.state is PreflightState.BLOCKED:
             detail = result.detail or "canvas access is blocked"
-            self._update_draft_view(draft, _blocked_view(draft_id, detail))
+            opened = self.slack.open_view(command.trigger_id, _blocked_view(draft_id, detail))
+            self._capture_view_ids(draft, opened)
             return
 
         if result.state is PreflightState.READY:
-            import_view = render_import_view(ImportContext(draft_id=draft_id, prefilled_url=command_url or None))
-            self._update_draft_view(draft, {**import_view, "callback_id": _CALLBACK_IMPORT})
+            opened = self.slack.open_view(command.trigger_id, self._import_or_asset_view(draft))
+            self._capture_view_ids(draft, opened)
             return
 
-        # create or rename confirmation uses the same preflight actions view
         canvas_name = result.current_title or CANVAS_TITLE
         preflight_view = render_canvas_preflight_view(CanvasPreflightContext(draft_id=draft_id, canvas_name=canvas_name, channel_id=command.channel_id))
-        self._update_draft_view(draft, {**preflight_view, "callback_id": _CALLBACK_PREFLIGHT})
+        opened = self.slack.open_view(command.trigger_id, {**preflight_view, "callback_id": _CALLBACK_PREFLIGHT})
+        self._capture_view_ids(draft, opened)
 
     def confirm_canvas_create(self, draft_id: str) -> dict[str, Any]:
         """Create a missing channel canvas after user confirmation.
@@ -280,7 +283,7 @@ class Workflow:
             draft_id: draft identifier from the preflight modal.
 
         Returns:
-            dict[str, Any]: import modal view payload.
+            dict[str, Any]: import or asset modal view payload.
 
         Raises:
             ValidationError: if the draft is unknown.
@@ -290,8 +293,7 @@ class Workflow:
         canvas_id = self.canvas.ensure_canvas(draft.channel_id, create=True)
         draft.canvas_id = canvas_id
         draft.preflight_state = PreflightState.READY.value
-        view = render_import_view(ImportContext(draft_id=draft_id, prefilled_url=draft.command_url or None))
-        return {**view, "callback_id": _CALLBACK_IMPORT}
+        return self._import_or_asset_view(draft)
 
     def confirm_canvas_rename(self, draft_id: str) -> dict[str, Any]:
         """Rename the channel canvas after user confirmation.
@@ -300,7 +302,7 @@ class Workflow:
             draft_id: draft identifier from the preflight modal.
 
         Returns:
-            dict[str, Any]: import modal view payload.
+            dict[str, Any]: import or asset modal view payload.
 
         Raises:
             ValidationError: if the draft is unknown.
@@ -310,8 +312,7 @@ class Workflow:
         canvas_id = self.canvas.ensure_canvas(draft.channel_id, rename=True)
         draft.canvas_id = canvas_id
         draft.preflight_state = PreflightState.READY.value
-        view = render_import_view(ImportContext(draft_id=draft_id, prefilled_url=draft.command_url or None))
-        return {**view, "callback_id": _CALLBACK_IMPORT}
+        return self._import_or_asset_view(draft)
 
     def decline_canvas(self, draft_id: str) -> None:
         """End the workflow without canvas changes.
@@ -390,6 +391,9 @@ class Workflow:
                 included = [entity_id for entity_id in included if entity_id != state.entity_id]
             if state.animator_id:
                 draft.asset_animators[state.entity_id] = state.animator_id
+            else:
+                # Clear selection must remove a previously saved animator.
+                draft.asset_animators.pop(state.entity_id, None)
             draft.asset_additional[state.entity_id] = state.additional_ids
             draft.asset_links_text[state.entity_id] = state.links_text
         draft.included_entity_ids = tuple(included)
@@ -445,14 +449,23 @@ class Workflow:
         return {**view, "callback_id": _CALLBACK_CONFIRM}
 
     def confirm_batch(self, draft: DraftSession) -> ConfirmResponse:
-        """Acquire the channel lease and accept the batch, or report busy.
+        """Acquire the channel lease, enqueue a durable batch, or report busy.
+
+        On success the draft is persisted as a PENDING batch with planned
+        operations for the worker. The in-memory draft is discarded so the
+        same confirmation cannot be submitted twice.
 
         Args:
             draft: draft session to confirm.
 
         Returns:
             ConfirmResponse: accepted lease result or busy private message.
+
+        Raises:
+            ValidationError: if the draft fails confirmation validation.
+            ExternalServiceError: if persistence prerequisites are missing.
         """
+        self._validate_draft_for_confirm(draft)
         self.drafts.put(draft)
         lease = self.leases.acquire(draft.channel_id, draft.user_id, self.clock.now(), _LEASE_TTL, workspace_id=draft.workspace_id)
         if not lease.acquired:
@@ -460,38 +473,121 @@ class Workflow:
             text = f"RED Team Prop Threader is currently creating threads for @{owner_name}."
             return ConfirmResponse(draft_id=draft.draft_id, private_text=text, accepted=False)
 
-        if self.session is not None:
-            self.session.commit()
+        if self.session is None:
+            raise ExternalServiceError("database session is required to enqueue a batch")
+        if not lease.token:
+            raise ExternalServiceError("channel lease was acquired without a token")
+        if not draft.canvas_id:
+            raise ValidationError("channel canvas is required before confirmation")
+
+        now = self.clock.now()
+        title = normalize_group_title(draft.group_title)
+        repositories = Repositories.from_session(self.session)
+        group = repositories.groups.create(
+            workspace_id=draft.workspace_id, channel_id=draft.channel_id, display_title=title, normalized_title=title.casefold(), now=now
+        )
+        self.session.flush()
+        payload = self._batch_payload(draft, lease_token=lease.token)
+        batch = repositories.batches.create(
+            group_id=group.id, workspace_id=draft.workspace_id, channel_id=draft.channel_id, submitter_user_id=draft.user_id, payload=payload, now=now
+        )
+        self.session.flush()
+        BatchPlanner(repositories).plan(batch.id, now=now)
+        self.session.commit()
+        self.drafts.discard(draft.draft_id)
         return ConfirmResponse(draft_id=draft.draft_id, private_text="Batch accepted. Creating threads…", accepted=True, lease_token=lease.token)
 
+    def _batch_payload(self, draft: DraftSession, *, lease_token: str) -> dict[str, Any]:
+        """Build the durable worker payload from a confirmed draft."""
+        title = normalize_group_title(draft.group_title)
+        group_links = parse_supporting_links(draft.group_links_text) if draft.group_links_text.strip() else ()
+        included = set(draft.included_entity_ids)
+        assets: list[dict[str, Any]] = []
+        for asset in draft.assets:
+            if asset.entity_id not in included:
+                continue
+            links_text = draft.asset_links_text.get(asset.entity_id, "")
+            asset_links = parse_supporting_links(links_text) if links_text.strip() else ()
+            assets.append({
+                "entity_id": asset.entity_id,
+                "name": asset.name,
+                "url": asset.url,
+                "animator_id": draft.asset_animators.get(asset.entity_id) or "",
+                "additional_ids": list(draft.asset_additional.get(asset.entity_id, ())),
+                "links": [{"label": link.label, "url": link.url} for link in asset_links],
+            })
+        return {
+            "canvas_id": draft.canvas_id,
+            "group_title": title,
+            "group_animator_id": draft.group_animator_id or "",
+            "group_additional_ids": list(draft.group_additional_ids),
+            "group_links": [{"label": link.label, "url": link.url} for link in group_links],
+            "lease_token": lease_token,
+            "assets": assets,
+        }
+
     def _validate_draft_for_confirm(self, draft: DraftSession) -> None:
-        """Validate title, inclusion, people, and links before confirmation."""
+        """Validate title, inclusion, people, and links before confirmation.
+
+        Raises:
+            ValidationError: when required fields are missing or selected users
+                are not members of the target channel.
+        """
+        errors = self._confirm_field_errors(draft)
+        if errors:
+            # Prefer a people-field message when membership failed; otherwise first error.
+            for key in ("group_animator", "group_additional", "group_title"):
+                if key in errors:
+                    raise ValidationError(errors[key])
+            raise ValidationError(next(iter(errors.values())))
+
+    def _confirm_field_errors(self, draft: DraftSession) -> dict[str, str]:
+        """Return modal block_id → error text for confirmation validation failures.
+
+        People fields are optional. Membership is checked only for IDs that were
+        actually selected.
+        """
+        errors: dict[str, str] = {}
         if not draft.included_entity_ids:
-            raise ValidationError("at least one asset must remain included")
+            errors["group_title"] = "at least one asset must remain included"
+            return errors
         title = normalize_group_title(draft.group_title)
         if not title:
-            raise ValidationError("group title is required")
-        if draft.group_animator_id is None:
-            raise ValidationError("group animator is required")
+            errors["group_title"] = "group title is required"
+
         members = set(self.slack.get_conversation_members(draft.channel_id))
-        people: set[str] = set(draft.group_additional_ids)
-        if draft.group_animator_id is not None:
-            people.add(draft.group_animator_id)
+
+        def _note_missing(user_id: str | None, block_id: str) -> None:
+            if not user_id or user_id in members:
+                return
+            label = self._display_name(user_id)
+            errors.setdefault(
+                block_id,
+                f"{label} must be a member of this channel (invite them or pick someone already in the channel)",
+            )
+
+        _note_missing(draft.group_animator_id, "group_animator")
+        for user_id in draft.group_additional_ids:
+            _note_missing(user_id, "group_additional")
+
         for entity_id in draft.included_entity_ids:
             animator = draft.asset_animators.get(entity_id)
-            if not animator:
-                raise ValidationError(f"animator is required for asset {entity_id}")
-            people.add(animator)
-            people.update(draft.asset_additional.get(entity_id, ()))
-        missing = validate_channel_members(people, members)
-        if missing:
-            raise ValidationError("selected users must be members of the target channel")
-        if draft.group_links_text.strip():
-            parse_supporting_links(draft.group_links_text)
-        for entity_id in draft.included_entity_ids:
-            links_text = draft.asset_links_text.get(entity_id, "")
-            if links_text.strip():
-                parse_supporting_links(links_text)
+            if animator:
+                _note_missing(animator, f"asset_{entity_id}_animator")
+            for user_id in draft.asset_additional.get(entity_id, ()):
+                _note_missing(user_id, f"asset_{entity_id}_additional")
+
+        try:
+            if draft.group_links_text.strip():
+                parse_supporting_links(draft.group_links_text)
+            for entity_id in draft.included_entity_ids:
+                links_text = draft.asset_links_text.get(entity_id, "")
+                if links_text.strip():
+                    parse_supporting_links(links_text)
+        except ValidationError as exc:
+            errors.setdefault("group_links", str(exc))
+
+        return errors
 
     def _to_asset_draft(self, draft: DraftSession) -> AssetDraft:
         """Convert a session draft into an AssetDraft for view rendering."""
@@ -514,7 +610,61 @@ class Workflow:
             group_additional_ids=draft.group_additional_ids,
             group_links_text=draft.group_links_text,
             selections=selections,
+            channel_members=self._channel_member_options(draft.channel_id),
         )
+
+    def _channel_member_options(self, channel_id: str) -> tuple[ChannelMemberOption, ...]:
+        """Build verbose channel-member picker options (humans only, max 100)."""
+        options: list[ChannelMemberOption] = []
+        for user_id in self.slack.get_conversation_members(channel_id):
+            if len(options) >= 100:
+                break
+            label = self._verbose_member_label(user_id)
+            if label is None:
+                continue
+            options.append(ChannelMemberOption(user_id=user_id, label=label))
+        options.sort(key=lambda item: item.label.casefold())
+        return tuple(options)
+
+    def _verbose_member_label(self, user_id: str) -> str | None:
+        """Return a verbose picker label, or None for bots/apps to exclude."""
+        try:
+            info = self.slack.get_user_info(user_id)
+        except ExternalServiceError:
+            return user_id
+        if info.get("deleted") is True or info.get("is_bot") is True or user_id == "USLACKBOT":
+            return None
+        profile = info.get("profile") if isinstance(info.get("profile"), dict) else {}
+        real_name = ""
+        display_name = ""
+        if isinstance(profile, dict):
+            real_name = str(profile.get("real_name") or "").strip()
+            display_name = str(profile.get("display_name") or "").strip()
+        username = str(info.get("name") or "").strip()
+        primary = real_name or display_name or username or user_id
+        if username and primary.casefold() != username.casefold():
+            label = f"{primary} (@{username})"
+        elif username:
+            label = f"@{username}"
+        else:
+            label = primary
+        return label[:75]
+
+    def _import_or_asset_view(self, draft: DraftSession) -> dict[str, Any]:
+        """Open Assets p.1 when a command URL is present; otherwise the import modal.
+
+        If the provided URL fails export/validation, fall back to the import
+        modal with that URL prefilled so the user can correct it.
+        """
+        url = (draft.command_url or draft.page_url or "").strip()
+        if not url:
+            view = render_import_view(ImportContext(draft_id=draft.draft_id, prefilled_url=None))
+            return {**view, "callback_id": _CALLBACK_IMPORT}
+        try:
+            return self.submit_import_url(draft_id=draft.draft_id, page_url=url)
+        except (ValidationError, ImportValidationError, ExternalServiceError):
+            view = render_import_view(ImportContext(draft_id=draft.draft_id, prefilled_url=url))
+            return {**view, "callback_id": _CALLBACK_IMPORT}
 
     def _require_draft(self, draft_id: str) -> DraftSession:
         """Return a draft or raise ValidationError."""
@@ -523,11 +673,27 @@ class Workflow:
             raise ValidationError("draft not found or expired")
         return draft
 
+    def _capture_view_ids(self, draft: DraftSession, opened: dict[str, Any]) -> None:
+        """Store view id/hash from a views.open response onto the draft."""
+        raw_view = opened.get("view")
+        view_meta = cast("dict[str, Any]", raw_view) if isinstance(raw_view, dict) else {}
+        draft.view_id = str(view_meta.get("id") or "") or None
+        draft.view_hash = str(view_meta.get("hash") or "") or None
+
     def _update_draft_view(self, draft: DraftSession, view: dict[str, Any]) -> None:
-        """Update the open modal when a view id is available."""
+        """Update the open modal when a view id is available.
+
+        Omits the view hash so a stale hash from the initial open cannot block
+        follow-up updates from button handlers.
+        """
         if not draft.view_id:
             return
-        self.slack.update_view(draft.view_id, view, view_hash=draft.view_hash)
+        updated = self.slack.update_view(draft.view_id, view)
+        raw_view = updated.get("view")
+        view_meta = cast("dict[str, Any]", raw_view) if isinstance(raw_view, dict) else {}
+        new_hash = str(view_meta.get("hash") or "") or None
+        if new_hash:
+            draft.view_hash = new_hash
 
     def _display_name(self, user_id: str) -> str:
         """Resolve a non-notifying display name for busy-owner copy."""

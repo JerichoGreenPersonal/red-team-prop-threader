@@ -61,4 +61,6 @@ def run_forever(*, settings: Settings | None = None, once: bool = False) -> None
 
 def main() -> None:
     """CLI entry point for the prop-threader worker process."""
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+    _LOG.info("prop-threader worker starting")
     run_forever()

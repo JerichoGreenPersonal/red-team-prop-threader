@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
-import io
 import csv
+import io
+import logging
+import re
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
@@ -20,7 +22,44 @@ if TYPE_CHECKING:
 
 __all__ = ("ShotGridGateway", "build_asset_url", "parse_export_csv", "parse_page_id")
 
+_LOG = logging.getLogger(__name__)
+
 _MAX_EXPORT_ROWS = 30
+_ASSET_NAME_ALIASES = ("asset name",)
+_ENTITY_ID_ALIASES = ("entity id", "id")
+# ShotGrid Fault strings that are safe to classify for users (never echo raw text).
+_RETIRED_PAGE_RE = re.compile(r"retired\s+page", re.IGNORECASE)
+_NOT_FOUND_RE = re.compile(r"(not\s+found|does\s+not\s+exist|unknown\s+page)", re.IGNORECASE)
+_PERMISSION_RE = re.compile(r"(permission|not\s+allowed|access\s+denied|forbidden)", re.IGNORECASE)
+_NOT_EXPORTABLE_RE = re.compile(
+    r"(not\s+exportable|cannot\s+export|unable\s+to\s+export|export\s+is\s+not\s+supported|export\s+for\s+page\b.+\bnot\s+available)",
+    re.IGNORECASE,
+)
+
+
+def _resolve_required_header(normalized_fields: list[str], aliases: tuple[str, ...], *, label: str) -> int:
+    """Return the index of the preferred matching header alias.
+
+    Args:
+        normalized_fields: stripped lower-case CSV headers in order.
+        aliases: accepted header names in preference order.
+        label: canonical header label used in validation errors.
+
+    Returns:
+        int: index into ``normalized_fields`` / original fieldnames.
+
+    Raises:
+        ImportValidationError: if no alias is present or a matched alias is duplicated.
+    """
+    for alias in aliases:
+        count = normalized_fields.count(alias)
+        if count > 1:
+            raise ImportValidationError(f"CSV contains duplicate header '{label}'")
+        if count == 1:
+            return normalized_fields.index(alias)
+    if label == "Entity ID":
+        raise ImportValidationError("CSV is missing required header 'Entity ID' (accepted aliases: Id)")
+    raise ImportValidationError(f"CSV is missing required header '{label}'")
 
 
 def _parse_https_authority(url: str, *, label: str) -> tuple[ParseResult, str]:
@@ -184,18 +223,11 @@ def parse_export_csv(csv_text: str, base_url: str) -> ImportResult:
 
     normalized_fields = [f.strip().lower() for f in fieldnames]
 
-    if "asset name" not in normalized_fields:
-        raise ImportValidationError("CSV is missing required header 'Asset Name'")
-    if "entity id" not in normalized_fields:
-        raise ImportValidationError("CSV is missing required header 'Entity ID'")
+    name_index = _resolve_required_header(normalized_fields, _ASSET_NAME_ALIASES, label="Asset Name")
+    id_index = _resolve_required_header(normalized_fields, _ENTITY_ID_ALIASES, label="Entity ID")
 
-    if normalized_fields.count("asset name") > 1:
-        raise ImportValidationError("CSV contains duplicate header 'Asset Name'")
-    if normalized_fields.count("entity id") > 1:
-        raise ImportValidationError("CSV contains duplicate header 'Entity ID'")
-
-    name_key = fieldnames[normalized_fields.index("asset name")]
-    id_key = fieldnames[normalized_fields.index("entity id")]
+    name_key = fieldnames[name_index]
+    id_key = fieldnames[id_index]
 
     if len(raw_rows) > _MAX_EXPORT_ROWS:
         raise ImportValidationError(f"CSV export contains {len(raw_rows)} rows, which exceeds the limit of {_MAX_EXPORT_ROWS}")
@@ -309,8 +341,9 @@ class ShotGridGateway:
         """
         try:
             result: Any = self._client.export_page(page_id, "csv")
-        except Exception:
-            raise ExternalServiceError("shotgrid export_page call failed") from None
+        except Exception as exc:
+            _LOG.warning("shotgrid export_page failed page_id=%s error_type=%s", page_id, type(exc).__name__)
+            raise ExternalServiceError(_safe_export_failure_message(page_id, exc)) from None
 
         if not isinstance(result, str):
             raise ExternalServiceError("shotgrid export_page returned an invalid value")
@@ -319,3 +352,24 @@ class ShotGridGateway:
             raise ExternalServiceError("shotgrid export_page returned empty CSV")
 
         return result
+
+
+def _safe_export_failure_message(page_id: int, exc: BaseException) -> str:
+    """Map a ShotGrid export exception to a user-safe message.
+
+    Raw exception text is never echoed (it may include sensitive details). Only
+    known Fault patterns are classified into concrete guidance.
+    """
+    text = str(exc)
+    if _RETIRED_PAGE_RE.search(text):
+        return f"ShotGrid page {page_id} is retired and cannot be exported"
+    if _NOT_FOUND_RE.search(text):
+        return f"ShotGrid page {page_id} was not found"
+    if _PERMISSION_RE.search(text):
+        return f"ShotGrid script cannot export page {page_id} (permission denied)"
+    if _NOT_EXPORTABLE_RE.search(text):
+        return (
+            f"ShotGrid page {page_id} is not API-exportable "
+            "(Canvas/Design pages cannot be exported; use an Asset grid/list page)"
+        )
+    return "shotgrid export_page call failed"

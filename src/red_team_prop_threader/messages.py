@@ -41,7 +41,7 @@ class GroupSummaryContext:
 
     Args:
         group_title: normalized group title string.
-        animator_id: Slack user ID of the group animator (notifying mention).
+        animator_id: Slack user ID of the group animator (notifying mention), or None/empty when unassigned.
         additional_ids: Slack user IDs of additional group people (notifying).
         links: ordered group supporting links.
         included_asset_count: number of assets included in this group.
@@ -53,7 +53,7 @@ class GroupSummaryContext:
     """
 
     group_title: str
-    animator_id: str
+    animator_id: str | None
     additional_ids: tuple[str, ...]
     links: tuple[SupportingLink, ...]
     included_asset_count: int
@@ -74,14 +74,15 @@ class AssetRootContext:
         asset_url: ShotGrid URL for the asset.
         group_title: normalized group title.
         created_ts: unix timestamp of the original thread creation.
-        asset_animator_id: Slack user ID of the asset animator (notifying mention).
+        asset_animator_id: Slack user ID of the asset animator (notifying mention), or empty when unassigned.
         asset_additional_ids: Slack user IDs of asset additional people (notifying).
-        group_animator_display: display name of the group animator (non-notifying).
+        group_animator_display: display name of the group animator (non-notifying), or empty when unassigned.
         group_additional_displays: display names of group additional people (non-notifying).
         group_links: group-level supporting links.
         asset_links: asset-level supporting links.
         message_identity: opaque identity value for the edit button payload.
         is_latest: whether this is the current latest root for the asset.
+        has_prior_thread: whether an older thread exists for this asset (drives the latest label).
         last_editor_display: display name of the last editor, or None.
         updated_ts: unix timestamp of the last edit, or None.
     """
@@ -99,6 +100,7 @@ class AssetRootContext:
     asset_links: tuple[SupportingLink, ...]
     message_identity: str
     is_latest: bool = False
+    has_prior_thread: bool = False
     last_editor_display: str | None = None
     updated_ts: int | None = None
 
@@ -267,9 +269,9 @@ def _render_links(links: tuple[SupportingLink, ...]) -> str:
 def render_group_summary(context: GroupSummaryContext) -> dict[str, object]:
     """Render a deterministic group summary message payload.
 
-    The message includes a notifying Animator mention and Additional People
-    mentions, supporting links, asset count, processing status, and an edit
-    button. Completion/failure counts and canvas link appear when provided.
+    The message includes a notifying Creative Stakeholder mention and additional
+    stakeholder mentions, group links, asset count, and an edit button.
+    Completion/failure counts and canvas link appear when provided.
 
     Args:
         context: all content for the group summary.
@@ -286,25 +288,29 @@ def render_group_summary(context: GroupSummaryContext) -> dict[str, object]:
     fallback = f"Group summary: {context.group_title}"
     blocks: list[dict[str, object]] = []
 
-    # group title header
-    blocks.append(_section("gs_title", _mrkdwn(f"*{escaped_title}*")))
+    # Title / Creative Stakeholder / Group Links / count share one section so
+    # Slack does not insert section padding between them.
+    header_lines: list[str] = [f"*{escaped_title}*"]
 
-    # animator and additional people (notifying mentions)
-    people_parts = [f"*Animator:* {_mention(context.animator_id)}"]
+    animator_id = (context.animator_id or "").strip()
+    stakeholder_parts: list[str] = []
+    if animator_id:
+        stakeholder_parts.append(f"*Creative Stakeholder:* {_mention(animator_id)}")
     if context.additional_ids:
-        additional_str = " ".join(_mention(uid) for uid in context.additional_ids)
-        people_parts.append(f"*Additional:* {additional_str}")
-    blocks.append(_section("gs_people", _mrkdwn("\n".join(people_parts))))
+        additional_str = " ".join(_mention(uid) for uid in context.additional_ids if uid)
+        if additional_str:
+            stakeholder_parts.append(f"*Additional:* {additional_str}")
+    if not stakeholder_parts:
+        header_lines.append("*Creative Stakeholder:* unassigned")
+    else:
+        header_lines.append("  ".join(stakeholder_parts))
 
-    # supporting links
     links_str = _render_links(context.links)
     if links_str:
-        blocks.append(_section("gs_links", _mrkdwn(f"*Links:*\n{links_str}")))
+        header_lines.append(f"*Group Links:*\n{links_str}")
 
-    # counts and status
-    count_text = f"*{context.included_asset_count}* asset(s) included."
-    blocks.append(_section("gs_count", _mrkdwn(count_text)))
-    blocks.append(_section("gs_status", _mrkdwn(f"*Status:* {_escape(context.processing_status)}")))
+    header_lines.append(f"*{context.included_asset_count}* asset(s) included.")
+    blocks.append(_section("gs_header", _mrkdwn("\n".join(header_lines))))
 
     # completion/failure counts
     if context.completion_count is not None or context.failure_count is not None:
@@ -326,7 +332,7 @@ def render_group_summary(context: GroupSummaryContext) -> dict[str, object]:
 def render_asset_root(context: AssetRootContext) -> dict[str, object]:
     """Render a deterministic asset root message payload.
 
-    Asset people are rendered as notifying Slack mentions. Group people are
+    Asset requestors are rendered as notifying Slack mentions. Group people are
     rendered as plain escaped display names (never as @-mentions). Deterministic
     block order ensures reproducible message updates.
 
@@ -337,46 +343,45 @@ def render_asset_root(context: AssetRootContext) -> dict[str, object]:
         dict[str, object]: Slack message payload with ``text`` and ``blocks``.
     """
     escaped_name = _escape(context.asset_name)
-    fallback = f"Asset: {context.asset_name} \u2014 {context.group_title}"
+    fallback = f":threadparrot: Asset: {context.asset_name} \u2014 {context.group_title} :threadparrot:"
     blocks: list[dict[str, object]] = []
 
-    # latest marker
-    if context.is_latest:
-        blocks.append(_section("ar_latest", _mrkdwn("*[ Latest ]*")))
-
-    # creation timestamp
-    date_markup = _slack_date(context.created_ts)
-    blocks.append(_section("ar_created", _mrkdwn(f"Created {date_markup}")))
-
-    # asset name and ShotGrid link
+    # Asset / Group / Requestor / Group POCs share one section so Slack does not
+    # insert section padding between them (reads as four tight lines).
     asset_link = f"<{context.asset_url}|{escaped_name}>"
-    blocks.append(_section("ar_asset", _mrkdwn(f"*Asset:* {asset_link} (ShotGrid ID: {context.asset_entity_id})")))
+    asset_line = f":threadparrot: *Asset:* {asset_link} (ShotGrid ID: {context.asset_entity_id})"
+    if context.is_latest and context.has_prior_thread:
+        asset_line += " (latest thread)"
+    asset_line += " :threadparrot:"
 
-    # group title
-    blocks.append(_section("ar_group", _mrkdwn(f"*Group:* {_escape(context.group_title)}")))
-
-    # asset people (notifying mentions)
-    asset_people_parts = [f"*Animator:* {_mention(context.asset_animator_id)}"]
+    asset_animator_id = (context.asset_animator_id or "").strip()
+    requestor_parts: list[str] = []
+    if asset_animator_id:
+        requestor_parts.append(f"*Requestor:* {_mention(asset_animator_id)}")
     if context.asset_additional_ids:
-        add_str = " ".join(_mention(uid) for uid in context.asset_additional_ids)
-        asset_people_parts.append(f"*Additional:* {add_str}")
-    blocks.append(_section("ar_asset_people", _mrkdwn("\n".join(asset_people_parts))))
+        add_str = " ".join(_mention(uid) for uid in context.asset_additional_ids if uid)
+        if add_str:
+            requestor_parts.append(f"*Additional:* {add_str}")
+    requestor_line = "*Requestor:* unassigned" if not requestor_parts else "  ".join(requestor_parts)
 
-    # group POCs as non-notifying plain display names (never <@ID>)
-    pocs: list[str] = [_escape(context.group_animator_display)]
-    pocs.extend(_escape(name) for name in context.group_additional_displays)
-    pocs_str = ", ".join(pocs) if pocs else "None"
-    blocks.append(_section("ar_group_pocs", _mrkdwn(f"*Group POCs:* {pocs_str}")))
+    pocs: list[str] = []
+    if (context.group_animator_display or "").strip():
+        pocs.append(_escape(context.group_animator_display.strip()))
+    pocs.extend(_escape(name) for name in context.group_additional_displays if name.strip())
+    pocs_str = ", ".join(pocs) if pocs else "unassigned"
 
-    # group links
-    group_links_str = _render_links(context.group_links)
-    if group_links_str:
-        blocks.append(_section("ar_group_links", _mrkdwn(f"*Group Links:*\n{group_links_str}")))
+    header_lines = (
+        asset_line,
+        f"*Group:* {_escape(context.group_title)}",
+        requestor_line,
+        f"*Group POCs:* {pocs_str}",
+    )
+    blocks.append(_section("ar_header", _mrkdwn("\n".join(header_lines))))
 
-    # asset links
+    # Asset-level links only (group links stay on the group summary).
     asset_links_str = _render_links(context.asset_links)
     if asset_links_str:
-        blocks.append(_section("ar_asset_links", _mrkdwn(f"*Asset Links:*\n{asset_links_str}")))
+        blocks.append(_section("ar_links", _mrkdwn(f"*Links:*\n{asset_links_str}")))
 
     # edit info for the latest root (editor name and update timestamp)
     if context.is_latest and context.last_editor_display is not None and context.updated_ts is not None:
@@ -384,6 +389,6 @@ def render_asset_root(context: AssetRootContext) -> dict[str, object]:
         blocks.append(_section("ar_edited", _mrkdwn(f"_Last edited by {_escape(context.last_editor_display)} \u2014 {update_markup}_")))
 
     # edit button
-    blocks.append(_actions("ar_actions", [_button("Edit Asset Details", AID_EDIT_ASSET_DETAILS, value=context.message_identity)]))
+    blocks.append(_actions("ar_actions", [_button("Edit POCs", AID_EDIT_ASSET_DETAILS, value=context.message_identity)]))
 
     return {"text": fallback, "blocks": blocks}

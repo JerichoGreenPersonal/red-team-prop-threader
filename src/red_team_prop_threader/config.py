@@ -24,6 +24,7 @@ class Settings:
 
     slack_bot_token: str = field(repr=False)
     slack_signing_secret: str = field(repr=False)
+    slack_app_token: str = field(repr=False)
     shotgrid_script_name: str
     shotgrid_script_key: str = field(repr=False)
     shotgrid_url: str
@@ -50,6 +51,7 @@ class Settings:
         """
         slack_bot_token = _require_nonempty("SLACK_BOT_TOKEN")
         slack_signing_secret = _require_nonempty("SLACK_SIGNING_SECRET")
+        slack_app_token = _require_nonempty("SLACK_APP_TOKEN")
         shotgrid_script_name = _require_nonempty("SHOTGRID_SCRIPT_NAME")
         shotgrid_script_key = _require_nonempty("SHOTGRID_SCRIPT_KEY")
 
@@ -68,6 +70,7 @@ class Settings:
         return cls(
             slack_bot_token=slack_bot_token,
             slack_signing_secret=slack_signing_secret,
+            slack_app_token=slack_app_token,
             shotgrid_script_name=shotgrid_script_name,
             shotgrid_script_key=shotgrid_script_key,
             shotgrid_url=shotgrid_url,

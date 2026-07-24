@@ -7,7 +7,6 @@ features:
     always_online: false
   slash_commands:
     - command: /create-prop-threads
-      url: https://prop-threader-dev.example.invalid/slack/events
       description: Create prop-request threads from a ShotGrid page
       usage_hint: "[ShotGrid page URL]"
       should_escape: false
@@ -21,11 +20,11 @@ oauth_config:
       - groups:read
       - im:write
       - users:read
+      - canvases:read
       - canvases:write
 settings:
   interactivity:
     is_enabled: true
-    request_url: https://prop-threader-dev.example.invalid/slack/events
   org_deploy_enabled: false
-  socket_mode_enabled: false
+  socket_mode_enabled: true
   token_rotation_enabled: false

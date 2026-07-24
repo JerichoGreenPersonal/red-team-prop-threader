@@ -44,9 +44,9 @@ def parse_supporting_links(text: str) -> tuple[SupportingLink, ...]:
 
     Raises:
         ValidationError: if any non-blank line is malformed, has an empty
-            label, or uses a non-HTTPS or relative URL.  The error message
-            identifies the physical line number but never echoes query-string
-            values.
+            label, or uses a non-HTTPS or relative URL. Format errors say
+            ``Supporting links require a label (label: link)`` and identify
+            the physical line number; query-string values are never echoed.
     """
     results: list[SupportingLink] = []
     for line_num, line in enumerate(text.splitlines(), start=1):
@@ -54,11 +54,11 @@ def parse_supporting_links(text: str) -> tuple[SupportingLink, ...]:
             continue
         match = _LINK_LINE_RE.match(line)
         if not match:
-            raise ValidationError(f"line {line_num}: expected 'Label: https://...' format")
+            raise ValidationError(f"line {line_num}: Supporting links require a label (label: link)")
         label = match.group("label").strip()
         url = match.group("url")
         if not label:
-            raise ValidationError(f"line {line_num}: label must not be empty")
+            raise ValidationError(f"line {line_num}: Supporting links require a label (label: link)")
         _validate_link_url(url, line_num)
         results.append(SupportingLink(label, url))
     return tuple(results)

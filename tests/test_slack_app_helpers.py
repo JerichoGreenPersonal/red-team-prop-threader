@@ -152,9 +152,10 @@ def test_register_listeners_command_and_nav_paths() -> None:
         ack, {"team_id": "T1", "channel_id": "C1", "user_id": "U1", "trigger_id": "t", "text": "", "response_url": ""}, MagicMock()
     )
     workflow.handle_command.assert_called_once()
+    ack.assert_called_once()
 
     registered[f"action:{AID_NAV_NEXT}"](ack, body, client)
     registered[f"action:{AID_NAV_BACK}"](ack, body, client)
-    registered[f"action:{AID_NAV_CONFIRM}"](ack, body, client)
+    registered[f"action:{AID_NAV_CONFIRM}"](ack, body, client, MagicMock())
     assert workflow.save_asset_page.call_count >= 3
     workflow.open_confirmation.assert_called()

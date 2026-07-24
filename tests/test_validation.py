@@ -73,14 +73,14 @@ def test_parse_supporting_links_rejects_http() -> None:
 
 
 def test_parse_supporting_links_rejects_empty_label() -> None:
-    """Empty label before colon raises ValidationError."""
-    with pytest.raises(ValidationError, match="1"):
+    """Empty label before colon raises ValidationError with explicit direction."""
+    with pytest.raises(ValidationError, match=r"Supporting links require a label \(label: link\)"):
         parse_supporting_links(": https://example.com")
 
 
 def test_parse_supporting_links_rejects_no_colon() -> None:
-    """Line without colon-space separator raises ValidationError."""
-    with pytest.raises(ValidationError, match="1"):
+    """Line without colon-space separator raises ValidationError with explicit direction."""
+    with pytest.raises(ValidationError, match=r"Supporting links require a label \(label: link\)"):
         parse_supporting_links("just some text")
 
 

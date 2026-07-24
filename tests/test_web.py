@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.exc import OperationalError
 
-from red_team_prop_threader.web import create_app
+from red_team_prop_threader.web import main, create_app, start_socket_mode
 from red_team_prop_threader.config import Settings
 from red_team_prop_threader.tables import Base
 
@@ -27,6 +27,7 @@ def settings() -> Settings:
     return Settings(
         slack_bot_token="xoxb-test-token",
         slack_signing_secret="signing-secret",
+        slack_app_token="xapp-test-token",
         shotgrid_script_name="script",
         shotgrid_script_key="key",
         shotgrid_url="https://respawn.shotgunstudio.com",
@@ -80,3 +81,64 @@ def test_readyz_ok_when_database_available(client: FlaskClient) -> None:
     response = client.get("/readyz")
     assert response.status_code == 200
     assert response.get_json()["status"] == "ready"
+
+
+def test_create_app_exposes_bolt_app(settings: Settings, engine: Engine) -> None:
+    """create_app stores the Bolt app for Socket Mode startup."""
+    app = create_app(settings, engine=engine)
+    assert "PROP_THREADER_BOLT_APP" in app.config
+
+
+def test_start_socket_mode_connects_handler() -> None:
+    """start_socket_mode constructs SocketModeHandler and connects it."""
+    bolt_app = MagicMock()
+    handler = MagicMock()
+    handler_factory = MagicMock(return_value=handler)
+
+    result = start_socket_mode(bolt_app, "xapp-test", handler_factory=handler_factory)
+
+    handler_factory.assert_called_once_with(bolt_app, "xapp-test")
+    handler.connect.assert_called_once_with()
+    assert result is handler
+
+
+def test_socket_mode_handler_acks_non_200(settings: Settings, engine: Engine) -> None:
+    """Non-200 Bolt results still send a Socket Mode acknowledgement."""
+    from red_team_prop_threader.web import PropThreaderSocketModeHandler
+
+    app = create_app(settings, engine=engine)
+    bolt_app = app.config["PROP_THREADER_BOLT_APP"]
+    handler = PropThreaderSocketModeHandler(bolt_app, "xapp-test")
+    client = MagicMock()
+    req = MagicMock()
+    req.type = "slash_commands"
+    req.envelope_id = "E1"
+    req.payload = {"command": "/create-prop-threads"}
+
+    with patch("red_team_prop_threader.web.run_bolt_app", return_value=MagicMock(status=500, body="nope")):
+        handler.handle(client, req)
+
+    client.send_socket_mode_response.assert_called_once()
+    assert client.send_socket_mode_response.call_args.args[0].envelope_id == "E1"
+
+
+def test_main_starts_socket_mode_then_serves(settings: Settings) -> None:
+    """Main serves Waitress in a thread then blocks on Socket Mode start."""
+    with (
+        patch("red_team_prop_threader.web.Settings.from_env", return_value=settings),
+        patch("red_team_prop_threader.web.create_app") as create_app_mock,
+        patch("red_team_prop_threader.web.PropThreaderSocketModeHandler") as handler_cls,
+        patch("red_team_prop_threader.web.threading.Thread") as thread_cls,
+    ):
+        app = MagicMock()
+        app.config = {"PROP_THREADER_BOLT_APP": MagicMock()}
+        create_app_mock.return_value = app
+        handler = MagicMock()
+        handler_cls.return_value = handler
+        main()
+
+    thread_cls.assert_called_once()
+    assert thread_cls.call_args.kwargs["daemon"] is True
+    thread_cls.return_value.start.assert_called_once_with()
+    handler_cls.assert_called_once_with(app.config["PROP_THREADER_BOLT_APP"], settings.slack_app_token)
+    handler.start.assert_called_once_with()

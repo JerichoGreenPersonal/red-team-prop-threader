@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
+import logging
 
 from slack_sdk import WebClient
 from slack_sdk.errors import SlackApiError
@@ -15,6 +16,8 @@ if TYPE_CHECKING:
 
 
 __all__ = ("SlackGateway",)
+
+_LOG = logging.getLogger(__name__)
 
 _PERMISSION_ERRORS = frozenset({
     "not_in_channel",
@@ -145,7 +148,14 @@ class SlackGateway:
         Raises:
             ExternalServiceError: on Slack API failure.
         """
-        return self._call("views_open", trigger_id=trigger_id, view=view)
+        _LOG.info("views.open starting")
+        try:
+            result = self._call("views_open", trigger_id=trigger_id, view=view)
+        except ExternalServiceError:
+            _LOG.exception("views.open failed")
+            raise
+        _LOG.info("views.open succeeded")
+        return result
 
     def update_view(self, view_id: str, view: dict[str, Any], *, view_hash: str | None = None) -> dict[str, Any]:
         """Update an open modal via views.update.
@@ -164,7 +174,14 @@ class SlackGateway:
         kwargs: dict[str, Any] = {"view_id": view_id, "view": view}
         if view_hash is not None:
             kwargs["hash"] = view_hash
-        return self._call("views_update", **kwargs)
+        _LOG.info("views.update starting view_id=%s", view_id)
+        try:
+            result = self._call("views_update", **kwargs)
+        except ExternalServiceError:
+            _LOG.exception("views.update failed view_id=%s", view_id)
+            raise
+        _LOG.info("views.update succeeded view_id=%s", view_id)
+        return result
 
     def get_user_info(self, user_id: str) -> dict[str, Any]:
         """Fetch users.info for display-name rendering.
@@ -296,7 +313,10 @@ class SlackGateway:
         Raises:
             ExternalServiceError: on Slack API failure.
         """
-        criteria: dict[str, Any] = {"section_types": list(section_types)}
+        # Omit empty section_types — Slack rejects [] with invalid_arguments.
+        criteria: dict[str, Any] = {}
+        if section_types:
+            criteria["section_types"] = list(section_types)
         if contains_text is not None:
             criteria["contains_text"] = contains_text
         response = self._call("canvases_sections_lookup", canvas_id=canvas_id, criteria=criteria)
@@ -402,12 +422,37 @@ def _translate_slack_error(exc: SlackApiError) -> ConflictError | NotFoundError 
     if status == 429 or error_code in _RETRYABLE_ERRORS:
         return RetryableExternalServiceError("slack api temporarily unavailable", retry_after=retry_after)
     if error_code in _PERMISSION_ERRORS:
-        return PermissionDeniedError("slack permission denied")
+        return PermissionDeniedError(f"slack permission denied ({error_code})")
     if error_code in _NOT_FOUND_ERRORS:
-        return NotFoundError("slack resource not found")
+        return NotFoundError(f"slack resource not found ({error_code})")
     if error_code in _CONFLICT_ERRORS:
-        return ConflictError("slack resource conflict")
-    return ExternalServiceError("slack api request failed")
+        return ConflictError(f"slack resource conflict ({error_code})")
+    detail = _slack_error_detail(response)
+    suffix = f" ({error_code})" if error_code else ""
+    if detail:
+        suffix = f"{suffix}: {detail}" if suffix else f" ({detail})"
+    return ExternalServiceError(f"slack api request failed{suffix}")
+
+
+def _slack_error_detail(response: object) -> str:
+    """Extract Slack response_metadata.messages for operator-facing errors."""
+    if response is None:
+        return ""
+    data: object = None
+    if hasattr(response, "data"):
+        data = getattr(response, "data")
+    elif isinstance(response, dict):
+        data = response
+    if not isinstance(data, dict):
+        return ""
+    metadata = data.get("response_metadata")
+    if not isinstance(metadata, dict):
+        return ""
+    messages = metadata.get("messages")
+    if not isinstance(messages, list):
+        return ""
+    parts = [str(item).strip() for item in messages if str(item).strip()]
+    return "; ".join(parts[:3])
 
 
 def _parse_retry_after(headers: dict[str, Any]) -> float | None:

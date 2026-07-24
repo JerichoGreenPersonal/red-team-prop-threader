@@ -11,10 +11,12 @@ from sqlalchemy import event, create_engine
 from sqlalchemy.orm import Session
 
 from red_team_prop_threader.canvas import CANVAS_TITLE, CanvasService
-from red_team_prop_threader.domain import ImportedAsset
+from red_team_prop_threader.domain import ImportedAsset, OperationKind
 from red_team_prop_threader.leases import ChannelLeaseRepository
-from red_team_prop_threader.tables import Base
+from red_team_prop_threader.tables import Base, Batch
+from red_team_prop_threader._errors import ValidationError
 from red_team_prop_threader.workflow import Workflow, DraftSession, CommandRequest, ConfirmResponse
+from red_team_prop_threader.repositories import Repositories
 
 
 if TYPE_CHECKING:
@@ -50,12 +52,12 @@ class FakeSlackGateway:
         """Record a modal update."""
         del view_id, view_hash
         self.updated_views.append(view)
-        return {"ok": True}
+        return {"ok": True, "view": {"id": "Vopen", "hash": "h2"}}
 
     def get_user_info(self, user_id: str) -> dict[str, Any]:
         """Return display name profile data."""
         name = self.display_names.get(user_id, user_id)
-        return {"id": user_id, "profile": {"display_name": name, "real_name": name}}
+        return {"id": user_id, "name": user_id.lower(), "is_bot": False, "profile": {"display_name": name, "real_name": name}}
 
     def get_conversation_info(self, channel_id: str) -> dict[str, object]:
         """Return channel info including optional canvas."""
@@ -227,11 +229,21 @@ def workflow(session: Session, engine: Engine, fake_slack: FakeSlackGateway) -> 
 
 
 def test_command_opens_canvas_preflight_before_import(workflow: Workflow, fake_slack: FakeSlackGateway) -> None:
-    """Command opens canvas preflight before any ShotGrid export."""
+    """Without a ready canvas, command opens preflight before any ShotGrid export."""
     workflow.handle_command(sample_command(text="https://respawn.shotgunstudio.com/page/23280"))
     assert fake_slack.opened_view is not None
     assert fake_slack.opened_view["callback_id"] == "canvas_preflight"
     assert workflow.shotgrid.export_calls == []
+
+
+def test_ready_canvas_with_command_url_opens_asset_page(workflow: Workflow, fake_slack: FakeSlackGateway) -> None:
+    """When canvas is ready and slash text has a page URL, skip import and open Assets p.1."""
+    fake_slack.channel_canvas_id = "Fcanvas"
+    fake_slack.canvas_title = CANVAS_TITLE
+    workflow.handle_command(sample_command(text="https://respawn.shotgunstudio.com/page/23280"))
+    assert fake_slack.opened_view is not None
+    assert fake_slack.opened_view["callback_id"] == "asset_page"
+    assert workflow.shotgrid.export_calls == [23280]
 
 
 def test_busy_confirmation_preserves_draft_and_names_owner(workflow: Workflow) -> None:
@@ -251,21 +263,19 @@ def test_busy_confirmation_preserves_draft_and_names_owner(workflow: Workflow) -
 
 
 def test_ready_canvas_updates_to_import_view(workflow: Workflow, fake_slack: FakeSlackGateway) -> None:
-    """When canvas is ready, the modal updates to the import screen."""
+    """When canvas is ready and no URL was provided, open the import screen."""
     fake_slack.channel_canvas_id = "Fcanvas"
     fake_slack.canvas_title = CANVAS_TITLE
-    workflow.handle_command(sample_command())
+    workflow.handle_command(sample_command(text=""))
     assert fake_slack.opened_view is not None
-    assert fake_slack.opened_view["callback_id"] == "canvas_preflight"
-    assert fake_slack.updated_views
-    assert fake_slack.updated_views[-1]["callback_id"] == "import_assets"
+    assert fake_slack.opened_view["callback_id"] == "import_assets"
     assert workflow.shotgrid.export_calls == []
 
 
 def test_import_url_exports_and_opens_asset_page(workflow: Workflow, fake_slack: FakeSlackGateway) -> None:
     """Submitting the import URL exports ShotGrid and opens asset page 0."""
     fake_slack.channel_canvas_id = "Fcanvas"
-    workflow.handle_command(sample_command())
+    workflow.handle_command(sample_command(text=""))
     draft_id = str(fake_slack.opened_view["private_metadata"])
     view = workflow.submit_import_url(draft_id=draft_id, page_url="https://respawn.shotgunstudio.com/page/23280")
     assert workflow.shotgrid.export_calls == [23280]
@@ -274,11 +284,11 @@ def test_import_url_exports_and_opens_asset_page(workflow: Workflow, fake_slack:
 
 
 def test_blocked_preflight_shows_user_safe_error(workflow: Workflow, fake_slack: FakeSlackGateway) -> None:
-    """Permission failures update the modal with safe blocked copy."""
+    """Permission failures open a modal with safe blocked copy."""
     fake_slack.permission_blocked = True
     workflow.handle_command(sample_command())
-    assert fake_slack.updated_views
-    text = str(fake_slack.updated_views[-1])
+    assert fake_slack.opened_view is not None
+    text = str(fake_slack.opened_view)
     assert "cannot" in text.lower() or "permission" in text.lower() or "blocked" in text.lower()
 
 
@@ -301,6 +311,16 @@ def test_canvas_create_rename_and_decline(workflow: Workflow, fake_slack: FakeSl
     decline_id = str(fake_slack.opened_view["private_metadata"])
     workflow.decline_canvas(decline_id)
     assert not workflow.drafts.exists(decline_id)
+
+
+def test_canvas_create_with_command_url_opens_asset_page(workflow: Workflow, fake_slack: FakeSlackGateway) -> None:
+    """After canvas create, a command URL skips import and opens Assets p.1."""
+    workflow.handle_command(sample_command(text="https://respawn.shotgunstudio.com/page/23280"))
+    draft_id = str(fake_slack.opened_view["private_metadata"])
+    assert fake_slack.opened_view["callback_id"] == "canvas_preflight"
+    view = workflow.confirm_canvas_create(draft_id)
+    assert view["callback_id"] == "asset_page"
+    assert workflow.shotgrid.export_calls == [23280]
 
 
 def test_asset_page_save_open_confirm_and_accept(workflow: Workflow, fake_slack: FakeSlackGateway) -> None:
@@ -337,3 +357,95 @@ def test_asset_page_save_open_confirm_and_accept(workflow: Workflow, fake_slack:
     response = workflow.confirm_batch(draft)
     assert response.accepted
     assert response.lease_token
+
+
+def test_confirm_succeeds_with_no_people_selected(workflow: Workflow, fake_slack: FakeSlackGateway, session: Session) -> None:
+    """People are optional: confirm enqueues a planned batch with assets only."""
+    from sqlalchemy import select
+
+    fake_slack.channel_canvas_id = "Fcanvas"
+    fake_slack.members = ("U_COMMAND",)
+    draft = sample_draft(group_animator_id=None, asset_animators={}, group_additional_ids=())
+    workflow.drafts.put(draft)
+    confirm = workflow.open_confirmation(draft.draft_id)
+    assert confirm["callback_id"] == "confirm_batch"
+    response = workflow.confirm_batch(draft)
+    assert response.accepted
+    assert response.lease_token
+    assert not workflow.drafts.exists(draft.draft_id)
+    batch_id = session.execute(select(Batch.id)).scalar_one()
+    ops = Repositories.from_session(session).operations.get_for_batch(batch_id)
+    assert ops[0].kind is OperationKind.POST_SUMMARY
+    assert any(op.kind is OperationKind.POST_ASSET for op in ops)
+
+
+def test_confirm_rejects_non_member_when_people_selected(workflow: Workflow, fake_slack: FakeSlackGateway) -> None:
+    """Selected people must still be channel members."""
+    fake_slack.members = ("U_COMMAND",)
+    draft = sample_draft(group_animator_id="U_OUTSIDER", asset_animators={1001: "U_OUTSIDER", 1002: "U_OUTSIDER"})
+    workflow.drafts.put(draft)
+    with pytest.raises(ValidationError, match="member"):
+        workflow.open_confirmation(draft.draft_id)
+
+
+def test_clearing_people_on_save_removes_stale_draft_ids(workflow: Workflow, fake_slack: FakeSlackGateway) -> None:
+    """Clear selection must wipe previously saved group/asset people from the draft."""
+    fake_slack.channel_canvas_id = "Fcanvas"
+    fake_slack.members = ("U_COMMAND",)
+    workflow.handle_command(sample_command())
+    draft_id = str(fake_slack.opened_view["private_metadata"])
+    workflow.submit_import_url(draft_id=draft_id, page_url="https://respawn.shotgunstudio.com/page/23280")
+
+    dirty = {
+        "values": {
+            "group_title": {"group_title": {"value": "SEASON 31 PROP REQUEST THREADS"}},
+            "group_animator": {"group_animator": {"selected_user": "U_OUTSIDER"}},
+            "group_additional": {"group_additional": {"selected_users": ["U_OUTSIDER"]}},
+            "group_links": {"group_links": {"value": ""}},
+            "asset_1001_include": {"asset_1001_include": {"selected_options": [{"value": "included"}]}},
+            "asset_1001_animator": {"asset_1001_animator": {"selected_user": "U_OUTSIDER"}},
+            "asset_1001_additional": {"asset_1001_additional": {"selected_users": []}},
+            "asset_1001_links": {"asset_1001_links": {"value": ""}},
+            "asset_1002_include": {"asset_1002_include": {"selected_options": [{"value": "included"}]}},
+            "asset_1002_animator": {"asset_1002_animator": {"selected_user": "U_OUTSIDER"}},
+            "asset_1002_additional": {"asset_1002_additional": {"selected_users": []}},
+            "asset_1002_links": {"asset_1002_links": {"value": ""}},
+        }
+    }
+    draft = workflow.save_asset_page(draft_id=draft_id, page_index=0, view_state=dirty)
+    assert draft.group_animator_id == "U_OUTSIDER"
+    assert draft.asset_animators[1001] == "U_OUTSIDER"
+
+    cleared = {
+        "values": {
+            "group_title": {"group_title": {"value": "SEASON 31 PROP REQUEST THREADS"}},
+            "group_animator": {"group_animator": {"selected_user": None}},
+            "group_additional": {"group_additional": {"selected_users": []}},
+            "group_links": {"group_links": {"value": ""}},
+            "asset_1001_include": {"asset_1001_include": {"selected_options": [{"value": "included"}]}},
+            "asset_1001_animator": {"asset_1001_animator": {"selected_user": None}},
+            "asset_1001_additional": {"asset_1001_additional": {"selected_users": []}},
+            "asset_1001_links": {"asset_1001_links": {"value": ""}},
+            "asset_1002_include": {"asset_1002_include": {"selected_options": [{"value": "included"}]}},
+            "asset_1002_animator": {"asset_1002_animator": {"selected_user": None}},
+            "asset_1002_additional": {"asset_1002_additional": {"selected_users": []}},
+            "asset_1002_links": {"asset_1002_links": {"value": ""}},
+        }
+    }
+    draft = workflow.save_asset_page(draft_id=draft_id, page_index=0, view_state=cleared)
+    assert draft.group_animator_id is None
+    assert draft.group_additional_ids == ()
+    assert draft.asset_animators == {}
+    confirm = workflow.open_confirmation(draft_id)
+    assert confirm["callback_id"] == "confirm_batch"
+
+
+def test_membership_errors_stay_on_offending_people_fields(workflow: Workflow, fake_slack: FakeSlackGateway) -> None:
+    """Asset-only membership failures must not be blamed on Group Animator."""
+    fake_slack.members = ("U_COMMAND",)
+    draft = sample_draft(group_animator_id=None, asset_animators={1001: "U_OUTSIDER"}, group_additional_ids=())
+    workflow.drafts.put(draft)
+    errors = workflow._confirm_field_errors(draft)
+    assert "group_animator" not in errors
+    assert "asset_1001_animator" in errors
+    assert "member" in errors["asset_1001_animator"]

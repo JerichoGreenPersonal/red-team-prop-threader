@@ -25,8 +25,19 @@ class _Resp:
         return self.data.get(key, default)
 
 
-def _api_error(code: str, *, status_code: int = 400, headers: dict[str, Any] | None = None) -> SlackApiError:
-    response = _Resp({"ok": False, "error": code}, status_code=status_code, headers=headers)
+def _api_error(
+    code: str,
+    *,
+    status_code: int = 400,
+    headers: dict[str, Any] | None = None,
+    data: dict[str, Any] | None = None,
+) -> SlackApiError:
+    payload = {"ok": False, "error": code}
+    if data:
+        payload.update(data)
+        payload.setdefault("ok", False)
+        payload.setdefault("error", code)
+    response = _Resp(payload, status_code=status_code, headers=headers)
     return SlackApiError(message=code, response=response)
 
 
@@ -47,6 +58,7 @@ def test_from_settings_builds_client() -> None:
     settings = Settings(
         slack_bot_token="xoxb-test",
         slack_signing_secret="secret",
+        slack_app_token="xapp-test",
         shotgrid_script_name="script",
         shotgrid_script_key="key",
         shotgrid_url="https://respawn.shotgunstudio.com",
@@ -109,10 +121,26 @@ def test_canvas_helpers(gateway: SlackGateway, client: MagicMock) -> None:
     assert gateway.create_channel_canvas("C1", title="INDEX OF PROP REQUESTS") == "Fcanvas"
     sections = gateway.lookup_sections("Fcanvas", contains_text="Latest", section_types=("any_header",))
     assert sections == [{"id": "S1"}]
+    client.canvases_sections_lookup.assert_called_with(
+        canvas_id="Fcanvas", criteria={"section_types": ["any_header"], "contains_text": "Latest"}
+    )
+    gateway.lookup_sections("Fcanvas", contains_text="Latest", section_types=())
+    client.canvases_sections_lookup.assert_called_with(canvas_id="Fcanvas", criteria={"contains_text": "Latest"})
     gateway.edit_canvas("Fcanvas", operation="insert_at_start", markdown="# hi")
     gateway.edit_canvas("Fcanvas", operation="replace", markdown="x", section_id="S1")
     gateway.rename_canvas("Fcanvas", title="INDEX OF PROP REQUESTS")
     assert client.canvases_edit.call_count == 3
+
+
+def test_invalid_arguments_includes_response_metadata(gateway: SlackGateway, client: MagicMock) -> None:
+    """Slack invalid_arguments errors surface response_metadata.messages."""
+    client.canvases_sections_lookup.side_effect = _api_error(
+        "invalid_arguments",
+        status_code=400,
+        data={"response_metadata": {"messages": ["[ERROR] must be a valid enum value"]}},
+    )
+    with pytest.raises(ExternalServiceError, match="must be a valid enum value"):
+        gateway.lookup_sections("Fcanvas", contains_text="Latest", section_types=())
 
 
 @pytest.mark.parametrize(
