@@ -22,7 +22,7 @@ from red_team_prop_threader.views import (
     render_canvas_preflight_view,
 )
 from red_team_prop_threader.canvas import CANVAS_TITLE, PreflightState
-from red_team_prop_threader._errors import ValidationError, ExternalServiceError, PermissionDeniedError, ImportValidationError
+from red_team_prop_threader._errors import ValidationError, ExternalServiceError, ImportValidationError, PermissionDeniedError
 from red_team_prop_threader.shotgrid import parse_page_id, parse_export_csv
 from red_team_prop_threader.validation import infer_group_title, normalize_group_title, parse_supporting_links
 from red_team_prop_threader.repositories import Repositories
@@ -185,6 +185,7 @@ class Workflow:
         leases: ChannelLeaseRepository,
         clock: Clock,
         shotgrid_base_url: str,
+        primary_asset_index_channel_id: str = "C04H4QZEYUE",
         session: Session | None = None,
         drafts: DraftBook | None = None,
     ) -> None:
@@ -197,6 +198,7 @@ class Workflow:
             leases: channel lease repository.
             clock: utc clock.
             shotgrid_base_url: absolute HTTPS ShotGrid base URL.
+            primary_asset_index_channel_id: channel id for the primary asset index canvas.
             session: optional sqlalchemy session for persistence hooks.
             drafts: optional draft book; a new one is created when omitted.
         """
@@ -207,6 +209,7 @@ class Workflow:
         self.clock = clock
         self.shotgrid_base_url = shotgrid_base_url.rstrip("/")
         self.shotgrid_host = self.shotgrid_base_url.removeprefix("https://").removeprefix("http://")
+        self._primary_asset_index_channel_id = primary_asset_index_channel_id
         self.session = session
         self.drafts = drafts or DraftBook()
 
@@ -518,6 +521,7 @@ class Workflow:
             })
         return {
             "canvas_id": draft.canvas_id,
+            "primary_asset_index_channel_id": self._primary_asset_index_channel_id,
             "group_title": title,
             "group_animator_id": draft.group_animator_id or "",
             "group_additional_ids": list(draft.group_additional_ids),

@@ -281,6 +281,75 @@ def test_planner_creates_ordered_operations(repositories: Repositories, leases: 
     assert all(op.status is OperationStatus.PENDING for op in ops)
 
 
+_PRIMARY_CHANNEL = "C04H4QZEYUE"
+
+
+def test_plan_includes_index_primary_asset_after_each_index(
+    repositories: Repositories, leases: ChannelLeaseRepository, session: Session, clock: FakeClock
+) -> None:
+    """Satellite batches plan INDEX_PRIMARY_ASSET immediately after each INDEX_ASSET."""
+    now = clock.now()
+    payload = {
+        **_sample_payload(assets=[_sample_payload()["assets"][0]]),
+        "primary_asset_index_channel_id": _PRIMARY_CHANNEL,
+    }
+    group = repositories.groups.create(
+        workspace_id="W1",
+        channel_id="C_satellite",
+        display_title="SEASON 31 PROP REQUEST THREADS",
+        normalized_title="season 31 prop request threads",
+        now=now,
+    )
+    session.flush()
+    batch = repositories.batches.create(
+        group_id=group.id,
+        workspace_id="W1",
+        channel_id="C_satellite",
+        submitter_user_id="Usubmit",
+        payload=payload,
+        now=now,
+    )
+    session.flush()
+    ops = BatchPlanner(repositories).plan(batch.id, now=now)
+    kinds = [op.kind for op in ops]
+    assert OperationKind.INDEX_PRIMARY_ASSET in kinds
+    idx = kinds.index(OperationKind.INDEX_ASSET)
+    assert kinds[idx + 1] is OperationKind.INDEX_PRIMARY_ASSET
+    primary_ops = [op for op in ops if op.kind is OperationKind.INDEX_PRIMARY_ASSET]
+    assert len(primary_ops) == 1
+    assert primary_ops[0].asset_entity_id == 1001
+
+
+def test_plan_skips_index_primary_when_channel_is_primary(
+    repositories: Repositories, leases: ChannelLeaseRepository, session: Session, clock: FakeClock
+) -> None:
+    """Primary-channel batches skip INDEX_PRIMARY_ASSET entirely."""
+    now = clock.now()
+    payload = {
+        **_sample_payload(assets=[_sample_payload()["assets"][0]]),
+        "primary_asset_index_channel_id": _PRIMARY_CHANNEL,
+    }
+    group = repositories.groups.create(
+        workspace_id="W1",
+        channel_id=_PRIMARY_CHANNEL,
+        display_title="SEASON 31 PROP REQUEST THREADS",
+        normalized_title="season 31 prop request threads",
+        now=now,
+    )
+    session.flush()
+    batch = repositories.batches.create(
+        group_id=group.id,
+        workspace_id="W1",
+        channel_id=_PRIMARY_CHANNEL,
+        submitter_user_id="Usubmit",
+        payload=payload,
+        now=now,
+    )
+    session.flush()
+    ops = BatchPlanner(repositories).plan(batch.id, now=now)
+    assert all(op.kind is not OperationKind.INDEX_PRIMARY_ASSET for op in ops)
+
+
 # ---------------------------------------------------------------------------
 # execution / retry
 # ---------------------------------------------------------------------------

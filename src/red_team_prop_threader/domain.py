@@ -41,6 +41,7 @@ class OperationKind(StrEnum):
     POST_SUMMARY = "post_summary"
     POST_ASSET = "post_asset"
     INDEX_ASSET = "index_asset"
+    INDEX_PRIMARY_ASSET = "index_primary_asset"
     RETIRE_PRIOR_LATEST = "retire_prior_latest"
     FINALIZE_SUMMARY = "finalize_summary"
 

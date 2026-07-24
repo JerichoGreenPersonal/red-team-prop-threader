@@ -426,6 +426,7 @@ def test_operation_kind_values() -> None:
     assert OperationKind.POST_SUMMARY == "post_summary"
     assert OperationKind.POST_ASSET == "post_asset"
     assert OperationKind.INDEX_ASSET == "index_asset"
+    assert OperationKind.INDEX_PRIMARY_ASSET == "index_primary_asset"
     assert OperationKind.RETIRE_PRIOR_LATEST == "retire_prior_latest"
     assert OperationKind.FINALIZE_SUMMARY == "finalize_summary"
 

@@ -27,8 +27,9 @@ _KIND_ORDER = {
     OperationKind.POST_SUMMARY: 0,
     OperationKind.POST_ASSET: 1,
     OperationKind.INDEX_ASSET: 2,
-    OperationKind.RETIRE_PRIOR_LATEST: 3,
-    OperationKind.FINALIZE_SUMMARY: 4,
+    OperationKind.INDEX_PRIMARY_ASSET: 3,
+    OperationKind.RETIRE_PRIOR_LATEST: 4,
+    OperationKind.FINALIZE_SUMMARY: 5,
 }
 
 
@@ -131,6 +132,19 @@ class BatchPlanner:
                     now=tick,
                 )
             )
+            primary_channel = str(payload.get("primary_asset_index_channel_id") or "").strip()
+            if primary_channel and batch.channel_id != primary_channel:
+                tick = tick + timedelta(microseconds=1)
+                planned.append(
+                    self._repos.operations.add_planned(
+                        batch_id=batch_id,
+                        kind=OperationKind.INDEX_PRIMARY_ASSET,
+                        asset_entity_id=entity_id,
+                        idempotency_key=f"{batch_id}:index_primary_asset:{entity_id}",
+                        payload={"entity_id": entity_id},
+                        now=tick,
+                    )
+                )
             tick = tick + timedelta(microseconds=1)
             planned.append(
                 self._repos.operations.add_planned(
@@ -249,6 +263,7 @@ class BatchExecutor:
             if stop_assets and operation.kind in (
                 OperationKind.POST_ASSET,
                 OperationKind.INDEX_ASSET,
+                OperationKind.INDEX_PRIMARY_ASSET,
                 OperationKind.RETIRE_PRIOR_LATEST,
                 OperationKind.FINALIZE_SUMMARY,
             ):

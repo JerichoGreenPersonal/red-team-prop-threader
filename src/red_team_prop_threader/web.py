@@ -136,6 +136,7 @@ def create_app(settings: Settings | None = None, *, engine: Engine | None = None
             leases=ChannelLeaseRepository(session, db_engine),
             clock=clock,
             shotgrid_base_url=cfg.shotgrid_url,
+            primary_asset_index_channel_id=cfg.primary_asset_index_channel_id,
             session=session,
             drafts=_DRAFTS,
         )
