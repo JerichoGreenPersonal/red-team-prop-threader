@@ -20,6 +20,7 @@ if TYPE_CHECKING:
 
 __all__ = (
     "CANVAS_TITLE",
+    "PRIMARY_CANVAS_TITLE",
     "CanvasService",
     "DuplicateThreadRequest",
     "DuplicateThreadResult",
@@ -32,6 +33,7 @@ __all__ = (
 )
 
 CANVAS_TITLE = "INDEX OF PROP REQUESTS"
+PRIMARY_CANVAS_TITLE = "PRIMARY ASSET INDEX"
 _CANVAS_TZ = ZoneInfo("America/Los_Angeles")
 _WHITESPACE_RE = re.compile(r"\s+")
 
@@ -80,6 +82,8 @@ class GroupIndexRequest:
     additional_displays: tuple[str, ...]
     links: tuple[SupportingLink, ...]
     assets: tuple[IndexedAsset, ...]
+    for_primary: bool = False
+    source_channel_display: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -204,9 +208,13 @@ class CanvasService:
             request: group and asset content to index.
         """
         markdown = render_group_markdown(request)
-        sections = self._slack.lookup_sections(
-            request.canvas_id, contains_text=normalize_group_title(request.group_title), section_types=("h1", "h2", "any_header")
-        )
+        title = normalize_group_title(request.group_title)
+        if request.for_primary:
+            display = (request.source_channel_display or request.channel_id).strip()
+            lookup_title = f"{title} ({display})"
+        else:
+            lookup_title = title
+        sections = self._slack.lookup_sections(request.canvas_id, contains_text=lookup_title, section_types=("h1", "h2", "any_header"))
         section_id = _first_section_id(sections)
         if section_id is None:
             self._slack.edit_canvas(request.canvas_id, operation="insert_at_start", markdown=markdown)
@@ -235,10 +243,7 @@ class CanvasService:
         if prior_id is None:
             # Do not append orphan asset fragments without a group heading —
             # callers should fall back to index_batch for a full group rewrite.
-            return DuplicateThreadResult(
-                manual_cleanup_required=True,
-                detail=f"prior Latest marker for entity {request.entity_id} needs manual cleanup",
-            )
+            return DuplicateThreadResult(manual_cleanup_required=True, detail=f"prior Latest marker for entity {request.entity_id} needs manual cleanup")
         # clear Latest on the prior marker without rewriting unmanaged neighbors
         self._slack.edit_canvas(request.canvas_id, operation="replace", section_id=prior_id, markdown=new_line.replace(" — Latest", ""))
         self._slack.edit_canvas(
@@ -289,19 +294,29 @@ def render_group_markdown(request: GroupIndexRequest) -> str:
         lines so consecutive groups stay visually separated on the canvas.
     """
     title = normalize_group_title(request.group_title)
+    if request.for_primary:
+        display = (request.source_channel_display or request.channel_id).strip()
+        heading = f"## {title} ({display})"
+    else:
+        heading = f"## {title}"
     people_parts = [part for part in (request.animator_display, *request.additional_displays) if part and part.strip()]
     people = ", ".join(people_parts) if people_parts else "unassigned"
     link_lines = "\n".join(f"- [{_escape_md(link.label)}]({link.url})" for link in request.links)
     asset_parts: list[str] = []
     for asset in request.assets:
         lines = [
-            f"### [{_escape_md(asset.name)}]({asset.asset_url})",
+            f"### {_escape_md(asset.name)}",
+            f"- :shotgrid: [ShotGrid]({asset.asset_url})",
             f"- {_asset_thread_line(asset.permalink, asset.created_at, is_latest=asset.is_latest)}",
         ]
         if asset.prior_permalink and asset.prior_created_at is not None:
             lines.append(f"- {_asset_thread_line(asset.prior_permalink, asset.prior_created_at, is_latest=False)}")
         asset_parts.append("\n".join(lines))
-    sections = [f"## {title}", f"**Creative Stakeholder:** {people}"]
+    sections = [heading]
+    if request.for_primary:
+        src = (request.source_channel_display or request.channel_id).strip()
+        sections.append(f"**Source channel:** #{src}")
+    sections.append(f"**Creative Stakeholder:** {people}")
     if link_lines:
         sections.append("**Group Links:**\n" + link_lines)
     if asset_parts:
@@ -314,7 +329,7 @@ def _asset_thread_line(permalink: str, created_at: datetime, *, is_latest: bool)
     """Render one timestamped thread link line."""
     stamp = format_canvas_timestamp(created_at)
     latest = " — Latest" if is_latest else ""
-    return f"[{stamp}]({permalink}){latest}"
+    return f":Slack: [{stamp}]({permalink}){latest}"
 
 
 def _normalize_title(value: str) -> str:
