@@ -148,6 +148,18 @@ Button: **Edit POCs** (latest root only).
 
 Under **INDEX OF PROP REQUESTS**, each confirmed batch has a group heading with Creative Stakeholder, Group Links, and per-asset thread links. New groups are added at the top, separated from older groups.
 
+Each group is an **H2** heading (collapse it to hide all assets in that batch). Each asset is an **H3** heading (collapse it to hide ShotGrid and Slack thread links underneath).
+
+---
+
+## Primary asset index
+
+Satellite channels keep their local **INDEX OF PROP REQUESTS** canvas as today. The app also mirrors each batch to a **PRIMARY ASSET INDEX** canvas in a dedicated primary channel configured by admins (`PRIMARY_ASSET_INDEX_CHANNEL_ID`, default `C04H4QZEYUE`).
+
+Primary updates are best-effort: if the primary write fails, your channel threads and local index still succeed. Primary sections use the same H2/H3 collapse layout and add **Source channel** plus a channel name in the group heading so batches from different channels stay distinct.
+
+The bot must be a member of the primary channel. Ask an admin to invite it if local indexes update but the primary canvas does not.
+
 ---
 
 ## Edit after posting

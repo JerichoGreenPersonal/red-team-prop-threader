@@ -63,6 +63,7 @@ Fill at least:
 | `SHOTGRID_URL` | Keep `https://respawn.shotgunstudio.com` |
 | `DATABASE_URL` | Start with `sqlite:///local/prop-threader.db` for pilot |
 | `CANVAS_TIMEZONE` | e.g. `America/Los_Angeles` |
+| `PRIMARY_ASSET_INDEX_CHANNEL_ID` | Cross-channel ledger canvas channel (default `C04H4QZEYUE`); bot must be in this channel |
 | `WEB_HOST` / `WEB_PORT` | Keep `127.0.0.1` / `3000` unless you change health checks |
 
 Leave `TUNNEL_COMMAND` empty for Socket Mode.

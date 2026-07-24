@@ -1,7 +1,7 @@
 # Primary Asset Index — Design
 
 Date: 2026-07-24  
-Status: draft for review
+Status: approved
 
 ## Problem
 
