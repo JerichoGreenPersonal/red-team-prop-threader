@@ -1,8 +1,12 @@
-# Python Package Template
+# Daily Review Prep Assistant
 
-A modern template for Python 3.11+ packages with best practices, automated setup, and multi-language support. Includes vendored `uv` for dependency management, `ruff` for linting/formatting, `ty` for type checking, `pytest` for testing, and comprehensive style guides for Python, React/TypeScript, and Electron.
+Windows desktop assistant for preparing daily review routes: syncing Perforce changelists, downloading ShotGrid attachments, and tracking route state through launch.
 
-This is a **template**, not a working application. Clone it and run `bin/setup/setup-project.ps1` to initialize your own project.
+Built on Python 3.12+ with PySide6, `shotgun-api3`, and `keyring`. Run tests with `uv run pytest`.
+
+---
+
+This repository started from a Python package template. The sections below document template tooling (`uv`, `ruff`, `ty`, pytest) still used during development.
 
 ## Features
 

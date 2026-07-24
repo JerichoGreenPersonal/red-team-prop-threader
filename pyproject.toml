@@ -1,7 +1,7 @@
 [project]
 name = "review-prep"
 dynamic = ["version"]
-description = "Add your description here"
+description = "Daily Review Prep Assistant"
 readme = "README.md"
 authors = [
     { name = "JerichoGreenPersonal", email = "67519931+JerichoGreenPersonal@users.noreply.github.com" }
@@ -30,3 +30,10 @@ dev = [
     "ruff>=0.16.0",
     "ty>=0.0.63",
 ]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
