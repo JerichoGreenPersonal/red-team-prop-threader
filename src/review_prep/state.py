@@ -218,6 +218,22 @@ class StateRepo:
         except sqlite3.IntegrityError:
             return False
 
+    def release_launch_lease(self, file_key: str, local_date: str) -> None:
+        """Delete a launch lease so the file can be claimed again for that day.
+
+        Args:
+            file_key (str): Stable key for the file.
+            local_date (str): Local calendar date (YYYY-MM-DD).
+        """
+        with self._connect() as conn:
+            conn.execute(
+                """
+                DELETE FROM launch_leases
+                WHERE file_key = ? AND local_date = ?
+                """,
+                (file_key, local_date),
+            )
+
     def ack_summary(self, prep_run_id: int) -> None:
         """Mark a prep run summary as acknowledged.
 

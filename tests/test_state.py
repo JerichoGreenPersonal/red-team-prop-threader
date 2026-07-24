@@ -15,6 +15,15 @@ def test_launch_lease_is_exactly_once(tmp_path: Path):
     assert repo.record_launch_lease("file-a", "2026-07-24") is True
 
 
+def test_release_launch_lease_allows_reclaim(tmp_path: Path):
+    repo = StateRepo(tmp_path / "prep.db")
+    repo.ensure_schema()
+    assert repo.record_launch_lease("file-a", "2026-07-23") is True
+    repo.release_launch_lease("file-a", "2026-07-23")
+    assert repo.has_launch_lease("file-a", "2026-07-23") is False
+    assert repo.record_launch_lease("file-a", "2026-07-23") is True
+
+
 def test_summary_ack(tmp_path: Path):
     repo = StateRepo(tmp_path / "prep.db")
     repo.ensure_schema()

@@ -100,6 +100,30 @@ def test_cadet_missing_does_not_lease(tmp_path: Path, monkeypatch: pytest.Monkey
     assert repo.has_launch_lease(str(scene.resolve()), "2026-07-23") is False
 
 
+def test_failed_spawn_releases_lease(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """When Popen raises, the daily lease is released so launch_eligible can retry."""
+    scene = tmp_path / "hero.ma"
+    scene.write_text("//maya", encoding="utf-8")
+
+    repo = StateRepo(tmp_path / "prep.db")
+    repo.ensure_schema()
+    _seed_ready_file(repo, local_date="2026-07-23", card_id=42, path=scene)
+
+    def boom_popen(argv: list[str], **kwargs: object) -> MagicMock:
+        raise OSError("spawn failed")
+
+    monkeypatch.setattr(LaunchCoordinator, "cadet_available", lambda self: True)
+    monkeypatch.setattr("review_prep.launch_coordinator.subprocess.Popen", boom_popen)
+
+    coordinator = LaunchCoordinator(settings=_settings(), state=repo)
+    report = coordinator.launch_eligible("2026-07-23")
+
+    assert report.launched == []
+    assert any("spawn failed" in err for err in report.errors)
+    assert repo.has_launch_lease(str(scene.resolve()), "2026-07-23") is False
+    assert repo.record_launch_lease(str(scene.resolve()), "2026-07-23") is True
+
+
 def test_open_again_bypasses_lease(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Open Again re-launches even when a daily lease is already held."""
     scene = tmp_path / "hero.ma"

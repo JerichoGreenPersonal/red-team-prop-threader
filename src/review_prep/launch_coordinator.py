@@ -136,15 +136,25 @@ class LaunchCoordinator:
         return report
 
     def _launch_with_lease(self, path: Path, local_date: str, report: LaunchReport) -> None:
-        """Claim a daily lease then launch; skip when the lease is already held."""
+        """Build argv, claim lease when about to spawn, release lease if spawn fails."""
         file_key = _file_key(path)
+        try:
+            argv = self._build_argv(path)
+        except ValueError as exc:
+            msg = f"launch failed for {file_key}: {exc}"
+            _logger.error("%s", msg)
+            report.errors.append(msg)
+            return
+
         if not self._state.record_launch_lease(file_key, local_date):
             report.skipped_leased.append(file_key)
             _logger.info("Skipping already-leased file: %s", file_key)
             return
+
         try:
-            self._popen_cadet(path)
+            self._spawn_cadet(argv)
         except (OSError, ValueError) as exc:
+            self._state.release_launch_lease(file_key, local_date)
             msg = f"launch failed for {file_key}: {exc}"
             _logger.error("%s", msg)
             report.errors.append(msg)
@@ -165,7 +175,10 @@ class LaunchCoordinator:
 
     def _popen_cadet(self, path: Path) -> None:
         """Format the Cadet template for ``path`` and start a detached process."""
-        argv = self._build_argv(path)
+        self._spawn_cadet(self._build_argv(path))
+
+    def _spawn_cadet(self, argv: list[str]) -> None:
+        """Start a detached Cadet process with the given argv."""
         _logger.info("Launching via Cadet: %s", argv)
         if _DETACHED_FLAGS:
             subprocess.Popen(
