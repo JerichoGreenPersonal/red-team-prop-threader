@@ -265,6 +265,18 @@ def test_asset_root_threadparrot_bookends_title_line() -> None:
     assert str(message["text"]).endswith(":threadparrot:")
 
 
+def test_asset_root_includes_shotgrid_emoji_and_threadparrot() -> None:
+    message = render_asset_root(sample_asset_context())
+    rendered = "\n".join(
+        block["text"]["text"]
+        for block in message["blocks"]
+        if block.get("type") == "section" and isinstance(block.get("text"), dict)
+    )
+    assert ":threadparrot:" in rendered
+    assert ":shotgrid:" in rendered
+    assert ":shotgrid: <https://sg.example.com/12345|Prop A>" in rendered
+
+
 def test_asset_root_header_fields_are_single_section() -> None:
     """Asset/Group/Requestor/Group POCs share one section (tight four-line block)."""
     message = render_asset_root(sample_asset_context())

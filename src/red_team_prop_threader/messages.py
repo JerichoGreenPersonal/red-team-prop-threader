@@ -348,7 +348,7 @@ def render_asset_root(context: AssetRootContext) -> dict[str, object]:
 
     # Asset / Group / Requestor / Group POCs share one section so Slack does not
     # insert section padding between them (reads as four tight lines).
-    asset_link = f"<{context.asset_url}|{escaped_name}>"
+    asset_link = f":shotgrid: <{context.asset_url}|{escaped_name}>"
     asset_line = f":threadparrot: *Asset:* {asset_link} (ShotGrid ID: {context.asset_entity_id})"
     if context.is_latest and context.has_prior_thread:
         asset_line += " (latest thread)"
