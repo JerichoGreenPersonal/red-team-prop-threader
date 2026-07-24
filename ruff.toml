@@ -33,11 +33,11 @@ include = [
 ]
 indent-width = 4
 line-length = 160
-namespace-packages = ["<project-name>"]
+namespace-packages = ["review-prep"]
 src = [
     "src",
 ]
-target-version = "py311"
+target-version = "py312"
 unsafe-fixes = false # some fixes are only applied when this is true, ie type checking
 
 [format]

@@ -2,7 +2,7 @@
 # https://docs.astral.sh/ty/reference/configuration/
 
 [environment]
-python-version = "3.11"
+python-version = "3.12"
 root = ["./src", "./scripts"]
 
 [src]
