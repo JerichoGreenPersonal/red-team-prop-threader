@@ -38,6 +38,7 @@ class Settings:
     worker_poll_seconds: int
     tunnel_command: str | None
     tunnel_health_url: str | None
+    primary_asset_index_channel_id: str
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -66,6 +67,9 @@ class Settings:
         worker_poll_seconds = _parse_positive_int("WORKER_POLL_SECONDS", os.environ.get("WORKER_POLL_SECONDS", "2"))
         tunnel_command = _optional_str("TUNNEL_COMMAND")
         tunnel_health_url = _optional_str("TUNNEL_HEALTH_URL")
+        primary_asset_index_channel_id = (
+            os.environ.get("PRIMARY_ASSET_INDEX_CHANNEL_ID", "C04H4QZEYUE").strip() or "C04H4QZEYUE"
+        )
 
         return cls(
             slack_bot_token=slack_bot_token,
@@ -84,6 +88,7 @@ class Settings:
             worker_poll_seconds=worker_poll_seconds,
             tunnel_command=tunnel_command,
             tunnel_health_url=tunnel_health_url,
+            primary_asset_index_channel_id=primary_asset_index_channel_id,
         )
 
 

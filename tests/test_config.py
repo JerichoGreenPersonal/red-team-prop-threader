@@ -33,6 +33,7 @@ _ENV_KEYS = (
     "WORKER_POLL_SECONDS",
     "TUNNEL_COMMAND",
     "TUNNEL_HEALTH_URL",
+    "PRIMARY_ASSET_INDEX_CHANNEL_ID",
 )
 
 
@@ -176,6 +177,22 @@ def test_settings_shotgrid_url_no_trailing_slash(monkeypatch: pytest.MonkeyPatch
 # ---------------------------------------------------------------------------
 # Settings — defaults
 # ---------------------------------------------------------------------------
+
+
+def test_primary_asset_index_channel_id_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    """PRIMARY_ASSET_INDEX_CHANNEL_ID defaults to C04H4QZEYUE."""
+    _set_required(monkeypatch)
+    monkeypatch.delenv("PRIMARY_ASSET_INDEX_CHANNEL_ID", raising=False)
+    settings = Settings.from_env()
+    assert settings.primary_asset_index_channel_id == "C04H4QZEYUE"
+
+
+def test_primary_asset_index_channel_id_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    """PRIMARY_ASSET_INDEX_CHANNEL_ID can be overridden."""
+    _set_required(monkeypatch)
+    monkeypatch.setenv("PRIMARY_ASSET_INDEX_CHANNEL_ID", "C999OVERRIDE")
+    settings = Settings.from_env()
+    assert settings.primary_asset_index_channel_id == "C999OVERRIDE"
 
 
 def test_settings_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
