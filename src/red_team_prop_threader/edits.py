@@ -477,7 +477,7 @@ def _render_edit_view(
     animator_element: dict[str, Any] = {
         "type": "static_select",
         "action_id": _BID_ANIMATOR,
-        "placeholder": {"type": "plain_text", "text": "Select a channel member"},
+        "placeholder": {"type": "plain_text", "text": "Select an AD or Feature Owner" if not is_asset else "Animator or Concept Artist"},
         "options": options,
     }
     initial_animator = _member_option_object(members, animator)
@@ -504,7 +504,7 @@ def _render_edit_view(
                 "type": "input",
                 "block_id": _BID_ANIMATOR,
                 "optional": True,
-                "label": {"type": "plain_text", "text": "Requestor" if is_asset else "Creative Stakeholder"},
+                "label": {"type": "plain_text", "text": "IC POC" if is_asset else "Creative Stakeholder"},
                 "hint": {"type": "plain_text", "text": "Only people already in this channel are listed."},
                 "element": animator_element,
             },
@@ -520,8 +520,13 @@ def _render_edit_view(
                 "type": "input",
                 "block_id": _BID_LINKS,
                 "optional": True,
-                "label": {"type": "plain_text", "text": "Links" if is_asset else "Group links"},
-                "element": _links_input_element(links),
+                "label": {"type": "plain_text", "text": "Asset Links" if is_asset else "Group links"},
+                "element": _links_input_element(
+                    links,
+                    "Ex: Area in Miro, SyncSketch, Reverence Folder, etc (Format: Label: https://...)"
+                    if is_asset
+                    else "Ex: Map Miro, Season Deck, etc (Format: Label: https://...)",
+                ),
             },
         ],
     }
@@ -544,13 +549,21 @@ def _member_option_object(members: tuple[tuple[str, str], ...], user_id: str) ->
     return None
 
 
-def _links_input_element(links: str) -> dict[str, Any]:
-    """Build the supporting-links plain_text_input, omitting empty initial_value."""
+def _links_input_element(links: str, placeholder: str) -> dict[str, Any]:
+    """Build the supporting-links plain_text_input, omitting empty initial_value.
+
+    Args:
+        links: multiline ``Label: URL`` text to prefill, or empty.
+        placeholder: placeholder shown when the field is empty.
+
+    Returns:
+        dict[str, Any]: Slack plain_text_input element.
+    """
     element: dict[str, Any] = {
         "type": "plain_text_input",
         "action_id": _BID_LINKS,
         "multiline": True,
-        "placeholder": {"type": "plain_text", "text": "Label: https://..."},
+        "placeholder": {"type": "plain_text", "text": placeholder},
     }
     if links:
         element["initial_value"] = links

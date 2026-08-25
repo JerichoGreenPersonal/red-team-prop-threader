@@ -25,12 +25,10 @@ __all__ = (
     "AID_NAV_CONFIRM",
     "AID_NAV_NEXT",
     "BID_CONFIRM_GROUP_TITLE",
-    "BID_FORM_ERRORS",
     "BID_GROUP_ADDITIONAL",
     "BID_GROUP_ANIMATOR",
     "BID_GROUP_LINKS",
     "BID_GROUP_TITLE",
-    "FORM_ERRORS_NOTICE",
     "AssetDraft",
     "AssetSelection",
     "CanvasPreflightContext",
@@ -71,8 +69,11 @@ BID_GROUP_ANIMATOR = "group_animator"
 BID_GROUP_ADDITIONAL = "group_additional"
 BID_GROUP_LINKS = "group_links"
 BID_CONFIRM_GROUP_TITLE = "confirm_group_title"
-BID_FORM_ERRORS = "form_errors"
-FORM_ERRORS_NOTICE = "Errors exist, see above."
+_PLACEHOLDER_GROUP_TITLE = "ex: Season or Map Name"
+_PLACEHOLDER_GROUP_STAKEHOLDER = "Select an AD or Feature Owner"
+_PLACEHOLDER_GROUP_LINKS = "Ex: Map Miro, Season Deck, etc (Format: Label: https://...)"
+_PLACEHOLDER_ASSET_POC = "Animator or Concept Artist"
+_PLACEHOLDER_ASSET_LINKS = "Ex: Area in Miro, SyncSketch, Reverence Folder, etc (Format: Label: https://...)"
 
 # ---------------------------------------------------------------------------
 # Slack limits
@@ -487,20 +488,29 @@ def _plain_text_input(action_id: str, placeholder: str, initial_value: str | Non
     return elem
 
 
-def _form_errors_block() -> dict[str, object]:
-    """Bottom input used only as a sink for modal-wide validation notices."""
-    return _input_block(BID_FORM_ERRORS, "Notice", _plain_text_input(BID_FORM_ERRORS, "Leave blank", None), optional=True)
-
-
 def with_form_error_notice(errors: dict[str, str]) -> dict[str, str]:
-    """Attach a bottom-of-modal notice whenever field errors are returned.
+    """Return field errors for Slack ``response_action=errors``.
 
-    Slack only highlights input blocks via ``response_action=errors``. A trailing
-    notice input keeps failures visible when the offending field is off-screen.
+    Args:
+        errors: block_id to message mapping from validation.
+
+    Returns:
+        dict[str, str]: the same mapping, for Bolt ack payloads.
     """
-    if not errors:
-        return errors
-    return {**errors, BID_FORM_ERRORS: FORM_ERRORS_NOTICE}
+    return errors
+
+
+def _creating_threads_label(asset_count: int) -> str:
+    """Return the asset-count intro line for a draft page.
+
+    Args:
+        asset_count: number of assets imported from the ShotGrid page.
+
+    Returns:
+        str: intro copy such as ``Creating threads for 3 assets``.
+    """
+    noun = "asset" if asset_count == 1 else "assets"
+    return f"Creating threads for {asset_count} {noun}"
 
 
 def _checkboxes(action_id: str, included: bool) -> dict[str, object]:
@@ -586,11 +596,11 @@ def _group_blocks(draft: AssetDraft) -> list[dict[str, object]]:
     """
     members = draft.channel_members
     return [
-        _input_block(BID_GROUP_TITLE, "Group title", _plain_text_input(BID_GROUP_TITLE, "SEASON N PROP REQUEST THREADS", draft.group_title or None)),
+        _input_block(BID_GROUP_TITLE, "Group title", _plain_text_input(BID_GROUP_TITLE, _PLACEHOLDER_GROUP_TITLE, draft.group_title or None)),
         _input_block(
             BID_GROUP_ANIMATOR,
             "Creative Stakeholder",
-            _users_select(BID_GROUP_ANIMATOR, "Select a channel member", draft.group_animator_id, members),
+            _users_select(BID_GROUP_ANIMATOR, _PLACEHOLDER_GROUP_STAKEHOLDER, draft.group_animator_id, members),
             optional=True,
             hint="Only people already in this channel are listed.",
         ),
@@ -604,7 +614,7 @@ def _group_blocks(draft: AssetDraft) -> list[dict[str, object]]:
         _input_block(
             BID_GROUP_LINKS,
             "Group links",
-            _plain_text_input(BID_GROUP_LINKS, "Label: https://...", draft.group_links_text or None, multiline=True),
+            _plain_text_input(BID_GROUP_LINKS, _PLACEHOLDER_GROUP_LINKS, draft.group_links_text or None, multiline=True),
             optional=True,
         ),
     ]
@@ -631,8 +641,8 @@ def _asset_blocks(asset: ImportedAsset, sel: AssetSelection, members: tuple[Chan
         _input_block(f"asset_{eid}_include", f"{asset.name} (ID: {eid})", _checkboxes(f"asset_{eid}_include", sel.included), optional=True),
         _input_block(
             f"asset_{eid}_animator",
-            "Requestor",
-            _users_select(f"asset_{eid}_animator", "Select a channel member", sel.animator_id, members),
+            "IC POC",
+            _users_select(f"asset_{eid}_animator", _PLACEHOLDER_ASSET_POC, sel.animator_id, members),
             optional=True,
             hint="Only people already in this channel are listed.",
         ),
@@ -644,7 +654,10 @@ def _asset_blocks(asset: ImportedAsset, sel: AssetSelection, members: tuple[Chan
             hint="Only people already in this channel are listed.",
         ),
         _input_block(
-            f"asset_{eid}_links", "Links", _plain_text_input(f"asset_{eid}_links", "Label: https://...", sel.links_text or None, multiline=True), optional=True
+            f"asset_{eid}_links",
+            "Asset Links",
+            _plain_text_input(f"asset_{eid}_links", _PLACEHOLDER_ASSET_LINKS, sel.links_text or None, multiline=True),
+            optional=True,
         ),
     ]
 
@@ -785,11 +798,7 @@ def render_asset_page(draft: AssetDraft, page_index: int) -> dict[str, object]:
     page_sels = _page_selections(draft.selections, page_index)
 
     total_pages = _page_count(total)
-    page_label = (
-        f"Page {page_index + 1} of {total_pages} \u2014 {_escape(draft.group_title)}" if draft.group_title else f"Page {page_index + 1} of {total_pages}"
-    )
-
-    blocks: list[dict[str, object]] = [_section("page_intro", _mrkdwn(page_label))]
+    blocks: list[dict[str, object]] = [_section("page_intro", _mrkdwn(_creating_threads_label(total)))]
     blocks.extend(_group_blocks(draft))
 
     for asset, sel in zip(page_assets, page_sels, strict=True):
@@ -805,7 +814,6 @@ def render_asset_page(draft: AssetDraft, page_index: int) -> dict[str, object]:
         nav_elements.append(_button("Confirm", AID_NAV_CONFIRM, value=draft.draft_id, style="primary"))
 
     blocks.append(_actions_block("nav_actions", nav_elements))
-    blocks.append(_form_errors_block())
 
     if len(blocks) > _BLOCK_MAX:
         raise ValidationError(f"rendered {len(blocks)} blocks; maximum is {_BLOCK_MAX}")
@@ -842,7 +850,7 @@ def render_confirmation_view(context: ConfirmationContext) -> dict[str, object]:
     _validate_draft_id(context.draft_id)
     blocks: list[dict[str, object]] = [
         _section("conf_channel", _mrkdwn(f"*Target channel:* <#{context.target_channel_id}>")),
-        _input_block(BID_CONFIRM_GROUP_TITLE, "Group title", _plain_text_input(AID_CONFIRM_GROUP_TITLE, "SEASON N PROP REQUEST THREADS", context.group_title)),
+        _input_block(BID_CONFIRM_GROUP_TITLE, "Group title", _plain_text_input(AID_CONFIRM_GROUP_TITLE, _PLACEHOLDER_GROUP_TITLE, context.group_title)),
         _section("conf_counts", _mrkdwn(f"*{context.included_count}* asset(s) included \u2014 *{context.deduped_row_count}* unique deduplicated row(s).")),
     ]
 
@@ -854,7 +862,6 @@ def render_confirmation_view(context: ConfirmationContext) -> dict[str, object]:
         blocks.append(_section(f"conf_warning_{i}", _mrkdwn(f":warning: {_escape(warning)}")))
 
     blocks.append(_section("conf_disclaimer", _mrkdwn("*Note:* Once confirmed, thread posting cannot be cancelled. The process runs as a background job.")))
-    blocks.append(_form_errors_block())
 
     return {
         "type": "modal",
