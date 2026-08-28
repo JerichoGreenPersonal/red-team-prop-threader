@@ -34,6 +34,7 @@ from red_team_prop_threader.views import (
     render_import_view,
     decode_asset_page_state,
     render_confirmation_view,
+    constrain_asset_page_errors,
     render_canvas_preflight_view,
 )
 from red_team_prop_threader.domain import ImportedAsset
@@ -695,6 +696,18 @@ def test_decode_user_select_empty_string_is_none() -> None:
     state = {"values": {"group_animator": {"group_animator": {"selected_user": "  "}}}}
     decoded = decode_asset_page_state(state, page_index=0)
     assert decoded.group_animator_id is None
+
+
+def test_constrain_asset_page_errors_moves_offscreen_keys_to_group_title() -> None:
+    """Off-page asset errors are remapped so Slack will accept the ack."""
+    entity_ids = tuple(range(100, 116))
+    errors = {"asset_115_animator": "must be a member of this channel", "group_title": "group title is required"}
+    constrained = constrain_asset_page_errors(errors, page_index=0, entity_ids=entity_ids)
+    assert "asset_115_animator" not in constrained
+    assert "group title is required" in constrained["group_title"]
+    assert "must be a member of this channel" in constrained["group_title"]
+    on_page = constrain_asset_page_errors({"asset_100_links": "line 1: Supporting links require a label (label: link)"}, page_index=0, entity_ids=entity_ids)
+    assert on_page == {"asset_100_links": "line 1: Supporting links require a label (label: link)"}
 
 
 def test_confirm_view_omits_notice_and_keeps_field_errors() -> None:

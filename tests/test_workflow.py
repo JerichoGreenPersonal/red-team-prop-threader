@@ -449,3 +449,13 @@ def test_membership_errors_stay_on_offending_people_fields(workflow: Workflow, f
     assert "group_animator" not in errors
     assert "asset_1001_animator" in errors
     assert "member" in errors["asset_1001_animator"]
+
+
+def test_asset_link_parse_errors_stay_on_asset_links(workflow: Workflow, fake_slack: FakeSlackGateway) -> None:
+    """Malformed asset links must not be reported on the group links field."""
+    fake_slack.members = ("U_COMMAND", "U_SECOND")
+    draft = sample_draft(asset_links_text={1001: "not-a-link"})
+    workflow.drafts.put(draft)
+    errors = workflow._confirm_field_errors(draft)
+    assert "group_links" not in errors
+    assert "asset_1001_links" in errors

@@ -585,12 +585,16 @@ class Workflow:
         try:
             if draft.group_links_text.strip():
                 parse_supporting_links(draft.group_links_text)
-            for entity_id in draft.included_entity_ids:
-                links_text = draft.asset_links_text.get(entity_id, "")
-                if links_text.strip():
-                    parse_supporting_links(links_text)
         except ValidationError as exc:
             errors.setdefault("group_links", str(exc))
+        for entity_id in draft.included_entity_ids:
+            links_text = draft.asset_links_text.get(entity_id, "")
+            if not links_text.strip():
+                continue
+            try:
+                parse_supporting_links(links_text)
+            except ValidationError as exc:
+                errors.setdefault(f"asset_{entity_id}_links", str(exc))
 
         return errors
 

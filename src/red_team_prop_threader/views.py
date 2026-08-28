@@ -37,6 +37,7 @@ __all__ = (
     "DecodedAssetPage",
     "DecodedAssetState",
     "ImportContext",
+    "constrain_asset_page_errors",
     "decode_asset_page_state",
     "render_asset_page",
     "render_canvas_loading_view",
@@ -498,6 +499,42 @@ def with_form_error_notice(errors: dict[str, str]) -> dict[str, str]:
         dict[str, str]: the same mapping, for Bolt ack payloads.
     """
     return errors
+
+
+def constrain_asset_page_errors(errors: dict[str, str], *, page_index: int, entity_ids: tuple[int, ...]) -> dict[str, str]:
+    """Keep Slack modal errors on input blocks that exist on this asset page.
+
+    Slack rejects ``response_action=errors`` (client: trouble connecting) when a
+    key is not an input on the open view. Membership and link failures for
+    assets on another page are moved onto group title.
+
+    Args:
+        errors: block_id to message mapping from confirmation validation.
+        page_index: zero-based page currently open.
+        entity_ids: all draft entity ids in source order.
+
+    Returns:
+        dict[str, str]: errors keyed only by blocks present on this page.
+    """
+    if not errors:
+        return errors
+    start = page_index * _PAGE_SIZE
+    page_ids = entity_ids[start : start + _PAGE_SIZE]
+    visible = {BID_GROUP_TITLE, BID_GROUP_ANIMATOR, BID_GROUP_ADDITIONAL, BID_GROUP_LINKS}
+    for entity_id in page_ids:
+        visible.update({f"asset_{entity_id}_include", f"asset_{entity_id}_animator", f"asset_{entity_id}_additional", f"asset_{entity_id}_links"})
+    constrained: dict[str, str] = {}
+    overflow: list[str] = []
+    for block_id, message in errors.items():
+        if block_id in visible:
+            constrained[block_id] = message
+        else:
+            overflow.append(message)
+    if overflow:
+        extra = overflow[0]
+        existing = constrained.get(BID_GROUP_TITLE)
+        constrained[BID_GROUP_TITLE] = f"{existing} {extra}" if existing else extra
+    return constrained
 
 
 def _creating_threads_label(asset_count: int) -> str:

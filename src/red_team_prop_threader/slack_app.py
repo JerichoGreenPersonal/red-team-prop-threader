@@ -25,6 +25,7 @@ from red_team_prop_threader.views import (
     AID_CANVAS_RENAME,
     AID_CANVAS_DECLINE,
     with_form_error_notice,
+    constrain_asset_page_errors,
 )
 from red_team_prop_threader._errors import ValidationError, ExternalServiceError, ImportValidationError
 
@@ -166,7 +167,11 @@ def register_listeners(app: App, workflow_factory: Callable[[], Workflow], edit_
                 return
             field_errors = workflow._confirm_field_errors(draft)
             if field_errors:
-                ack(response_action="errors", errors=with_form_error_notice(field_errors))
+                logger.warning("asset page confirm blocked draft_id=%s errors=%s", draft_id, field_errors)
+                ack(
+                    response_action="errors",
+                    errors=constrain_asset_page_errors(field_errors, page_index=draft.page_index, entity_ids=tuple(asset.entity_id for asset in draft.assets)),
+                )
                 return
             try:
                 next_view = workflow.open_confirmation(draft_id)
