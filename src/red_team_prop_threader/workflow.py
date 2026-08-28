@@ -19,6 +19,7 @@ from red_team_prop_threader.views import (
     render_import_view,
     decode_asset_page_state,
     render_confirmation_view,
+    render_canvas_loading_view,
     render_canvas_preflight_view,
 )
 from red_team_prop_threader.canvas import CANVAS_TITLE, PreflightState
@@ -217,17 +218,18 @@ class Workflow:
         self.drafts = drafts or DraftBook()
 
     def handle_command(self, command: CommandRequest) -> None:
-        """Run canvas preflight, then open the final modal once.
+        """Open a loading modal immediately, then replace it after preflight.
 
-        Uses a single ``views.open`` (no follow-up ``views.update``) so the
-        Slack client never races a loading modal into the import screen.
-        Requires the Bolt listener to finish before acknowledging the slash
-        command (``process_before_response=True``).
+        Slack trigger IDs expire in about three seconds. Canvas lookup and
+        optional ShotGrid export can exceed that, which yields
+        ``expired_trigger_id`` and Slackbot's "app did not respond". A loading
+        ``views.open`` spends the trigger immediately; the real screen is a
+        ``views.update``.
 
         When the slash command includes a ShotGrid page URL and the canvas is
-        already ready, ShotGrid export runs immediately and Assets p.1 opens
-        (skipping the import confirmation modal). Otherwise export stays
-        deferred until import submission.
+        already ready, ShotGrid export runs after the loading modal and Assets
+        p.1 replaces it. Otherwise export stays deferred until import
+        submission.
 
         Args:
             command: slash-command request payload.
@@ -256,11 +258,14 @@ class Workflow:
         )
         self.drafts.put(draft)
 
+        loading = render_canvas_loading_view(draft_id)
+        opened = self.slack.open_view(command.trigger_id, loading)
+        self._capture_view_ids(draft, opened)
+
         try:
             result = self.canvas.preflight(command.channel_id)
         except (PermissionDeniedError, ExternalServiceError) as exc:
-            opened = self.slack.open_view(command.trigger_id, _blocked_view(draft_id, str(exc)))
-            self._capture_view_ids(draft, opened)
+            self._update_draft_view(draft, _blocked_view(draft_id, str(exc)))
             return
 
         draft.preflight_state = result.state.value
@@ -268,19 +273,16 @@ class Workflow:
 
         if result.state is PreflightState.BLOCKED:
             detail = result.detail or "canvas access is blocked"
-            opened = self.slack.open_view(command.trigger_id, _blocked_view(draft_id, detail))
-            self._capture_view_ids(draft, opened)
+            self._update_draft_view(draft, _blocked_view(draft_id, detail))
             return
 
         if result.state is PreflightState.READY:
-            opened = self.slack.open_view(command.trigger_id, self._import_or_asset_view(draft))
-            self._capture_view_ids(draft, opened)
+            self._update_draft_view(draft, self._import_or_asset_view(draft))
             return
 
         canvas_name = result.current_title or CANVAS_TITLE
         preflight_view = render_canvas_preflight_view(CanvasPreflightContext(draft_id=draft_id, canvas_name=canvas_name, channel_id=command.channel_id))
-        opened = self.slack.open_view(command.trigger_id, {**preflight_view, "callback_id": _CALLBACK_PREFLIGHT})
-        self._capture_view_ids(draft, opened)
+        self._update_draft_view(draft, {**preflight_view, "callback_id": _CALLBACK_PREFLIGHT})
 
     def confirm_canvas_create(self, draft_id: str) -> dict[str, Any]:
         """Create a missing channel canvas after user confirmation.

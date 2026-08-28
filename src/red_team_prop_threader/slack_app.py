@@ -73,11 +73,12 @@ def register_listeners(app: App, workflow_factory: Callable[[], Workflow], edit_
 
     @app.command("/create-prop-threads")
     def handle_create_prop_threads(ack: Any, command: dict[str, Any], logger: Any) -> None:
-        """Run preflight + views.open, then acknowledge the slash command.
+        """Ack immediately, then open a loading modal and finish preflight.
 
-        Intended for ``process_before_response=True`` so Slack receives the
-        Socket Mode ack only after the modal is open.
+        Slack times out slash commands at about three seconds. Preflight and
+        ShotGrid export must not hold the ack or the trigger_id.
         """
+        ack()
         workflow = workflow_factory()
         from red_team_prop_threader.workflow import CommandRequest
 
@@ -94,7 +95,6 @@ def register_listeners(app: App, workflow_factory: Callable[[], Workflow], edit_
             )
         except Exception as exc:
             logger.exception("create-prop-threads failed: %s", exc)
-        ack()
 
     @app.action(AID_CANVAS_CREATE)
     def handle_canvas_create(ack: Any, body: dict[str, Any], client: Any, logger: Any) -> None:

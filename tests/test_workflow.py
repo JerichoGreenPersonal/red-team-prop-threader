@@ -35,6 +35,7 @@ class FakeSlackGateway:
     """slack double recording modal opens/updates and user lookups."""
 
     opened_view: dict[str, Any] | None = None
+    first_opened_view: dict[str, Any] | None = None
     updated_views: list[dict[str, Any]] = field(default_factory=list)
     display_names: dict[str, str] = field(default_factory=lambda: {"U_OWNER": "Owner Name"})
     channel_canvas_id: str | None = None
@@ -45,13 +46,16 @@ class FakeSlackGateway:
     def open_view(self, trigger_id: str, view: dict[str, Any]) -> dict[str, Any]:
         """Record the first opened modal."""
         del trigger_id
+        if self.first_opened_view is None:
+            self.first_opened_view = view
         self.opened_view = view
         return {"ok": True, "view": {"id": "Vopen", "hash": "h1"}}
 
     def update_view(self, view_id: str, view: dict[str, Any], *, view_hash: str | None = None) -> dict[str, Any]:
-        """Record a modal update."""
+        """Record a modal update and treat it as the current opened view."""
         del view_id, view_hash
         self.updated_views.append(view)
+        self.opened_view = view
         return {"ok": True, "view": {"id": "Vopen", "hash": "h2"}}
 
     def get_user_info(self, user_id: str) -> dict[str, Any]:
@@ -231,6 +235,8 @@ def workflow(session: Session, engine: Engine, fake_slack: FakeSlackGateway) -> 
 def test_command_opens_canvas_preflight_before_import(workflow: Workflow, fake_slack: FakeSlackGateway) -> None:
     """Without a ready canvas, command opens preflight before any ShotGrid export."""
     workflow.handle_command(sample_command(text="https://respawn.shotgunstudio.com/page/23280"))
+    assert fake_slack.first_opened_view is not None
+    assert "Checking the channel canvas" in str(fake_slack.first_opened_view)
     assert fake_slack.opened_view is not None
     assert fake_slack.opened_view["callback_id"] == "canvas_preflight"
     assert workflow.shotgrid.export_calls == []
