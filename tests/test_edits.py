@@ -468,6 +468,43 @@ def test_asset_edit_updates_one_latest_root(
     assert updated.last_edited_at == clock.now()
 
 
+def test_apply_asset_edit_can_clear_pocs_added_after_post(
+    edit_service: EditService, fake_slack: FakeSlackGateway, repositories: Repositories, session: Session, clock: FakeClock
+) -> None:
+    """Selecting Unassigned must remove IC POC and additional requestors from the root."""
+    group_id = _seed_group(repositories, session, clock)
+    batch = repositories.batches.create(group_id=group_id, workspace_id="W1", channel_id="C1", submitter_user_id="Ueditor", payload={}, now=clock.now())
+    session.flush()
+    snapshot = _asset_snapshot(1001)
+    snapshot["asset_animator_id"] = "Uasset"
+    snapshot["asset_additional_ids"] = ["Uadd"]
+    root = repositories.history.record(
+        NewMessageInput(
+            workspace_id="W1",
+            channel_id="C1",
+            group_id=group_id,
+            batch_id=batch.id,
+            kind=MessageKind.ASSET_ROOT,
+            asset_entity_id=1001,
+            slack_ts="301.1",
+            permalink="https://slack.example/301",
+            canvas_metadata={"edit": snapshot},
+            now=clock.now(),
+        )
+    )
+    session.flush()
+    edit_service.apply_asset_edit(
+        AssetEditRequest(workspace_id="W1", channel_id="C1", user_id="Ueditor", message_ts=root.slack_ts, animator_id="", additional_ids=(), links_text="")
+    )
+    stored = repositories.history.get_by_channel_ts(workspace_id="W1", channel_id="C1", slack_ts="301.1")
+    assert stored is not None
+    edit = (stored.canvas_metadata or {}).get("edit")
+    assert isinstance(edit, dict)
+    assert edit["asset_animator_id"] == ""
+    assert edit["asset_additional_ids"] == []
+    assert "*Requestor:* unassigned" in str(fake_slack.updates[-1].blocks)
+
+
 def test_open_editor_omits_empty_initial_user(edit_service: EditService, repositories: Repositories, session: Session, clock: FakeClock) -> None:
     """Unassigned people must not send empty initial_option (Slack rejects empty initials)."""
     group_id = _seed_group(repositories, session, clock)
@@ -505,6 +542,8 @@ def test_open_editor_omits_empty_initial_user(edit_service: EditService, reposit
     assert "initial_users" not in additional_block["element"]
     assert any("@ueditor" in opt["text"]["text"] for opt in animator_block["element"]["options"])
     assert any("Name Ueditor" in opt["text"]["text"] for opt in animator_block["element"]["options"])
+    assert animator_block["element"]["options"][0]["value"] == "__none__"
+    assert animator_block["element"]["options"][0]["text"]["text"] == "Unassigned"
 
 
 def test_open_latest_editors_return_views(edit_service: EditService, repositories: Repositories, session: Session, clock: FakeClock) -> None:
@@ -565,6 +604,24 @@ def test_decode_edit_submission_parses_metadata_and_fields() -> None:
     assert animator_id == "Uanim"
     assert additional_ids == ("Uadd",)
     assert "example.com" in links_text
+
+
+def test_decode_edit_submission_unassigned_clears_people() -> None:
+    """Unassigned and empty multi-select must decode to no people."""
+    view = {
+        "private_metadata": "C1|12.34",
+        "state": {
+            "values": {
+                "edit_animator": {"edit_animator": {"selected_option": {"value": "__none__"}}},
+                "edit_additional": {"edit_additional": {"selected_options": []}},
+                "edit_links": {"edit_links": {"value": ""}},
+            }
+        },
+    }
+    _channel_id, _message_ts, animator_id, additional_ids, links_text = decode_edit_submission(view)
+    assert animator_id == ""
+    assert additional_ids == ()
+    assert links_text == ""
 
 
 def test_open_asset_editor_accepts_mismatched_workspace_id(edit_service: EditService, repositories: Repositories, session: Session, clock: FakeClock) -> None:

@@ -21,8 +21,8 @@ __all__ = ("dedupe_links", "dedupe_people", "infer_group_title", "normalize_grou
 # matches "Label: URL" where label is nonempty and URL is non-whitespace
 _LINK_LINE_RE = re.compile(r"^(?P<label>.+?):\s+(?P<url>\S+)\s*$")
 
-# matches S<digits> with non-alphanumeric boundaries; underscores are separators
-_SEASON_RE = re.compile(r"(?<![A-Z0-9])S(\d+)(?![A-Z0-9])", re.IGNORECASE)
+# matches S<digits> or S<digits>.<digits> with non-alphanumeric boundaries
+_SEASON_RE = re.compile(r"(?<![A-Z0-9])S(\d+(?:\.\d+)?)(?![A-Z0-9])", re.IGNORECASE)
 
 
 # ---------------------------------------------------------------------------
@@ -231,9 +231,9 @@ def normalize_group_title(value: str) -> str:
 def infer_group_title(assets: Iterable[str]) -> str:
     """Infer a canonical group title from asset names by finding a common season token.
 
-    Finds ``S<number>`` tokens (case-insensitive) in each asset name.  Returns
-    the canonical title only when every asset contains exactly one unique season
-    number and all share the same number.
+    Finds ``S<number>`` or ``S<number>.<number>`` tokens (case-insensitive) in
+    each asset name.  Returns the canonical title only when every asset
+    contains exactly one unique season token and all share the same token.
 
     Args:
         assets: iterable of asset name strings.

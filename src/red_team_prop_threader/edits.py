@@ -47,6 +47,8 @@ CALLBACK_GROUP_EDIT = "group_edit_submit"
 _BID_ANIMATOR = "edit_animator"
 _BID_ADDITIONAL = "edit_additional"
 _BID_LINKS = "edit_links"
+_UNASSIGNED_VALUE = "__none__"
+_UNASSIGNED_LABEL = "Unassigned"
 
 
 class Clock(Protocol):
@@ -489,12 +491,13 @@ def _render_edit_view(
         animator = str(snapshot.get("group_animator_id") or "").strip()
         additional = tuple(str(item) for item in snapshot.get("group_additional_ids") or () if str(item).strip())
         links = _links_text(snapshot.get("group_links"))
-    options = _member_option_objects(members)
+    member_opts = _member_option_objects(members)[:99]
+    additional_opts = member_opts or [_unassigned_option()]
     animator_element: dict[str, Any] = {
         "type": "static_select",
         "action_id": _BID_ANIMATOR,
         "placeholder": {"type": "plain_text", "text": "Select an AD or Feature Owner" if not is_asset else "Animator or Concept Artist"},
-        "options": options,
+        "options": [_unassigned_option(), *member_opts],
     }
     initial_animator = _member_option_object(members, animator)
     if initial_animator is not None:
@@ -503,7 +506,7 @@ def _render_edit_view(
         "type": "multi_static_select",
         "action_id": _BID_ADDITIONAL,
         "placeholder": {"type": "plain_text", "text": "Select channel members"},
-        "options": options,
+        "options": additional_opts,
     }
     initial_additional = [option for user_id in additional if (option := _member_option_object(members, user_id)) is not None]
     if initial_additional:
@@ -548,10 +551,19 @@ def _render_edit_view(
     }
 
 
+def _unassigned_option() -> dict[str, Any]:
+    """Return the explicit clear option for single-person pickers.
+
+    Slack static_select cannot deselect an initial_option. An Unassigned value
+    is the only way to remove a POC after it was saved.
+    """
+    return {"text": {"type": "plain_text", "text": _UNASSIGNED_LABEL}, "value": _UNASSIGNED_VALUE}
+
+
 def _member_option_objects(members: tuple[tuple[str, str], ...]) -> list[dict[str, Any]]:
     """Build Slack option objects for edit-modal people pickers."""
     if not members:
-        return [{"text": {"type": "plain_text", "text": "No channel members available"}, "value": "__none__"}]
+        return []
     return [{"text": {"type": "plain_text", "text": label[:75]}, "value": user_id} for user_id, label in members[:100]]
 
 
@@ -634,7 +646,7 @@ def decode_edit_submission(view: dict[str, Any]) -> tuple[str, str, str, tuple[s
             animator_id = str(selected_option.get("value") or "").strip()
         else:
             animator_id = str(animator_field.get("selected_user") or "").strip()
-    if animator_id == "__none__":
+    if animator_id == _UNASSIGNED_VALUE:
         animator_id = ""
     additional_block = values.get(_BID_ADDITIONAL) if isinstance(values, dict) else {}
     additional_field = additional_block.get(_BID_ADDITIONAL) if isinstance(additional_block, dict) else {}
@@ -645,7 +657,7 @@ def decode_edit_submission(view: dict[str, Any]) -> tuple[str, str, str, tuple[s
             additional_ids = tuple(
                 str(option.get("value") or "").strip()
                 for option in selected_options
-                if isinstance(option, dict) and str(option.get("value") or "").strip() and str(option.get("value") or "").strip() != "__none__"
+                if isinstance(option, dict) and str(option.get("value") or "").strip() and str(option.get("value") or "").strip() != _UNASSIGNED_VALUE
             )
         else:
             selected = additional_field.get("selected_users")
