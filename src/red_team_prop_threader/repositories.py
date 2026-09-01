@@ -1050,6 +1050,10 @@ class HistoryRepository:
         row = self._session.execute(
             select(Message).where(Message.workspace_id == workspace_id, Message.channel_id == channel_id, Message.slack_ts == slack_ts)
         ).scalar_one_or_none()
+        if row is None:
+            # slack connect / grid clicks can send a different team id than the
+            # workspace stored when the threads were posted.
+            row = self._session.execute(select(Message).where(Message.channel_id == channel_id, Message.slack_ts == slack_ts)).scalars().first()
         return None if row is None else _message_to_record(row)
 
     def list_latest_asset_roots_for_group(self, group_id: str) -> list[MessageRecord]:

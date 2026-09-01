@@ -15,6 +15,7 @@ from red_team_prop_threader.views import (
     ChannelMemberOption,
     ConfirmationContext,
     CanvasPreflightContext,
+    asset_page_count,
     render_asset_page,
     render_import_view,
     decode_asset_page_state,
@@ -126,6 +127,8 @@ class DraftSession:
     view_hash: str | None = None
     preflight_state: str | None = None
     command_url: str = ""
+    cached_member_ids: tuple[str, ...] | None = None
+    cached_member_options: tuple[ChannelMemberOption, ...] | None = None
 
 
 class DraftBook:
@@ -425,6 +428,10 @@ class Workflow:
             dict[str, Any]: asset page modal payload.
         """
         draft = self._require_draft(draft_id)
+        pages = asset_page_count(len(draft.assets))
+        if page_index < 0 or page_index >= pages:
+            raise ValidationError(f"page_index {page_index} is out of range for {len(draft.assets)} assets ({pages} page(s))")
+        draft.page_index = page_index
         view = render_asset_page(self._to_asset_draft(draft), page_index)
         return {**view, "callback_id": _CALLBACK_ASSET}
 
@@ -565,7 +572,7 @@ class Workflow:
         if not title:
             errors["group_title"] = "group title is required"
 
-        members = set(self.slack.get_conversation_members(draft.channel_id))
+        members = set(self._conversation_member_ids(draft))
 
         def _note_missing(user_id: str | None, block_id: str) -> None:
             if not user_id or user_id in members:
@@ -621,13 +628,42 @@ class Workflow:
             group_additional_ids=draft.group_additional_ids,
             group_links_text=draft.group_links_text,
             selections=selections,
-            channel_members=self._channel_member_options(draft.channel_id),
+            channel_members=self._channel_member_options(draft),
         )
 
-    def _channel_member_options(self, channel_id: str) -> tuple[ChannelMemberOption, ...]:
-        """Build verbose channel-member picker options (humans only, max 100)."""
+    def _conversation_member_ids(self, draft: DraftSession) -> tuple[str, ...]:
+        """Return channel member ids, fetching once per draft.
+
+        Respawn-hosted and Slack Connect channels can make conversations.members
+        slow. Confirm and last-page submit must not repeat that round-trip.
+
+        Args:
+            draft: draft whose channel members should be listed.
+
+        Returns:
+            tuple[str, ...]: member user ids for the draft channel.
+
+        Raises:
+            ExternalServiceError: if Slack member listing fails.
+        """
+        if draft.cached_member_ids is None:
+            draft.cached_member_ids = self.slack.get_conversation_members(draft.channel_id)
+            self.drafts.put(draft)
+        return draft.cached_member_ids
+
+    def _channel_member_options(self, draft: DraftSession) -> tuple[ChannelMemberOption, ...]:
+        """Build verbose channel-member picker options (humans only, max 100).
+
+        Args:
+            draft: draft whose channel members should populate pickers.
+
+        Returns:
+            tuple[ChannelMemberOption, ...]: human members with verbose labels.
+        """
+        if draft.cached_member_options is not None:
+            return draft.cached_member_options
         options: list[ChannelMemberOption] = []
-        for user_id in self.slack.get_conversation_members(channel_id):
+        for user_id in self._conversation_member_ids(draft):
             if len(options) >= 100:
                 break
             label = self._verbose_member_label(user_id)
@@ -635,7 +671,9 @@ class Workflow:
                 continue
             options.append(ChannelMemberOption(user_id=user_id, label=label))
         options.sort(key=lambda item: item.label.casefold())
-        return tuple(options)
+        draft.cached_member_options = tuple(options)
+        self.drafts.put(draft)
+        return draft.cached_member_options
 
     def _verbose_member_label(self, user_id: str) -> str | None:
         """Return a verbose picker label, or None for bots/apps to exclude."""

@@ -20,6 +20,7 @@ __all__ = ("SlackGateway",)
 _LOG = logging.getLogger(__name__)
 
 _PERMISSION_ERRORS = frozenset({
+    "team_access_not_granted",
     "not_in_channel",
     "missing_scope",
     "not_allowed_token_type",

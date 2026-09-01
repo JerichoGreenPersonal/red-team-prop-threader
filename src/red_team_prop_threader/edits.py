@@ -285,8 +285,11 @@ class EditService:
                 logging.getLogger(__name__).warning("primary asset index update failed", exc_info=True)
 
     def _open_editor(self, ref: MessageRef, *, expected_kind: MessageKind, callback_id: str, title: str) -> EditOpenResult:
-        """Shared open path for asset/group editors."""
-        self._require_channel_member(ref.channel_id, ref.user_id)
+        """Shared open path for asset/group editors.
+
+        Database lookup runs before Slack member hydration so a historical click
+        or missing row does not spend the views.open trigger_id on users.info.
+        """
         message = self._repos.history.get_by_channel_ts(workspace_id=ref.workspace_id, channel_id=ref.channel_id, slack_ts=ref.message_ts)
         if message is None:
             raise LookupError("tracked message not found")
@@ -300,8 +303,11 @@ class EditService:
                 text = f"{text}\n<{permalink}|Open latest>"
             return EditOpenResult(refused=True, latest_permalink=permalink, ephemeral_text=text)
 
+        member_ids = self._slack.get_conversation_members(message.channel_id)
+        if ref.user_id not in set(member_ids):
+            raise ValidationError("only channel members may edit prop threads")
         snapshot = _edit_snapshot(message)
-        members = self._channel_member_options(message.channel_id)
+        members = self._channel_member_options(message.channel_id, member_ids=member_ids)
         view = _render_edit_view(
             callback_id=callback_id,
             title=title,
@@ -356,10 +362,20 @@ class EditService:
                 return value.strip()
         return user_id
 
-    def _channel_member_options(self, channel_id: str) -> tuple[tuple[str, str], ...]:
-        """Return (user_id, verbose_label) pairs for human channel members."""
+    def _channel_member_options(self, channel_id: str, member_ids: tuple[str, ...] | None = None) -> tuple[tuple[str, str], ...]:
+        """Return (user_id, verbose_label) pairs for human channel members.
+
+        Args:
+            channel_id: slack channel id.
+            member_ids: optional prefetched member ids so open-editor does not
+                call conversations.members twice.
+
+        Returns:
+            tuple[tuple[str, str], ...]: user id and verbose label pairs.
+        """
         options: list[tuple[str, str]] = []
-        for user_id in self._slack.get_conversation_members(channel_id):
+        ids = member_ids if member_ids is not None else self._slack.get_conversation_members(channel_id)
+        for user_id in ids:
             if len(options) >= 100:
                 break
             label = self._verbose_member_label(user_id)

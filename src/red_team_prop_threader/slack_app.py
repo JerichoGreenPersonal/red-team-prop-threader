@@ -15,7 +15,6 @@ from red_team_prop_threader.edits import (
     AssetEditRequest,
     GroupEditRequest,
     decode_edit_submission,
-    edit_validation_errors,
 )
 from red_team_prop_threader.views import (
     AID_NAV_BACK,
@@ -24,6 +23,7 @@ from red_team_prop_threader.views import (
     AID_CANVAS_CREATE,
     AID_CANVAS_RENAME,
     AID_CANVAS_DECLINE,
+    render_working_view,
     with_form_error_notice,
     constrain_asset_page_errors,
 )
@@ -129,24 +129,37 @@ def register_listeners(app: App, workflow_factory: Callable[[], Workflow], edit_
 
     @app.view(_CALLBACK_IMPORT)
     def handle_import_submit(ack: Any, body: dict[str, Any], view: dict[str, Any], client: Any, logger: Any) -> None:
-        """Export ShotGrid page and open asset page 0."""
+        """Ack a loading view, then export ShotGrid and open asset page 0.
+
+        ShotGrid export and channel-member hydration can exceed Slack's three
+        second view-submit window, especially on Respawn-hosted channels.
+        """
         workflow = workflow_factory()
         draft_id = str(view.get("private_metadata") or "")
         page_url = _import_url_from_view(view)
+        ack(response_action="update", view=render_working_view(draft_id, title="Import Assets", message="Importing from ShotGrid…"))
         try:
             next_view = workflow.submit_import_url(draft_id=draft_id, page_url=page_url)
         except (ValidationError, ImportValidationError, ExternalServiceError) as exc:
-            ack(response_action="errors", errors={"import_url": str(exc)})
+            logger.warning("import submit blocked draft_id=%s error=%s", draft_id, exc)
+            _replace_view(client, body, _import_retry_view(draft_id, page_url), include_hash=False)
+            _notify_draft_user(client, workflow.drafts.get(draft_id), str(exc), logger)
             return
         except Exception:
             logger.exception("import submit failed draft_id=%s", draft_id)
-            ack(response_action="errors", errors={"import_url": "import failed; try again"})
+            _replace_view(client, body, _import_retry_view(draft_id, page_url), include_hash=False)
+            _notify_draft_user(client, workflow.drafts.get(draft_id), "import failed; try again", logger)
             return
-        ack(response_action="update", view=next_view)
+        _replace_view(client, body, next_view, include_hash=False)
 
     @app.view(_CALLBACK_ASSET)
-    def handle_asset_page_submit(ack: Any, body: dict[str, Any], view: dict[str, Any], logger: Any) -> None:
-        """Handle the required modal submit on an asset page (Next or Confirm)."""
+    def handle_asset_page_submit(ack: Any, body: dict[str, Any], view: dict[str, Any], client: Any, logger: Any) -> None:
+        """Handle the required modal submit on an asset page (Next or Confirm).
+
+        Local save can fail-fast with field errors. Member checks and picker
+        hydration run after ack so Slack Connect / Respawn channels cannot
+        expire the view submission.
+        """
         workflow = workflow_factory()
         draft_id = str(view.get("private_metadata") or "")
         state = _as_dict(view.get("state"))
@@ -158,31 +171,41 @@ def register_listeners(app: App, workflow_factory: Callable[[], Workflow], edit_
             ack(response_action="errors", errors=with_form_error_notice({"group_title": str(exc)}))
             return
 
+        ack(response_action="update", view=render_working_view(draft_id, title="Assets", message="Saving and checking names…"))
         try:
             next_view = workflow.open_asset_page(draft_id, page_index + 1)
         except ValidationError:
             draft = workflow.drafts.get(draft_id)
             if draft is None:
-                ack(response_action="errors", errors=with_form_error_notice({"group_title": "draft not found or expired"}))
+                logger.warning("asset page submit lost draft_id=%s", draft_id)
                 return
-            field_errors = workflow._confirm_field_errors(draft)
+            try:
+                field_errors = workflow._confirm_field_errors(draft)
+            except ExternalServiceError as exc:
+                logger.exception("asset page confirm membership check failed draft_id=%s", draft_id)
+                _notify_draft_user(client, draft, str(exc), logger)
+                _restore_asset_page(workflow, client, body, draft_id, page_index, logger)
+                return
             if field_errors:
                 logger.warning("asset page confirm blocked draft_id=%s errors=%s", draft_id, field_errors)
-                ack(
-                    response_action="errors",
-                    errors=constrain_asset_page_errors(field_errors, page_index=draft.page_index, entity_ids=tuple(asset.entity_id for asset in draft.assets)),
+                _restore_asset_page(workflow, client, body, draft_id, page_index, logger)
+                constrained = constrain_asset_page_errors(
+                    field_errors, page_index=draft.page_index, entity_ids=tuple(asset.entity_id for asset in draft.assets)
                 )
+                message = next(iter(constrained.values()), next(iter(field_errors.values())))
+                _notify_draft_user(client, draft, message, logger)
                 return
             try:
                 next_view = workflow.open_confirmation(draft_id)
-            except ValidationError as exc:
-                ack(response_action="errors", errors=with_form_error_notice({"group_animator": str(exc)}))
+            except (ValidationError, ExternalServiceError) as exc:
+                _notify_draft_user(client, draft, str(exc), logger)
+                _restore_asset_page(workflow, client, body, draft_id, page_index, logger)
                 return
         except Exception:
             logger.exception("asset page submit failed draft_id=%s", draft_id)
-            ack(response_action="errors", errors=with_form_error_notice({"group_title": "could not continue; try again"}))
+            _notify_draft_user(client, workflow.drafts.get(draft_id), "could not continue; try again", logger)
             return
-        ack(response_action="update", view=next_view)
+        _replace_view(client, body, next_view, include_hash=False)
 
     @app.action(AID_NAV_NEXT)
     def handle_nav_next(ack: Any, body: dict[str, Any], client: Any) -> None:
@@ -220,8 +243,13 @@ def register_listeners(app: App, workflow_factory: Callable[[], Workflow], edit_
             logger.exception("nav confirm failed")
 
     @app.view(_CALLBACK_CONFIRM)
-    def handle_confirm_submit(ack: Any, body: dict[str, Any], view: dict[str, Any], client: Any) -> None:
-        """Acquire lease and accept or reject the batch."""
+    def handle_confirm_submit(ack: Any, body: dict[str, Any], view: dict[str, Any], client: Any, logger: Any) -> None:
+        """Close the modal immediately, then lease and enqueue the batch.
+
+        Membership checks and persistence must not hold the view ack. A late
+        ack looks like the prompt closed with nothing posted.
+        """
+        del body
         workflow = workflow_factory()
         draft_id = str(view.get("private_metadata") or "")
         draft = workflow.drafts.get(draft_id)
@@ -231,19 +259,18 @@ def register_listeners(app: App, workflow_factory: Callable[[], Workflow], edit_
         title = _confirm_title_from_view(view)
         if title:
             draft.group_title = title
-        field_errors = workflow._confirm_field_errors(draft)
-        if field_errors:
-            # Confirmation modal inputs: title + trailing notice sink.
-            message = field_errors.get("group_animator") or field_errors.get("group_title") or next(iter(field_errors.values()))
-            ack(response_action="errors", errors=with_form_error_notice({"confirm_group_title": message}))
-            return
-        response = workflow.confirm_batch(draft)
-        if not response.accepted:
-            ack()
-            client.chat_postEphemeral(channel=draft.channel_id, user=draft.user_id, text=response.private_text)
-            return
         ack()
-        client.chat_postEphemeral(channel=draft.channel_id, user=draft.user_id, text=response.private_text)
+        try:
+            field_errors = workflow._confirm_field_errors(draft)
+            if field_errors:
+                message = field_errors.get("group_animator") or field_errors.get("group_title") or next(iter(field_errors.values()))
+                _notify_draft_user(client, draft, message, logger)
+                return
+            response = workflow.confirm_batch(draft)
+            _notify_draft_user(client, draft, response.private_text, logger)
+        except Exception:
+            logger.exception("confirm submit failed draft_id=%s", draft_id)
+            _notify_draft_user(client, draft, "could not start posting; invite the bot to this channel and try again", logger)
 
     if edit_factory is not None:
         _register_edit_listeners(app, edit_factory)
@@ -253,31 +280,20 @@ def _register_edit_listeners(app: App, edit_factory: Callable[[], EditService]) 
     """Register latest-only asset/group edit action and view handlers."""
 
     @app.action(AID_EDIT_ASSET_DETAILS)
-    def handle_edit_asset_details(ack: Any, body: dict[str, Any], client: Any) -> None:
+    def handle_edit_asset_details(ack: Any, body: dict[str, Any], client: Any, logger: Any) -> None:
         """Open the asset editor or refuse a historical root."""
-        ack()
-        result = edit_factory().open_asset_editor(_message_ref_from_action(body))
-        if result.refused:
-            _post_ephemeral(client, body, result.ephemeral_text or "This message is historical.")
-            return
-        if result.view is not None:
-            client.views_open(trigger_id=str(body.get("trigger_id") or ""), view=result.view)
+        _open_edit_modal(ack, body, client, logger, title="Edit POCs", opener=lambda ref: edit_factory().open_asset_editor(ref))
 
     @app.action(AID_EDIT_GROUP_DETAILS)
-    def handle_edit_group_details(ack: Any, body: dict[str, Any], client: Any) -> None:
+    def handle_edit_group_details(ack: Any, body: dict[str, Any], client: Any, logger: Any) -> None:
         """Open the group editor or refuse a historical summary."""
-        ack()
-        result = edit_factory().open_group_editor(_message_ref_from_action(body))
-        if result.refused:
-            _post_ephemeral(client, body, result.ephemeral_text or "This message is historical.")
-            return
-        if result.view is not None:
-            client.views_open(trigger_id=str(body.get("trigger_id") or ""), view=result.view)
+        _open_edit_modal(ack, body, client, logger, title="Edit Group Details", opener=lambda ref: edit_factory().open_group_editor(ref))
 
     @app.view(CALLBACK_ASSET_EDIT)
-    def handle_asset_edit_submit(ack: Any, body: dict[str, Any], view: dict[str, Any]) -> None:
-        """Apply a latest-only asset edit."""
+    def handle_asset_edit_submit(ack: Any, body: dict[str, Any], view: dict[str, Any], client: Any, logger: Any) -> None:
+        """Ack immediately, then apply a latest-only asset edit."""
         channel_id, message_ts, animator_id, additional_ids, links_text = decode_edit_submission(view)
+        ack()
         try:
             edit_factory().apply_asset_edit(
                 AssetEditRequest(
@@ -291,14 +307,16 @@ def _register_edit_listeners(app: App, edit_factory: Callable[[], EditService]) 
                 )
             )
         except ValidationError as exc:
-            ack(response_action="errors", errors=edit_validation_errors(exc))
-            return
-        ack()
+            _post_ephemeral(client, body, str(exc))
+        except Exception:
+            logger.exception("asset edit apply failed")
+            _post_ephemeral(client, body, "Could not save the edit. Try again.")
 
     @app.view(CALLBACK_GROUP_EDIT)
-    def handle_group_edit_submit(ack: Any, body: dict[str, Any], view: dict[str, Any]) -> None:
-        """Apply a latest-only group edit across summary, roots, and canvas."""
+    def handle_group_edit_submit(ack: Any, body: dict[str, Any], view: dict[str, Any], client: Any, logger: Any) -> None:
+        """Ack immediately, then apply a latest-only group edit."""
         channel_id, message_ts, animator_id, additional_ids, links_text = decode_edit_submission(view)
+        ack()
         try:
             edit_factory().apply_group_edit(
                 GroupEditRequest(
@@ -312,21 +330,80 @@ def _register_edit_listeners(app: App, edit_factory: Callable[[], EditService]) 
                 )
             )
         except ValidationError as exc:
-            ack(response_action="errors", errors=edit_validation_errors(exc))
-            return
-        ack()
+            _post_ephemeral(client, body, str(exc))
+        except Exception:
+            logger.exception("group edit apply failed")
+            _post_ephemeral(client, body, "Could not save the edit. Try again.")
+
+
+def _open_edit_modal(ack: Any, body: dict[str, Any], client: Any, logger: Any, *, title: str, opener: Any) -> None:
+    """Ack, spend the trigger_id on a loading modal, then replace it with the editor.
+
+    Block-action trigger ids expire in about three seconds. Building the people
+    pickers calls conversations.members and users.info, which is too slow to do
+    before views.open on Respawn-hosted or Slack Connect channels.
+
+    Args:
+        ack: bolt ack callable.
+        body: block-action payload.
+        client: slack web client.
+        logger: bolt logger.
+        title: modal title for loading and error screens.
+        opener: callable taking a MessageRef and returning EditOpenResult.
+    """
+    ack()
+    trigger_id = str(body.get("trigger_id") or "")
+    loading = render_working_view("edit-modal", title=title, message="Loading channel members…")
+    try:
+        opened = client.views_open(trigger_id=trigger_id, view=loading)
+    except Exception:
+        logger.exception("edit modal views.open failed title=%s", title)
+        _post_ephemeral(client, body, "Could not open the editor. Try again.")
+        return
+    view_id = _view_id_from_open(opened)
+    try:
+        result = opener(_message_ref_from_action(body))
+    except Exception:
+        logger.exception("edit modal open failed title=%s", title)
+        _replace_opened_view(client, view_id, render_working_view("edit-modal", title=title, message="Could not open the editor. Try again."))
+        _post_ephemeral(client, body, "Could not open the editor. Try again.")
+        return
+    if result.refused:
+        message = result.ephemeral_text or "This message is historical."
+        _post_ephemeral(client, body, message)
+        _replace_opened_view(client, view_id, render_working_view("edit-modal", title=title, message=message))
+        return
+    if result.view is not None:
+        _replace_opened_view(client, view_id, result.view)
+
+
+def _view_id_from_open(opened: Any) -> str:
+    """Read the view id from a views.open response."""
+    data = opened.data if hasattr(opened, "data") and isinstance(opened.data, dict) else opened
+    if not isinstance(data, dict):
+        return ""
+    view = data.get("view")
+    if not isinstance(view, dict):
+        return ""
+    return str(view.get("id") or "")
+
+
+def _replace_opened_view(client: Any, view_id: str, view: dict[str, Any]) -> None:
+    """Replace a modal opened in this handler, omitting a stale hash."""
+    if not view_id:
+        return
+    client.views_update(view_id=view_id, view=view)
 
 
 def _message_ref_from_action(body: dict[str, Any]) -> MessageRef:
     """Build a MessageRef from a block-action payload."""
     user = _as_dict(body.get("user"))
-    team = _as_dict(body.get("team"))
     container = _as_dict(body.get("container"))
     channel = _as_dict(body.get("channel"))
     message = _as_dict(body.get("message"))
     message_ts = str(container.get("message_ts") or message.get("ts") or "")
     return MessageRef(
-        workspace_id=str(team.get("id") or body.get("team_id") or ""),
+        workspace_id=_workspace_id_from_body(body),
         channel_id=str(channel.get("id") or container.get("channel_id") or ""),
         user_id=str(user.get("id") or ""),
         message_ts=message_ts,
@@ -336,9 +413,14 @@ def _message_ref_from_action(body: dict[str, Any]) -> MessageRef:
 
 
 def _workspace_id_from_body(body: dict[str, Any]) -> str:
-    """Extract workspace/team id from an interactivity body."""
+    """Extract workspace/team id from an interactivity body.
+
+    Slack Connect and Grid payloads may put the team on ``team``, ``team_id``,
+    or ``user.team_id``. Prefer the top-level team, then the user's home team.
+    """
     team = _as_dict(body.get("team"))
-    return str(team.get("id") or body.get("team_id") or "")
+    user = _as_dict(body.get("user"))
+    return str(team.get("id") or body.get("team_id") or user.get("team_id") or "")
 
 
 def _user_id_from_body(body: dict[str, Any]) -> str:
@@ -370,13 +452,59 @@ def _navigate(workflow: Workflow, body: dict[str, Any], client: Any, *, delta: i
     _replace_view(client, body, next_view)
 
 
-def _replace_view(client: Any, body: dict[str, Any], view: dict[str, Any]) -> None:
-    """Update the active modal from an action payload."""
+def _replace_view(client: Any, body: dict[str, Any], view: dict[str, Any], *, include_hash: bool = True) -> None:
+    """Update the active modal from an action or view-submit payload.
+
+    After a view-submit ack with response_action=update, the original hash is
+    stale and must be omitted or Slack rejects the follow-up views.update.
+
+    Args:
+        client: slack web client.
+        body: interactivity payload containing the current view id/hash.
+        view: replacement modal payload.
+        include_hash: when False, omit hash (required after view-submit ack).
+    """
     current = _as_dict(body.get("view"))
     view_id = str(current.get("id") or "")
     view_hash = str(current.get("hash") or "") or None
-    if view_id:
-        client.views_update(view_id=view_id, hash=view_hash, view=view)
+    if not view_id:
+        return
+    kwargs: dict[str, Any] = {"view_id": view_id, "view": view}
+    if include_hash and view_hash:
+        kwargs["hash"] = view_hash
+    client.views_update(**kwargs)
+
+
+def _import_retry_view(draft_id: str, page_url: str) -> dict[str, Any]:
+    """Re-open the import modal after a post-ack import failure."""
+    from red_team_prop_threader.views import ImportContext, render_import_view
+
+    view = render_import_view(ImportContext(draft_id=draft_id, prefilled_url=page_url or None))
+    return {**view, "callback_id": _CALLBACK_IMPORT}
+
+
+def _restore_asset_page(workflow: Any, client: Any, body: dict[str, Any], draft_id: str, page_index: int, logger: Any) -> None:
+    """Put the saved asset page back on screen after a post-ack confirm failure."""
+    try:
+        next_view = workflow.open_asset_page(draft_id, page_index)
+    except Exception:
+        logger.exception("could not restore asset page draft_id=%s", draft_id)
+        return
+    _replace_view(client, body, next_view, include_hash=False)
+
+
+def _notify_draft_user(client: Any, draft: Any, text: str, logger: Any) -> None:
+    """Post an ephemeral to the draft channel, logging if Slack refuses it."""
+    if draft is None:
+        return
+    channel_id = str(getattr(draft, "channel_id", "") or "")
+    user_id = str(getattr(draft, "user_id", "") or "")
+    if not channel_id or not user_id:
+        return
+    try:
+        client.chat_postEphemeral(channel=channel_id, user=user_id, text=text)
+    except Exception:
+        logger.exception("ephemeral failed channel=%s user=%s", channel_id, user_id)
 
 
 def _action_value(body: dict[str, Any]) -> str:

@@ -32,8 +32,10 @@ from red_team_prop_threader.views import (
     CanvasPreflightContext,
     render_asset_page,
     render_import_view,
+    render_working_view,
     decode_asset_page_state,
     render_confirmation_view,
+    render_canvas_loading_view,
     constrain_asset_page_errors,
     render_canvas_preflight_view,
 )
@@ -139,7 +141,20 @@ def test_asset_page_never_exceeds_fifteen_assets_or_one_hundred_blocks() -> None
 # ---------------------------------------------------------------------------
 
 
-def test_canvas_preflight_action_ids_present() -> None:
+def test_working_view_has_no_submit_and_keeps_draft_id() -> None:
+    """Loading views must not be submittable; they only hold the modal open."""
+    view = render_working_view("draft-001", title="Assets", message="Saving and checking names…")
+    assert view["type"] == "modal"
+    assert view["private_metadata"] == "draft-001"
+    assert "submit" not in view
+    assert "Saving and checking names" in json.dumps(view)
+
+
+def test_canvas_loading_view_keeps_preflight_copy() -> None:
+    """Canvas preflight still uses the original loading copy."""
+    view = render_canvas_loading_view("draft-001")
+    assert view["title"]["text"] == "Canvas Check"
+    assert "Checking the channel canvas" in json.dumps(view)
     """Canvas preflight view includes create, rename, and decline action IDs."""
     ctx = CanvasPreflightContext(draft_id="d1", canvas_name="Season 31 Prop Threads", channel_id="C_ABC")
     view = render_canvas_preflight_view(ctx)

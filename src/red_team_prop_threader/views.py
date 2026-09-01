@@ -37,6 +37,7 @@ __all__ = (
     "DecodedAssetPage",
     "DecodedAssetState",
     "ImportContext",
+    "asset_page_count",
     "constrain_asset_page_errors",
     "decode_asset_page_state",
     "render_asset_page",
@@ -44,6 +45,7 @@ __all__ = (
     "render_canvas_preflight_view",
     "render_confirmation_view",
     "render_import_view",
+    "render_working_view",
     "with_form_error_notice",
 )
 
@@ -582,6 +584,18 @@ def _validate_draft_id(draft_id: str) -> None:
         raise ValidationError(f"draft_id length {len(draft_id)} exceeds maximum {_DRAFT_ID_MAX}")
 
 
+def asset_page_count(total: int) -> int:
+    """Return the number of asset-modal pages for a given asset count.
+
+    Args:
+        total: number of assets.
+
+    Returns:
+        int: number of pages (minimum 1).
+    """
+    return _page_count(total)
+
+
 def _page_count(total: int) -> int:
     """Return the number of pages required for a given asset count.
 
@@ -704,6 +718,28 @@ def _asset_blocks(asset: ImportedAsset, sel: AssetSelection, members: tuple[Chan
 # ---------------------------------------------------------------------------
 
 
+def render_working_view(draft_id: str, *, title: str, message: str) -> dict[str, object]:
+    """Render a non-submittable loading modal while a view handler finishes work.
+
+    View submissions also time out at about three seconds. Acking with this
+    view keeps the modal open; the real next screen is a later views.update.
+
+    Args:
+        draft_id: draft identifier stored in private_metadata.
+        title: modal title (truncated to Slack's 24-character limit).
+        message: mrkdwn body shown to the user.
+
+    Returns:
+        dict[str, object]: Slack modal view payload without a submit button.
+
+    Raises:
+        ValidationError: if draft_id exceeds the maximum length.
+    """
+    _validate_draft_id(draft_id)
+    blocks: list[dict[str, object]] = [_section("working_status", _mrkdwn(f"*{message}*"))]
+    return {"type": "modal", "title": _plain(title, _MODAL_TITLE_MAX), "close": _plain("Cancel"), "private_metadata": draft_id, "blocks": blocks}
+
+
 def render_canvas_loading_view(draft_id: str) -> dict[str, object]:
     """Render a neutral loading modal while canvas preflight runs.
 
@@ -716,9 +752,7 @@ def render_canvas_loading_view(draft_id: str) -> dict[str, object]:
     Raises:
         ValidationError: if draft_id exceeds the maximum length.
     """
-    _validate_draft_id(draft_id)
-    blocks: list[dict[str, object]] = [_section("preflight_loading", _mrkdwn("*Checking the channel canvas…*\n\nThis only takes a moment."))]
-    return {"type": "modal", "title": _plain("Canvas Check"), "close": _plain("Cancel"), "private_metadata": draft_id, "blocks": blocks}
+    return render_working_view(draft_id, title="Canvas Check", message="Checking the channel canvas…\n\nThis only takes a moment.")
 
 
 def render_canvas_preflight_view(context: CanvasPreflightContext) -> dict[str, object]:

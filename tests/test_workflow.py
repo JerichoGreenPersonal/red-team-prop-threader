@@ -42,6 +42,8 @@ class FakeSlackGateway:
     canvas_title: str = CANVAS_TITLE
     members: tuple[str, ...] = ("U_OWNER", "U_SECOND", "U_COMMAND")
     permission_blocked: bool = False
+    member_lookups: int = 0
+    user_info_lookups: int = 0
 
     def open_view(self, trigger_id: str, view: dict[str, Any]) -> dict[str, Any]:
         """Record the first opened modal."""
@@ -60,6 +62,7 @@ class FakeSlackGateway:
 
     def get_user_info(self, user_id: str) -> dict[str, Any]:
         """Return display name profile data."""
+        self.user_info_lookups += 1
         name = self.display_names.get(user_id, user_id)
         return {"id": user_id, "name": user_id.lower(), "is_bot": False, "profile": {"display_name": name, "real_name": name}}
 
@@ -81,6 +84,7 @@ class FakeSlackGateway:
     def get_conversation_members(self, channel_id: str) -> tuple[str, ...]:
         """Return configured channel members."""
         del channel_id
+        self.member_lookups += 1
         return self.members
 
     def create_channel_canvas(self, channel_id: str, *, title: str) -> str:
@@ -465,3 +469,27 @@ def test_asset_link_parse_errors_stay_on_asset_links(workflow: Workflow, fake_sl
     errors = workflow._confirm_field_errors(draft)
     assert "group_links" not in errors
     assert "asset_1001_links" in errors
+
+
+def test_open_asset_page_out_of_range_skips_member_hydration(workflow: Workflow, fake_slack: FakeSlackGateway) -> None:
+    """Last-page confirm must not hydrate pickers just to learn there is no next page."""
+    draft = sample_draft()
+    workflow.drafts.put(draft)
+    with pytest.raises(ValidationError, match="out of range"):
+        workflow.open_asset_page(draft.draft_id, 1)
+    assert fake_slack.member_lookups == 0
+    assert fake_slack.user_info_lookups == 0
+
+
+def test_member_options_are_cached_on_the_draft(workflow: Workflow, fake_slack: FakeSlackGateway) -> None:
+    """Repeating asset-page renders must not re-list channel members."""
+    fake_slack.channel_canvas_id = "Fcanvas"
+    fake_slack.canvas_title = CANVAS_TITLE
+    workflow.handle_command(sample_command(text="https://respawn.shotgunstudio.com/page/23280"))
+    draft_id = str(fake_slack.opened_view["private_metadata"])
+    after_import = fake_slack.member_lookups
+    assert after_import >= 1
+    user_after_import = fake_slack.user_info_lookups
+    workflow.open_asset_page(draft_id, 0)
+    assert fake_slack.member_lookups == after_import
+    assert fake_slack.user_info_lookups == user_after_import

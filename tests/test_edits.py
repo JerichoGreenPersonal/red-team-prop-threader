@@ -565,3 +565,16 @@ def test_decode_edit_submission_parses_metadata_and_fields() -> None:
     assert animator_id == "Uanim"
     assert additional_ids == ("Uadd",)
     assert "example.com" in links_text
+
+
+def test_open_asset_editor_accepts_mismatched_workspace_id(edit_service: EditService, repositories: Repositories, session: Session, clock: FakeClock) -> None:
+    """Slack Connect clicks may send a different team id than the stored workspace."""
+    request = sample_group_edit(repositories, session, clock)
+    root = repositories.history.list_latest_asset_roots_for_group(
+        repositories.history.get_by_channel_ts(workspace_id="W1", channel_id="C1", slack_ts=request.message_ts).group_id  # type: ignore[union-attr]
+    )[0]
+    result = edit_service.open_asset_editor(
+        MessageRef(workspace_id="T_OTHER", channel_id="C1", user_id="Ueditor", message_ts=root.slack_ts, message_identity="a")
+    )
+    assert not result.refused
+    assert result.view is not None
