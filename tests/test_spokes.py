@@ -64,6 +64,47 @@ def test_history_roots_ignore_replies_and_keep_newest() -> None:
     assert spokes[200].permalink.endswith("/p20000000")
 
 
+def test_history_roots_read_asset_url_from_blocks() -> None:
+    """Threader-minted roots store the ShotGrid URL in Block Kit, not fallback text."""
+    messages = (
+        {
+            "ts": "30.0",
+            "thread_ts": "30.0",
+            "text": ":threadparrot: Asset: frln_fueltank_lrg_01a — FRONTLINE GATE 0 OS BATCH 1 :threadparrot:",
+            "blocks": [
+                {
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": (
+                            ":shotgrid: <https://respawn.shotgunstudio.com/detail/Asset/39202"
+                            "|frln_fueltank_lrg_01a> (ShotGrid ID: 39202)"
+                        ),
+                    },
+                }
+            ],
+        },
+        {
+            "ts": "31.0",
+            "thread_ts": "30.0",
+            "text": "reply",
+            "blocks": [
+                {
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": "https://respawn.shotgunstudio.com/detail/Asset/39202 reply in blocks",
+                    },
+                }
+            ],
+        },
+    )
+    spokes = history_root_spokes(messages, channel_id="C0BJFK6TPPF")
+    assert 39202 in spokes
+    assert spokes[39202].thread_ts == "30.0"
+    assert spokes[39202].source == "search"
+
+
 def test_permalink_parts() -> None:
     """Archive permalinks split into channel id and dotted thread_ts."""
     channel, ts = permalink_parts("https://respawn.slack.com/archives/C02PGV4E6KV/p1784158834442809")

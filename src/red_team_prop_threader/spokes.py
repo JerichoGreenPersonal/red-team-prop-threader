@@ -110,7 +110,11 @@ def canvas_latest_spokes(markdown: str) -> dict[int, SpokeCandidate]:
 
 
 def history_root_spokes(messages: object, *, channel_id: str) -> dict[int, SpokeCandidate]:
-    """Keep the newest root message per asset id; replies do not count."""
+    """Keep the newest root message per asset id; replies do not count.
+
+    ShotGrid Asset URLs may live in Block Kit ``blocks`` rather than fallback
+    ``text`` (Threader-minted roots). Harvest every string field on the message.
+    """
     best: dict[int, tuple[float, SpokeCandidate]] = {}
     if not isinstance(messages, (list, tuple)):
         return {}
@@ -123,8 +127,8 @@ def history_root_spokes(messages: object, *, channel_id: str) -> dict[int, Spoke
         thread_ts = str(raw.get("thread_ts") or "").strip()
         if thread_ts and thread_ts != ts:
             continue
-        text = str(raw.get("text") or "")
-        asset_match = _ASSET_URL_RE.search(text)
+        blob = harvest_lookup_text(raw)
+        asset_match = _ASSET_URL_RE.search(blob)
         if asset_match is None:
             continue
         asset_id = int(asset_match.group(1))
