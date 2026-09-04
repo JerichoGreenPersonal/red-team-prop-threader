@@ -212,10 +212,29 @@ Only one create flow can hold the channel at a time. Wait for the other run to f
 
 ---
 
+## Adopt existing threads for ReviewPrep
+
+Run this in a satellite channel whose canvas is titled **INDEX OF PROP REQUESTS** (not PRIMARY ASSET INDEX). It writes official Slack thread links that ReviewPrep **Slack → Open thread** reads.
+
+```text
+/adopt-prop-threads
+```
+
+1. Latest permalink per asset on this channel's INDEX
+2. Leftover **root** messages in this channel that contain a ShotGrid Asset URL (replies are ignored)
+3. Season from ShotGrid Jira / tags; assets with no season are reported unmatched
+
+You will get an ephemeral count of adopted vs unmatched. If Slack Connect hides channel history, INDEX Latest links still adopt.
+
+Do not run a second bot instance on a laptop; adopt on the always-on host after an admin reinstalls with `channels:history` and `groups:history`.
+
+---
+
 ## Quick reference
 
 ```text
 /create-prop-threads [ShotGrid page URL]
+/adopt-prop-threads
 ```
 
 1. Canvas ready → import → fill group + assets → confirm  

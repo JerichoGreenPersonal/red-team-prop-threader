@@ -108,6 +108,17 @@ def test_message_and_view_helpers(gateway: SlackGateway, client: MagicMock) -> N
     assert gateway.get_permalink("C1", "1.1") == "https://slack.example/p"
 
 
+def test_conversation_history_paginates(gateway: SlackGateway, client: MagicMock) -> None:
+    """Conversations.history walks next_cursor and keeps message dicts."""
+    client.conversations_history.side_effect = [
+        _Resp({"ok": True, "messages": [{"ts": "1.0"}, "bad"], "response_metadata": {"next_cursor": "c2"}}),
+        _Resp({"ok": True, "messages": [{"ts": "2.0"}], "response_metadata": {"next_cursor": ""}}),
+    ]
+    messages = gateway.get_conversation_history("C1")
+    assert messages == ({"ts": "1.0"}, {"ts": "2.0"})
+    assert client.conversations_history.call_count == 2
+
+
 def test_canvas_helpers(gateway: SlackGateway, client: MagicMock) -> None:
     """Canvas create/lookup/edit/rename helpers."""
     client.conversations_canvases_create.return_value = _Resp({"ok": True, "canvas_id": "Fcanvas"})

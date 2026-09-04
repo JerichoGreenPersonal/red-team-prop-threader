@@ -262,6 +262,36 @@ class SlackGateway:
             kwargs["blocks"] = blocks
         return self._call("chat_update", **kwargs)
 
+    def get_conversation_history(self, channel_id: str) -> tuple[dict[str, Any], ...]:
+        """List channel messages via conversations.history with cursor pagination.
+
+        Args:
+            channel_id: slack channel id.
+
+        Returns:
+            tuple[dict[str, Any], ...]: message objects in api page order.
+
+        Raises:
+            ExternalServiceError: on Slack API failure.
+        """
+        messages: list[dict[str, Any]] = []
+        cursor: str | None = None
+        while True:
+            kwargs: dict[str, Any] = {"channel": channel_id, "limit": 200}
+            if cursor:
+                kwargs["cursor"] = cursor
+            response = self._call("conversations_history", **kwargs)
+            page = response.get("messages") or []
+            if not isinstance(page, list):
+                raise ExternalServiceError("conversations.history returned invalid messages")
+            messages.extend(item for item in page if isinstance(item, dict))
+            metadata = response.get("response_metadata") or {}
+            next_cursor = metadata.get("next_cursor") if isinstance(metadata, dict) else None
+            if not next_cursor:
+                break
+            cursor = str(next_cursor)
+        return tuple(messages)
+
     def get_permalink(self, channel_id: str, message_ts: str) -> str:
         """Resolve a message permalink via chat.getPermalink.
 

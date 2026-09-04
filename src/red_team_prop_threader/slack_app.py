@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 from slack_bolt import App
 
+from red_team_prop_threader.adopt import format_adopt_ephemeral
 from red_team_prop_threader.edits import (
     CALLBACK_ASSET_EDIT,
     CALLBACK_GROUP_EDIT,
@@ -33,6 +34,7 @@ from red_team_prop_threader._errors import ValidationError, ExternalServiceError
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+    from red_team_prop_threader.adopt import AdoptService
     from red_team_prop_threader.edits import EditService
     from red_team_prop_threader.workflow import Workflow
 
@@ -62,13 +64,19 @@ def create_bolt_app(*, bot_token: str, signing_secret: str, process_before_respo
     return App(token=bot_token, signing_secret=signing_secret, process_before_response=process_before_response, token_verification_enabled=False)
 
 
-def register_listeners(app: App, workflow_factory: Callable[[], Workflow], edit_factory: Callable[[], EditService] | None = None) -> None:
+def register_listeners(
+    app: App,
+    workflow_factory: Callable[[], Workflow],
+    edit_factory: Callable[[], EditService] | None = None,
+    adopt_factory: Callable[[], AdoptService] | None = None,
+) -> None:
     """Register slash-command, modal, and edit listeners.
 
     Args:
         app: bolt application.
         workflow_factory: callable returning a Workflow bound to request-scoped deps.
         edit_factory: optional callable returning an EditService for post-completion edits.
+        adopt_factory: optional callable returning an AdoptService for /adopt-prop-threads.
     """
 
     @app.command("/create-prop-threads")
@@ -95,6 +103,22 @@ def register_listeners(app: App, workflow_factory: Callable[[], Workflow], edit_
             )
         except Exception as exc:
             logger.exception("create-prop-threads failed: %s", exc)
+
+    @app.command("/adopt-prop-threads")
+    def handle_adopt_prop_threads(ack: Any, command: dict[str, Any], client: Any, logger: Any) -> None:
+        """Ack immediately, then adopt INDEX Latest and leftover roots."""
+        ack()
+        channel_id = str(command.get("channel_id") or "")
+        user_id = str(command.get("user_id") or "")
+        if adopt_factory is None:
+            _post_command_ephemeral(client, channel_id, user_id, "Adopt is not configured.")
+            return
+        try:
+            result = adopt_factory().run(channel_id)
+            _post_command_ephemeral(client, channel_id, user_id, format_adopt_ephemeral(result))
+        except Exception as exc:
+            logger.exception("adopt-prop-threads failed: %s", exc)
+            _post_command_ephemeral(client, channel_id, user_id, "Adopt failed. Try again.")
 
     @app.action(AID_CANVAS_CREATE)
     def handle_canvas_create(ack: Any, body: dict[str, Any], client: Any, logger: Any) -> None:
@@ -427,6 +451,12 @@ def _user_id_from_body(body: dict[str, Any]) -> str:
     """Extract user id from an interactivity body."""
     user = _as_dict(body.get("user"))
     return str(user.get("id") or "")
+
+
+def _post_command_ephemeral(client: Any, channel_id: str, user_id: str, text: str) -> None:
+    """Post an ephemeral reply for a slash command."""
+    if channel_id and user_id:
+        client.chat_postEphemeral(channel=channel_id, user=user_id, text=text)
 
 
 def _post_ephemeral(client: Any, body: dict[str, Any], text: str) -> None:

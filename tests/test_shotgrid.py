@@ -600,6 +600,20 @@ def test_gateway_export_page_returns_csv() -> None:
     assert "Asset Name" in result
 
 
+def test_gateway_find_asset_labels() -> None:
+    """Asset label lookup maps jira versions, tags, and code."""
+    from red_team_prop_threader.shotgrid import ShotGridGateway
+
+    mock_client = MagicMock()
+    mock_client.find.return_value = [
+        {"id": 39238, "code": "uh_hopscotch", "sg_jira_versions": [{"name": "30.0.0"}], "tag_list": ["prop"]},
+    ]
+    gw = ShotGridGateway(base_url=_BASE_URL, script_name="test-script", script_key="test-key", client_factory=lambda: mock_client)
+    labels = gw.find_asset_labels((39238,))
+    assert labels[39238] == (["30.0.0"], ["prop"], "uh_hopscotch")
+    mock_client.find.assert_called_once()
+
+
 def test_gateway_from_settings_constructs_gateway() -> None:
     """ShotGridGateway.from_settings constructs a usable gateway."""
     from red_team_prop_threader.config import Settings
