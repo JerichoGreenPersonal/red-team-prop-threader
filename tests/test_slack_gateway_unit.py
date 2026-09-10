@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import Any
+import urllib.error
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -211,3 +212,34 @@ def test_get_canvas_document_missing_download_url(gateway: SlackGateway, client:
     client.files_info.return_value = _Resp({"ok": True, "file": {"id": "Fcanvas", "title": "INDEX"}})
     with pytest.raises(ExternalServiceError, match="url_private_download"):
         gateway.get_canvas_document("Fcanvas")
+
+
+def test_download_private_file_rejects_non_https(gateway: SlackGateway) -> None:
+    """Canvas download URLs must be HTTPS."""
+    with pytest.raises(ExternalServiceError, match="HTTPS"):
+        gateway.download_private_file("http://files.slack.com/x")
+
+
+def test_download_private_file_http_error(gateway: SlackGateway, client: MagicMock) -> None:
+    """HTTP errors from urlopen become ExternalServiceError."""
+    client.token = "xoxb-test"
+    err = urllib.error.HTTPError("https://files.slack.com/x", 404, "nope", hdrs=None, fp=None)
+    with patch("red_team_prop_threader.slack_gateway.urllib.request.urlopen", side_effect=err):
+        with pytest.raises(ExternalServiceError, match="canvas download failed"):
+            gateway.download_private_file("https://files.slack.com/x")
+
+
+def test_get_canvas_document_empty_body(gateway: SlackGateway, client: MagicMock) -> None:
+    """Empty download body is INDEX unread."""
+    client.token = "xoxb-test"
+    client.files_info.return_value = _Resp(
+        {"ok": True, "file": {"id": "Fcanvas", "url_private_download": "https://files.slack.com/files-pri/T/F/download/canvas"}}
+    )
+    fake_cm = MagicMock()
+    fake_cm.read.return_value = b""
+    fake_cm.__enter__.return_value = fake_cm
+    fake_cm.__exit__.return_value = False
+    fake_cm.status = 200
+    with patch("red_team_prop_threader.slack_gateway.urllib.request.urlopen", return_value=fake_cm):
+        with pytest.raises(ExternalServiceError, match="empty body"):
+            gateway.get_canvas_document("Fcanvas")

@@ -269,3 +269,56 @@ def test_format_adopt_ephemeral_wrote_and_already_present() -> None:
     assert text.startswith("Wrote 1 new.")
     assert "Already present 3." in text
     assert "Adopted" not in text
+
+
+def test_adopt_empty_index_and_history(tmp_path: Path) -> None:
+    """No hrefs and no leftover roots produce a clear empty detail."""
+    share = tmp_path / "SG_Card_Links"
+    service = AdoptService(
+        canvas=_Canvas(),
+        slack=_Slack(document="no links here"),
+        shotgrid=_ShotGrid({}),
+        share_root=share,
+        now_iso=lambda: "2026-09-10T06:00:00Z",
+    )
+    result = service.run(channel_id="C1")
+    assert result.adopted == ()
+    assert result.detail == "No INDEX hrefs or leftover roots found."
+
+
+def test_adopt_shotgrid_failure_does_not_write(tmp_path: Path) -> None:
+    """ShotGrid lookup failure unmatched candidates and writes nothing."""
+    share = tmp_path / "SG_Card_Links"
+
+    class _Boom(_ShotGrid):
+        def find_asset_labels(self, asset_ids: tuple[int, ...]) -> dict[int, tuple[list[str], list[str], str]]:
+            raise ExternalServiceError("sg down")
+
+    service = AdoptService(
+        canvas=_Canvas(),
+        slack=_Slack(),
+        shotgrid=_Boom({}),
+        share_root=share,
+        now_iso=lambda: "2026-09-10T06:00:00Z",
+    )
+    result = service.run(channel_id="C1")
+    assert 39238 in result.unmatched
+    assert result.adopted == ()
+    assert result.detail == "ShotGrid lookup failed."
+
+
+def test_format_adopt_ephemeral_unmatched_and_history() -> None:
+    """Unmatched and history-unavailable sentences still append."""
+    text = format_adopt_ephemeral(
+        AdoptResult(
+            adopted=(),
+            unmatched=(1, 2),
+            history_available=False,
+            already_present=(),
+            detail="INDEX file unread.",
+        )
+    )
+    assert text.startswith("Wrote 0 new.")
+    assert "Unmatched 2." in text
+    assert "Channel history unavailable" in text
+    assert "INDEX file unread." in text
