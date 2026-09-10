@@ -311,6 +311,13 @@ def test_occupied_asset_ids_reads_all_season_files(tmp_path: Path) -> None:
     assert occupied_asset_ids(root) == frozenset({38867, 1})
 
 
+def test_decode_canvas_body_json_envelope_harvests_strings() -> None:
+    """Quip/JSON envelopes contribute nested string fields."""
+    raw = b'{"markdown": "[ShotGrid](https://respawn.shotgunstudio.com/detail/Asset/9)"}'
+    text = decode_canvas_body(raw)
+    assert "detail/Asset/9" in text
+
+
 def test_occupied_asset_ids_empty_when_dir_missing(tmp_path: Path) -> None:
     """Missing slack_threads directory is empty occupancy."""
     assert occupied_asset_ids(tmp_path / "SG_Card_Links") == frozenset()
