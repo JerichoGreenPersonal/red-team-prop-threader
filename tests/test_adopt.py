@@ -7,8 +7,8 @@ from typing import TYPE_CHECKING, Any
 
 from red_team_prop_threader.adopt import AdoptResult, AdoptService, format_adopt_ephemeral
 from red_team_prop_threader.canvas import PreflightState, PreflightResult
-from red_team_prop_threader._errors import ExternalServiceError, PermissionDeniedError
 from red_team_prop_threader.spokes import upsert_season_spoke
+from red_team_prop_threader._errors import ExternalServiceError, PermissionDeniedError
 
 
 if TYPE_CHECKING:

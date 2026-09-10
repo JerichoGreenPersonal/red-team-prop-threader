@@ -7,12 +7,12 @@ from typing import TYPE_CHECKING
 
 from red_team_prop_threader.spokes import (
     permalink_parts,
+    decode_canvas_body,
+    occupied_asset_ids,
     harvest_lookup_text,
     history_root_spokes,
     upsert_season_spoke,
     canvas_latest_spokes,
-    occupied_asset_ids,
-    decode_canvas_body,
 )
 
 

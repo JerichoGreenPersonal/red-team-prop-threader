@@ -10,8 +10,8 @@ import urllib.request
 from slack_sdk import WebClient
 from slack_sdk.errors import SlackApiError
 
-from red_team_prop_threader._errors import ConflictError, NotFoundError, ExternalServiceError, PermissionDeniedError, RetryableExternalServiceError
 from red_team_prop_threader.spokes import decode_canvas_body
+from red_team_prop_threader._errors import ConflictError, NotFoundError, ExternalServiceError, PermissionDeniedError, RetryableExternalServiceError
 
 
 if TYPE_CHECKING:
