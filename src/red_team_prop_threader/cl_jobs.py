@@ -55,19 +55,39 @@ def parse_job(path: Path) -> SlackClJob | None:
     job_id = data.get("job_id")
     asset_id = data.get("asset_id")
     if not isinstance(job_id, str) or not job_id.strip():
+        _LOG.warning("skipping unparseable job %s: invalid job_id", path.name)
         return None
-    if not isinstance(asset_id, str) or not asset_id.strip():
-        return None
+    try:
+        asset_id_str = str(int(asset_id))
+    except (ValueError, TypeError):
+        if isinstance(asset_id, str) and asset_id.strip():
+            asset_id_str = asset_id.strip()
+        else:
+            _LOG.warning("skipping unparseable job %s: invalid asset_id", path.name)
+            return None
 
     cls_raw = data.get("cls", [])
-    cls = tuple(cls_raw) if isinstance(cls_raw, list) else ()
+    parsed_cls = []
+    if isinstance(cls_raw, list):
+        for c in cls_raw:
+            if isinstance(c, dict) and "number" in c:
+                try:
+                    parsed_cls.append(int(c["number"]))
+                except (ValueError, TypeError):
+                    pass
+            else:
+                try:
+                    parsed_cls.append(int(c))
+                except (ValueError, TypeError):
+                    pass
+    cls = tuple(parsed_cls)
 
     stakeholders_raw = data.get("additional_stakeholders")
     additional_stakeholders = tuple(stakeholders_raw) if isinstance(stakeholders_raw, list) else None
 
     return SlackClJob(
         job_id=job_id.strip(),
-        asset_id=asset_id.strip(),
+        asset_id=asset_id_str,
         version_id=data.get("version_id"),
         season_id=data.get("season_id"),
         cls=cls,
@@ -103,7 +123,7 @@ def sent_has(root: Path, asset_id: str, cl: int) -> bool:
         return False
     if not isinstance(data, dict):
         return False
-    
+
     asset_entry = data.get(asset_id, [])
     if isinstance(asset_entry, list):
         return str(cl) in asset_entry
@@ -114,7 +134,7 @@ def stamp_sent(root: Path, asset_id: str, cls: Sequence[int]) -> None:
     """Record the given asset_id as sent for the specified cls."""
     sent_path = root / "slack_jobs" / "sent.json"
     sent_path.parent.mkdir(parents=True, exist_ok=True)
-    
+
     def _read_and_patch() -> None:
         data: dict[str, list[str]] = {}
         if sent_path.is_file():
@@ -124,14 +144,14 @@ def stamp_sent(root: Path, asset_id: str, cls: Sequence[int]) -> None:
                     data = raw
             except json.JSONDecodeError:
                 pass
-        
+
         cl_strs = [str(c) for c in cls]
         if asset_id not in data:
             data[asset_id] = []
         for c in cl_strs:
             if c not in data[asset_id]:
                 data[asset_id].append(c)
-        
+
         tmp = sent_path.with_suffix(".json.tmp")
         tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
         tmp.replace(sent_path)
@@ -146,14 +166,9 @@ def write_failed(root: Path, job_id: str, asset_id: str, error: str) -> None:
     """Append a failure record to failed.json."""
     failed_path = root / "slack_jobs" / "failed.json"
     failed_path.parent.mkdir(parents=True, exist_ok=True)
-    
-    entry = {
-        "job_id": job_id,
-        "asset_id": asset_id,
-        "error": error,
-        "at": datetime.now(timezone.utc).isoformat(),
-    }
-    
+
+    entry = {"job_id": job_id, "asset_id": asset_id, "error": error, "at": datetime.now(timezone.utc).isoformat()}
+
     data = []
     if failed_path.is_file():
         try:
@@ -162,9 +177,16 @@ def write_failed(root: Path, job_id: str, asset_id: str, error: str) -> None:
                 data = raw
         except (json.JSONDecodeError, OSError):
             pass
-            
-    data.append(entry)
-    
+
+    replaced = False
+    for i, existing in enumerate(data):
+        if isinstance(existing, dict) and existing.get("job_id") == job_id:
+            data[i] = entry
+            replaced = True
+            break
+    if not replaced:
+        data.append(entry)
+
     tmp = failed_path.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
     tmp.replace(failed_path)
@@ -175,47 +197,43 @@ def resolve_channel(gateway: SlackGateway, raw: str) -> str:
     channel = raw.strip()
     if not channel:
         raise NotFoundError("channel name is empty")
-    
+
     if (channel.startswith("C") or channel.startswith("G")) and len(channel) > 2 and channel[1:].isalnum():
         return channel
-    
+
     if channel.startswith("#"):
         name_to_find = channel[1:].lower()
         cursor: str | None = None
         while True:
-            kwargs: dict[str, Any] = {
-                "types": "public_channel,private_channel",
-                "exclude_archived": True,
-                "limit": 200,
-            }
+            kwargs: dict[str, Any] = {"types": "public_channel,private_channel", "exclude_archived": True, "limit": 200}
             if cursor:
                 kwargs["cursor"] = cursor
-            
+
             try:
                 response = gateway._call("conversations_list", **kwargs)
             except RetryableExternalServiceError:
                 raise
             except ExternalServiceError as e:
                 raise NotFoundError(f"failed to list channels: {e}") from e
-                
+
             channels = response.get("channels") or []
             if not isinstance(channels, list):
                 break
-                
+
             for ch in channels:
                 if isinstance(ch, dict) and ch.get("name", "").lower() == name_to_find:
                     ch_id = ch.get("id")
                     if isinstance(ch_id, str):
                         return ch_id
-            
+
             metadata = response.get("response_metadata") or {}
             next_cursor = metadata.get("next_cursor") if isinstance(metadata, dict) else None
             if not next_cursor:
                 break
             cursor = str(next_cursor)
-            
+
         raise NotFoundError(f"channel {channel} not found")
-        
+
     raise NotFoundError(f"invalid channel format: {channel}")
 
 
@@ -223,7 +241,7 @@ def move_to_done(root: Path, job_json_path: Path) -> None:
     """Move a processed job JSON and its associated image to the done directory."""
     done_dir = root / "slack_jobs" / "done"
     done_dir.mkdir(parents=True, exist_ok=True)
-    
+
     if not job_json_path.is_file():
         return
 

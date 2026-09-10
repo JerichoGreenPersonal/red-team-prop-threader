@@ -13,6 +13,7 @@ from red_team_prop_threader.leases import ChannelLeaseRepository
 from red_team_prop_threader.repositories import Repositories
 from red_team_prop_threader.mint_from_job import process_cl_jobs
 from red_team_prop_threader.slack_gateway import SlackGateway
+from red_team_prop_threader.shotgrid import ShotGridGateway
 
 
 __all__ = ("UtcClock", "main", "run_forever")
@@ -44,6 +45,11 @@ def run_forever(*, settings: Settings | None = None, once: bool = False) -> None
     slack = SlackGateway.from_settings(cfg)
     clock = UtcClock()
 
+    try:
+        shotgrid = ShotGridGateway.from_settings(cfg)
+    except Exception:
+        shotgrid = None
+
     while True:
         worked = False
         with session_scope(engine) as session:
@@ -54,9 +60,12 @@ def run_forever(*, settings: Settings | None = None, once: bool = False) -> None
             if result is not None:
                 worked = True
                 _LOG.info("batch %s finished with status %s", result.batch_id, result.status.value)
-        
-        process_cl_jobs(cfg.reviewprep_external_links_root, slack, engine=engine)
-        
+
+        try:
+            process_cl_jobs(cfg.reviewprep_external_links_root, slack, engine=engine, shotgrid=shotgrid)
+        except Exception:
+            _LOG.exception("process_cl_jobs failed")
+
         if once:
             return
         if not worked:

@@ -20,6 +20,7 @@ if TYPE_CHECKING:
 
     from red_team_prop_threader.cl_jobs import SlackClJob
     from red_team_prop_threader.slack_gateway import SlackGateway
+    from red_team_prop_threader.shotgrid import ShotGridGateway
 
 
 __all__ = ("process_cl_jobs", "process_job", "reply_already_posted")
@@ -38,7 +39,9 @@ def reply_already_posted(gateway: SlackGateway, channel_id: str, thread_ts: str,
             for msg in messages:
                 if isinstance(msg, dict) and msg.get("text") == body:
                     return True
-    except (ExternalServiceError, RetryableExternalServiceError):
+    except RetryableExternalServiceError:
+        raise
+    except ExternalServiceError:
         pass
     return False
 
@@ -59,7 +62,16 @@ def _find_spoke_in_season(season_root: Path, season_id: str, asset_id: str) -> d
     return None
 
 
-def process_job(job_path: Path, job: SlackClJob, *, slack: SlackGateway, season_root: Path, engine: Engine | None = None) -> None:
+def process_job(
+    job_path: Path,
+    job: SlackClJob,
+    *,
+    slack: SlackGateway,
+    season_root: Path,
+    engine: Engine | None = None,
+    shotgrid: ShotGridGateway | None = None,
+    workspace_id: str = "W1",
+) -> None:
     """Process a single SlackClJob."""
     from typing import Any
 
@@ -94,69 +106,80 @@ def process_job(job_path: Path, job: SlackClJob, *, slack: SlackGateway, season_
         if not job.channel:
             write_failed(season_root, job.job_id, job.asset_id, "mint required but no channel on job")
             return
-            
+
         try:
             channel_id = resolve_channel(slack, job.channel)
         except NotFoundError as e:
             write_failed(season_root, job.job_id, job.asset_id, str(e))
             return
-            
+
         if engine is None:
             write_failed(season_root, job.job_id, job.asset_id, "no database for mint")
             return
-            
+
         try:
             group_title_norm = normalize_group_title(job.group_title or "")
             from red_team_prop_threader.db import session_scope
             from red_team_prop_threader.repositories import Repositories
-            
+
             with session_scope(engine) as session:
                 repos = Repositories.from_session(session)
                 # Find group by channel and normalized title
                 from sqlalchemy import select
 
                 from red_team_prop_threader.tables import Group
-                
+
                 group_row = session.execute(
-                    select(Group).where(
-                        Group.channel_id == channel_id,
-                        Group.normalized_title == group_title_norm
-                    )
+                    select(Group).where(Group.channel_id == channel_id, Group.normalized_title == group_title_norm)
                 ).scalar_one_or_none()
-                
+
                 now = datetime.now(timezone.utc)
                 if group_row is None:
                     # Create group
                     group = repos.groups.create(
-                        workspace_id="W1", # Dummy default, typically comes from context but we don't have it here
-                        channel_id=channel_id,
-                        display_title=job.group_title or "",
-                        normalized_title=group_title_norm,
-                        now=now
+                        workspace_id=workspace_id, channel_id=channel_id, display_title=job.group_title or "", normalized_title=group_title_norm, now=now
                     )
                     group_id = group.id
-                    
+
                     # Validate channel members for POCs
                     try:
                         members = set(slack.get_conversation_members(channel_id))
                     except ExternalServiceError:
                         members = set()
-                        
+
                     selected_pocs = set()
                     if job.creative_stakeholder:
                         selected_pocs.add(job.creative_stakeholder)
                     if job.additional_stakeholders:
                         selected_pocs.update(job.additional_stakeholders)
-                        
-                    valid_pocs = list(selected_pocs & members)
-                    
+
+                    member_info_cache: dict[str, dict[str, Any]] = {}
+                    valid_pocs = set()
+                    for poc in selected_pocs:
+                        if poc in members:
+                            valid_pocs.add(poc)
+                        elif poc.startswith("@") or not poc.startswith("U"):
+                            name_to_match = poc.lstrip("@").lower()
+                            for member_id in members:
+                                if member_id not in member_info_cache:
+                                    try:
+                                        member_info_cache[member_id] = slack.get_user_info(member_id)
+                                    except ExternalServiceError:
+                                        member_info_cache[member_id] = {}
+                                info = member_info_cache[member_id]
+                                if info.get("name", "").lower() == name_to_match:
+                                    valid_pocs.add(member_id)
+                                    break
+
+                    valid_pocs_list = list(valid_pocs)
+
                     # Mint group summary
                     from red_team_prop_threader.messages import AssetRootContext, GroupSummaryContext, render_asset_root, render_group_summary
-                    
+
                     # Need an animator to pass to context
-                    animator_id = job.creative_stakeholder if job.creative_stakeholder in valid_pocs else ""
-                    additional_ids = [p for p in valid_pocs if p != animator_id]
-                    
+                    animator_id = job.creative_stakeholder if job.creative_stakeholder in valid_pocs_list else ""
+                    additional_ids = [p for p in valid_pocs_list if p != animator_id]
+
                     context = GroupSummaryContext(
                         group_title=job.group_title or "",
                         animator_id=animator_id,
@@ -167,7 +190,7 @@ def process_job(job_path: Path, job: SlackClJob, *, slack: SlackGateway, season_
                         summary_identity=group_id,
                         canvas_url=None,
                     )
-                    
+
                     def _display_name(uid: str) -> str:
                         if not uid:
                             return ""
@@ -181,35 +204,38 @@ def process_job(job_path: Path, job: SlackClJob, *, slack: SlackGateway, season_
                         except ExternalServiceError:
                             pass
                         return uid
-                        
+
                     group_animator_display = _display_name(animator_id)
                     group_additional_displays = tuple(_display_name(uid) for uid in additional_ids)
-                    
+
                     rendered = render_group_summary(context)
-                    
+
                     def _blocks(rnd: dict[str, object]) -> list[dict[str, Any]]:
                         b = rnd.get("blocks")
                         if not isinstance(b, list):
                             return []
                         return [{str(k): v for k, v in block.items()} for block in b if isinstance(block, dict)]
-                        
+
                     resp = slack.post_message(channel_id, text=str(rendered["text"]), blocks=_blocks(rendered))
                     summary_ts = str(resp["ts"])
                     summary_link = slack.get_permalink(channel_id, summary_ts)
-                    
+
                     from red_team_prop_threader.repositories import MessageKind, NewMessageInput
-                    repos.history.record(NewMessageInput(
-                        workspace_id="W1",
-                        channel_id=channel_id,
-                        group_id=group_id,
-                        batch_id=None,
-                        kind=MessageKind.GROUP_SUMMARY,
-                        asset_entity_id=None,
-                        slack_ts=summary_ts,
-                        permalink=summary_link,
-                        canvas_metadata=None,
-                        now=now
-                    ))
+
+                    repos.history.record(
+                        NewMessageInput(
+                            workspace_id=workspace_id,
+                            channel_id=channel_id,
+                            group_id=group_id,
+                            batch_id=None,
+                            kind=MessageKind.GROUP_SUMMARY,
+                            asset_entity_id=None,
+                            slack_ts=summary_ts,
+                            permalink=summary_link,
+                            canvas_metadata=None,
+                            now=now,
+                        )
+                    )
                 else:
                     group_id = group_row.id
                     valid_pocs = []
@@ -217,18 +243,28 @@ def process_job(job_path: Path, job: SlackClJob, *, slack: SlackGateway, season_
                     group_additional_displays = ()
                     animator_id = ""
                     additional_ids = []
-                    
+
                 def _blocks(rnd: dict[str, object]) -> list[dict[str, Any]]:
                     b = rnd.get("blocks")
                     if not isinstance(b, list):
                         return []
                     return [{str(k): v for k, v in block.items()} for block in b if isinstance(block, dict)]
-                    
+
                 # Post the asset root
                 from red_team_prop_threader.messages import AssetRootContext, render_asset_root
+
+                asset_name = f"Asset {asset_int}"
+                if shotgrid is not None:
+                    try:
+                        labels = shotgrid.find_asset_labels((asset_int,))
+                        if asset_int in labels and labels[asset_int][2]:
+                            asset_name = labels[asset_int][2]
+                    except ExternalServiceError:
+                        pass
+
                 asset_ctx = AssetRootContext(
                     asset_entity_id=asset_int,
-                    asset_name=job.job_id,
+                    asset_name=asset_name,
                     asset_url=f"https://respawn.shotgunstudio.com/detail/Asset/{asset_int}",
                     group_title=job.group_title or "",
                     created_ts=int(now.timestamp()),
@@ -240,27 +276,30 @@ def process_job(job_path: Path, job: SlackClJob, *, slack: SlackGateway, season_
                     asset_links=(),
                     message_identity=f"{group_id}:{asset_int}",
                     is_latest=True,
-                    has_prior_thread=False
+                    has_prior_thread=False,
                 )
                 rendered_asset = render_asset_root(asset_ctx)
                 resp_asset = slack.post_message(channel_id, text=str(rendered_asset["text"]), blocks=_blocks(rendered_asset))
                 thread_ts = str(resp_asset["ts"])
                 permalink = slack.get_permalink(channel_id, thread_ts)
-                
+
                 from red_team_prop_threader.repositories import MessageKind, NewMessageInput
-                repos.history.record(NewMessageInput(
-                    workspace_id="W1",
-                    channel_id=channel_id,
-                    group_id=group_id,
-                    batch_id=None,
-                    kind=MessageKind.ASSET_ROOT,
-                    asset_entity_id=asset_int,
-                    slack_ts=thread_ts,
-                    permalink=permalink,
-                    canvas_metadata=None,
-                    now=now
-                ))
-                
+
+                repos.history.record(
+                    NewMessageInput(
+                        workspace_id=workspace_id,
+                        channel_id=channel_id,
+                        group_id=group_id,
+                        batch_id=None,
+                        kind=MessageKind.ASSET_ROOT,
+                        asset_entity_id=asset_int,
+                        slack_ts=thread_ts,
+                        permalink=permalink,
+                        canvas_metadata=None,
+                        now=now,
+                    )
+                )
+
                 # Upsert season file
                 if job.season_id:
                     upsert_season_spoke(
@@ -271,9 +310,9 @@ def process_job(job_path: Path, job: SlackClJob, *, slack: SlackGateway, season_
                         channel_id=channel_id,
                         thread_ts=thread_ts,
                         source="mint",
-                        updated_at=now.isoformat()
+                        updated_at=now.isoformat(),
                     )
-                    
+
         except Exception as e:
             write_failed(season_root, job.job_id, job.asset_id, f"mint failed: {e}")
             return
@@ -284,7 +323,7 @@ def process_job(job_path: Path, job: SlackClJob, *, slack: SlackGateway, season_
 
     try:
         body = job.body or ""
-        
+
         # 3. reply_already_posted
         if body and not reply_already_posted(slack, channel_id, thread_ts, body):
             slack.post_message(channel_id, text=body, thread_ts=thread_ts)
@@ -308,12 +347,22 @@ def process_job(job_path: Path, job: SlackClJob, *, slack: SlackGateway, season_
         write_failed(season_root, job.job_id, job.asset_id, str(e))
 
 
-def process_cl_jobs(share_root: Path | str, slack: SlackGateway, *, engine: Engine | None = None) -> None:
+def process_cl_jobs(share_root: Path | str, slack: SlackGateway, *, engine: Engine | None = None, shotgrid: ShotGridGateway | None = None) -> None:
     """Process all valid jobs in the inbox."""
     from pathlib import Path
+
     root = Path(share_root)
+
+    workspace_id = "W1"
+    try:
+        auth = slack.auth_test()
+        if "team_id" in auth:
+            workspace_id = auth["team_id"]
+    except ExternalServiceError:
+        pass
+
     for job_path in list_inbox(root):
         job = parse_job(job_path)
         if job is None:
             continue
-        process_job(job_path, job, slack=slack, season_root=root, engine=engine)
+        process_job(job_path, job, slack=slack, season_root=root, engine=engine, shotgrid=shotgrid, workspace_id=workspace_id)
