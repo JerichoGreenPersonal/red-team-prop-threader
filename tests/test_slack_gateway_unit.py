@@ -224,9 +224,10 @@ def test_download_private_file_http_error(gateway: SlackGateway, client: MagicMo
     """HTTP errors from urlopen become ExternalServiceError."""
     client.token = "xoxb-test"
     err = urllib.error.HTTPError("https://files.slack.com/x", 404, "nope", hdrs=None, fp=None)
-    with patch("red_team_prop_threader.slack_gateway.urllib.request.urlopen", side_effect=err):
-        with pytest.raises(ExternalServiceError, match="canvas download failed"):
-            gateway.download_private_file("https://files.slack.com/x")
+    with patch("red_team_prop_threader.slack_gateway.urllib.request.urlopen", side_effect=err), pytest.raises(
+        ExternalServiceError, match="canvas download failed"
+    ):
+        gateway.download_private_file("https://files.slack.com/x")
 
 
 def test_get_canvas_document_empty_body(gateway: SlackGateway, client: MagicMock) -> None:
@@ -240,6 +241,7 @@ def test_get_canvas_document_empty_body(gateway: SlackGateway, client: MagicMock
     fake_cm.__enter__.return_value = fake_cm
     fake_cm.__exit__.return_value = False
     fake_cm.status = 200
-    with patch("red_team_prop_threader.slack_gateway.urllib.request.urlopen", return_value=fake_cm):
-        with pytest.raises(ExternalServiceError, match="empty body"):
-            gateway.get_canvas_document("Fcanvas")
+    with patch("red_team_prop_threader.slack_gateway.urllib.request.urlopen", return_value=fake_cm), pytest.raises(
+        ExternalServiceError, match="empty body"
+    ):
+        gateway.get_canvas_document("Fcanvas")
