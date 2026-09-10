@@ -1,15 +1,14 @@
-"""adopt INDEX Latest and leftover channel roots into ReviewPrep season JSON."""
+"""adopt INDEX hrefs and leftover channel roots into ReviewPrep season JSON."""
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Protocol
 from datetime import datetime, timezone
-from contextlib import suppress
 from dataclasses import dataclass
 
 from red_team_prop_threader.canvas import CANVAS_TITLE, PreflightState
 from red_team_prop_threader.season import grouping_season_with_fallback
-from red_team_prop_threader.spokes import harvest_lookup_text, history_root_spokes, upsert_season_spoke, canvas_latest_spokes
+from red_team_prop_threader.spokes import occupied_asset_ids, history_root_spokes, upsert_season_spoke, canvas_latest_spokes
 from red_team_prop_threader._errors import ExternalServiceError, PermissionDeniedError
 
 
@@ -31,6 +30,7 @@ class AdoptResult:
     adopted: tuple[int, ...]
     unmatched: tuple[int, ...]
     history_available: bool
+    already_present: tuple[int, ...] = ()
     detail: str | None = None
 
 
@@ -40,11 +40,8 @@ class _CanvasPreflight(Protocol):
 
 
 class _SlackAdopt(Protocol):
-    def lookup_sections(self, canvas_id: str, *, contains_text: str | None = None, section_types: tuple[str, ...] = ("any_header",)) -> list[dict[str, object]]:
-        """Lookup canvas sections."""
-
-    def get_file_info(self, file_id: str) -> dict[str, object]:
-        """Return canvas file metadata."""
+    def get_canvas_document(self, canvas_id: str) -> str:
+        """Return INDEX canvas body text."""
 
     def get_conversation_history(self, channel_id: str) -> tuple[dict[str, object], ...]:
         """Return channel history pages."""
@@ -75,7 +72,7 @@ class AdoptService:
         self._now_iso = now_iso or (lambda: datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
 
     def run(self, channel_id: str) -> AdoptResult:
-        """Adopt Latest INDEX links then leftover roots in ``channel_id``."""
+        """Adopt INDEX hrefs then leftover roots in ``channel_id``."""
         preflight = self._canvas.preflight(channel_id, title=CANVAS_TITLE)
         if preflight.state is not PreflightState.READY or not preflight.canvas_id:
             return AdoptResult(
@@ -84,7 +81,13 @@ class AdoptService:
                 history_available=True,
                 detail="This channel has no INDEX OF PROP REQUESTS canvas.",
             )
-        canvas_spokes = canvas_latest_spokes(self._canvas_text(preflight.canvas_id))
+        index_unread = False
+        try:
+            document = self._slack.get_canvas_document(preflight.canvas_id)
+        except ExternalServiceError:
+            document = ""
+            index_unread = True
+        canvas_spokes = canvas_latest_spokes(document)
         history_available = True
         history_spokes: dict[int, SpokeCandidate] = {}
         try:
@@ -98,21 +101,35 @@ class AdoptService:
         for asset_id, spoke in history_spokes.items():
             if asset_id not in merged:
                 merged[asset_id] = spoke
+        unread_detail = "INDEX file unread." if index_unread else None
         if not merged:
-            return AdoptResult(adopted=(), unmatched=(), history_available=history_available, detail="No Latest links or leftover roots found.")
+            detail = unread_detail or "No INDEX hrefs or leftover roots found."
+            return AdoptResult(adopted=(), unmatched=(), history_available=history_available, detail=detail)
+        occupied = occupied_asset_ids(self._share_root)
+        already = tuple(sorted(asset_id for asset_id in merged if asset_id in occupied))
+        candidates = {asset_id: spoke for asset_id, spoke in merged.items() if asset_id not in occupied}
+        if not candidates:
+            return AdoptResult(
+                adopted=(),
+                unmatched=(),
+                history_available=history_available,
+                already_present=already,
+                detail=unread_detail,
+            )
         try:
-            labels = self._shotgrid.find_asset_labels(tuple(merged.keys()))
+            labels = self._shotgrid.find_asset_labels(tuple(candidates))
         except ExternalServiceError:
             return AdoptResult(
                 adopted=(),
-                unmatched=tuple(sorted(merged)),
+                unmatched=tuple(sorted(candidates)),
                 history_available=history_available,
-                detail="ShotGrid lookup failed.",
+                already_present=already,
+                detail=unread_detail or "ShotGrid lookup failed.",
             )
         adopted: list[int] = []
         unmatched: list[int] = []
         updated_at = str(self._now_iso())
-        for asset_id, spoke in merged.items():
+        for asset_id, spoke in candidates.items():
             jira, tags, code = labels.get(asset_id, ([], [], ""))
             season = grouping_season_with_fallback(jira, tags=tags, gantt_season=code)
             if not season:
@@ -136,27 +153,21 @@ class AdoptService:
             adopted=tuple(adopted),
             unmatched=tuple(unmatched),
             history_available=history_available,
+            already_present=already,
+            detail=unread_detail,
         )
-
-    def _canvas_text(self, canvas_id: str) -> str:
-        chunks: list[object] = []
-        for contains in ("Latest", "detail/Asset/"):
-            try:
-                chunks.extend(self._slack.lookup_sections(canvas_id, contains_text=contains, section_types=()))
-            except ExternalServiceError:
-                continue
-        with suppress(ExternalServiceError):
-            chunks.append(self._slack.get_file_info(canvas_id))
-        return harvest_lookup_text(chunks)
 
 
 def format_adopt_ephemeral(result: AdoptResult) -> str:
     """user-facing ephemeral summary for /adopt-prop-threads."""
-    if result.detail and not result.adopted and not result.unmatched:
+    if result.detail and not result.adopted and not result.unmatched and not result.already_present:
         return result.detail
     adopted_n = len(result.adopted)
+    already_n = len(result.already_present)
     unmatched_n = len(result.unmatched)
-    parts = [f"Adopted {adopted_n} Slack thread{'s' if adopted_n != 1 else ''}."]
+    parts = [f"Wrote {adopted_n} new."]
+    if already_n:
+        parts.append(f"Already present {already_n}.")
     if unmatched_n:
         parts.append(f"Unmatched {unmatched_n}.")
     if not result.history_available:

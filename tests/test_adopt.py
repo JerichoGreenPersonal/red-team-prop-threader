@@ -5,9 +5,10 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING, Any
 
-from red_team_prop_threader.adopt import AdoptService
+from red_team_prop_threader.adopt import AdoptResult, AdoptService, format_adopt_ephemeral
 from red_team_prop_threader.canvas import PreflightState, PreflightResult
-from red_team_prop_threader._errors import PermissionDeniedError
+from red_team_prop_threader._errors import ExternalServiceError, PermissionDeniedError
+from red_team_prop_threader.spokes import upsert_season_spoke
 
 
 if TYPE_CHECKING:
@@ -18,6 +19,12 @@ _CANVAS_MD = """
 ### uh_hopscotch
 - :shotgrid: [ShotGrid](https://respawn.shotgunstudio.com/detail/Asset/39238)
 - :slack3: [t](https://respawn.slack.com/archives/C02PGV4E6KV/p1784158834442809) — Latest
+"""
+
+_NANOSHAPE_MD = """
+### Motorcycle
+- :shotgrid: [ShotGrid](https://respawn.shotgunstudio.com/detail/Asset/38862)
+- :slack3: [emote](https://respawn.slack.com/archives/C02PGV4E6KV/p1778706626350199)
 """
 
 
@@ -35,21 +42,27 @@ class _Canvas:
 
 
 class _Slack:
-    """slack lookup/history test double."""
+    """slack canvas-document / history test double."""
 
-    def __init__(self, *, markdown: str = _CANVAS_MD, messages: tuple[dict[str, Any], ...] = (), history_error: Exception | None = None) -> None:
-        """Store canvas markdown and optional history failure."""
-        self.markdown = markdown
+    def __init__(
+        self,
+        *,
+        document: str = _CANVAS_MD,
+        messages: tuple[dict[str, Any], ...] = (),
+        history_error: Exception | None = None,
+        document_error: Exception | None = None,
+    ) -> None:
+        """Store canvas document text and optional history/download failure."""
+        self.document = document
         self.messages = messages
         self.history_error = history_error
+        self.document_error = document_error
 
-    def lookup_sections(self, canvas_id: str, *, contains_text: str | None = None, section_types: tuple[str, ...] = ("any_header",)) -> list[dict[str, Any]]:
-        """Return harvested canvas markdown as a lookup payload."""
-        return [{"markdown": self.markdown}]
-
-    def get_file_info(self, file_id: str) -> dict[str, Any]:
-        """Return a titled INDEX canvas file object."""
-        return {"id": file_id, "title": "INDEX OF PROP REQUESTS"}
+    def get_canvas_document(self, canvas_id: str) -> str:
+        """Return INDEX body or raise the configured download error."""
+        if self.document_error is not None:
+            raise self.document_error
+        return self.document
 
     def get_conversation_history(self, channel_id: str) -> tuple[dict[str, Any], ...]:
         """Return leftover root messages or raise the configured error."""
@@ -145,3 +158,114 @@ def test_adopt_refuses_when_index_canvas_not_ready(tmp_path: Path) -> None:
     result = service.run(channel_id="C04H4QZEYUE")
     assert result.adopted == ()
     assert "INDEX OF PROP REQUESTS" in (result.detail or "")
+
+
+def test_adopt_writes_missing_canvas_href_and_skips_occupied(tmp_path: Path) -> None:
+    """INDEX href fills a hole; existing keys are not overwritten."""
+    share = tmp_path / "SG_Card_Links"
+    upsert_season_spoke(
+        share,
+        season_id="S31.1",
+        asset_id=38867,
+        permalink="https://respawn.slack.com/archives/C02PGV4E6KV/p1784937709498399",
+        channel_id="C02PGV4E6KV",
+        thread_ts="1784937709.498399",
+        source="search",
+        updated_at="old",
+    )
+    body = (
+        _NANOSHAPE_MD
+        + "\n### Wing Pack\n- :shotgrid: [ShotGrid](https://respawn.shotgunstudio.com/detail/Asset/38867)\n"
+        + "- :slack3: [t](https://respawn.slack.com/archives/C02PGV4E6KV/p1778707717246969)\n"
+    )
+    service = AdoptService(
+        canvas=_Canvas(),
+        slack=_Slack(document=body),
+        shotgrid=_ShotGrid({38862: "31.0.0", 38867: "31.1.0"}),
+        share_root=share,
+        now_iso=lambda: "2026-09-10T06:00:00Z",
+    )
+    result = service.run(channel_id="C02PGV4E6KV")
+    assert 38862 in result.adopted
+    assert 38867 in result.already_present
+    assert 38867 not in result.adopted
+    data = json.loads((share / "slack_threads" / "S31.json").read_text(encoding="utf-8"))
+    assert data["assets"]["38862"]["source"] == "canvas"
+    wraith = json.loads((share / "slack_threads" / "S31.1.json").read_text(encoding="utf-8"))
+    assert wraith["assets"]["38867"]["permalink"].endswith("p1784937709498399")
+    assert wraith["assets"]["38867"]["updated_at"] == "old"
+
+
+def test_adopt_index_unread_still_writes_missing_history(tmp_path: Path) -> None:
+    """Download failure does not parse INDEX; history leftover for a missing id still writes."""
+    share = tmp_path / "SG_Card_Links"
+    leftover = (
+        {
+            "ts": "20.000000",
+            "thread_ts": "20.000000",
+            "text": "https://respawn.shotgunstudio.com/detail/Asset/111",
+        },
+    )
+    service = AdoptService(
+        canvas=_Canvas(),
+        slack=_Slack(messages=leftover, document_error=ExternalServiceError("files.info missing url_private_download")),
+        shotgrid=_ShotGrid({111: "30.0.0"}),
+        share_root=share,
+        now_iso=lambda: "2026-09-10T06:00:00Z",
+    )
+    result = service.run(channel_id="C1")
+    assert 111 in result.adopted
+    assert result.detail == "INDEX file unread."
+    data = json.loads((share / "slack_threads" / "S30.json").read_text(encoding="utf-8"))
+    assert data["assets"]["111"]["source"] == "search"
+
+
+def test_adopt_history_does_not_overwrite_occupied(tmp_path: Path) -> None:
+    """History leftover for an id already on disk is already-present, not a rewrite."""
+    share = tmp_path / "SG_Card_Links"
+    upsert_season_spoke(
+        share,
+        season_id="S30",
+        asset_id=111,
+        permalink="https://respawn.slack.com/archives/COLD/p1000000000000000",
+        channel_id="COLD",
+        thread_ts="1.0",
+        source="search",
+        updated_at="old",
+    )
+    leftover = (
+        {
+            "ts": "20.000000",
+            "thread_ts": "20.000000",
+            "text": "https://respawn.shotgunstudio.com/detail/Asset/111",
+        },
+    )
+    service = AdoptService(
+        canvas=_Canvas(),
+        slack=_Slack(document="", messages=leftover),
+        shotgrid=_ShotGrid({111: "30.0.0"}),
+        share_root=share,
+        now_iso=lambda: "2026-09-10T06:00:00Z",
+    )
+    result = service.run(channel_id="C1")
+    assert result.adopted == ()
+    assert 111 in result.already_present
+    data = json.loads((share / "slack_threads" / "S30.json").read_text(encoding="utf-8"))
+    assert data["assets"]["111"]["updated_at"] == "old"
+    assert data["assets"]["111"]["channel_id"] == "COLD"
+
+
+def test_format_adopt_ephemeral_wrote_and_already_present() -> None:
+    """Ephemeral reports new writes, not a recount of existing keys."""
+    text = format_adopt_ephemeral(
+        AdoptResult(
+            adopted=(38862,),
+            unmatched=(),
+            history_available=True,
+            already_present=(1, 2, 3),
+            detail=None,
+        )
+    )
+    assert text.startswith("Wrote 1 new.")
+    assert "Already present 3." in text
+    assert "Adopted" not in text

@@ -191,7 +191,9 @@ def test_register_listeners_adopt_command() -> None:
     app.view.side_effect = _wrap("view")
 
     adopt = MagicMock()
-    adopt.run.return_value = MagicMock(adopted=(1,), unmatched=(), history_available=True, detail=None)
+    adopt.run.return_value = MagicMock(
+        adopted=(1,), unmatched=(), history_available=True, already_present=(), detail=None
+    )
     register_listeners(app, MagicMock, None, lambda: adopt)
     ack = MagicMock()
     client = MagicMock()
