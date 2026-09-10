@@ -113,6 +113,89 @@ def test_reply_already_posted_skips_post_message(tmp_path: Path) -> None:
     sent = json.loads((tmp_path / "slack_jobs" / "sent.json").read_text())
     assert "102" in sent["125"]
 
+def test_mint_skipped_when_spoke_set(tmp_path: Path) -> None:
+    """Test mint skipped when spoke set."""
+    inbox = tmp_path / "slack_jobs" / "inbox"
+    inbox.mkdir(parents=True)
+    
+    job_path = inbox / "job_skip_mint.json"
+    job_data = {
+        "job_id": "job_skip",
+        "asset_id": "999",
+        "channel": "C999",
+        "spoke_channel_id": "C999",
+        "spoke_thread_ts": "999.9"
+    }
+    job_path.write_text(json.dumps(job_data))
+    
+    slack = MagicMock()
+    slack._call.return_value = {"messages": []}
+    
+    process_cl_jobs(tmp_path, slack, engine=None)
+    
+    # post_message is not called because no body
+    # But it did not write failed.json for "no database for mint"
+    assert not (tmp_path / "slack_jobs" / "failed.json").exists()
+
+def test_mint_requires_engine(tmp_path: Path) -> None:
+    """Test mint fails nicely without engine."""
+    inbox = tmp_path / "slack_jobs" / "inbox"
+    inbox.mkdir(parents=True)
+    
+    job_path = inbox / "job_needs_mint.json"
+    job_data = {
+        "job_id": "job_nm",
+        "asset_id": "888",
+        "channel": "C888"
+    }
+    job_path.write_text(json.dumps(job_data))
+    
+    slack = MagicMock()
+    slack._call.return_value = {"messages": []}
+    
+    process_cl_jobs(tmp_path, slack, engine=None)
+    
+    failed = json.loads((tmp_path / "slack_jobs" / "failed.json").read_text())
+    assert failed[0]["error"] == "no database for mint"
+    
+def test_mint_creates_group_and_roots(tmp_path: Path) -> None:
+    """Test actual mint against sqlite."""
+    from sqlalchemy import create_engine
+
+    from red_team_prop_threader.tables import Base
+    
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    
+    inbox = tmp_path / "slack_jobs" / "inbox"
+    inbox.mkdir(parents=True)
+    
+    job_path = inbox / "job_mint_db.json"
+    job_data = {
+        "job_id": "job_db",
+        "asset_id": "777",
+        "channel": "C777",
+        "group_title": "DB Mint Test",
+        "season_id": "S2",
+        "body": "Hi there"
+    }
+    job_path.write_text(json.dumps(job_data))
+    
+    slack = MagicMock()
+    slack._call.return_value = {"messages": []}
+    slack.get_conversation_members.return_value = []
+    slack.post_message.return_value = {"ts": "123.45"}
+    slack.get_permalink.return_value = "https://example.com"
+    
+    process_cl_jobs(tmp_path, slack, engine=engine)
+    
+    # Verify the thread was created
+    assert slack.post_message.call_count == 3 # 1 group summary, 1 asset root, 1 reply
+    
+    # Check season file was written
+    season = json.loads((tmp_path / "slack_threads" / "S2.json").read_text(encoding="utf-8-sig"))
+    assert season["assets"]["777"]["source"] == "mint"
+
 def test_skip_mint_when_season_has_asset(tmp_path: Path) -> None:
     """Test skip mint when season has asset."""
     inbox = tmp_path / "slack_jobs" / "inbox"
