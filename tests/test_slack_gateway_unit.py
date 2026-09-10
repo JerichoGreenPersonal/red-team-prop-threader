@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from typing import Any
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 from slack_sdk.errors import SlackApiError
@@ -184,3 +184,30 @@ def test_invalid_payloads_raise(gateway: SlackGateway, client: MagicMock) -> Non
     client.auth_test.return_value = _Resp({"ok": False, "error": "x"})
     with pytest.raises(ExternalServiceError):
         gateway.auth_test()
+
+
+def test_get_canvas_document_downloads_url_private(gateway: SlackGateway, client: MagicMock) -> None:
+    """files.info url_private_download is fetched with the bot Bearer token."""
+    client.token = "xoxb-test"
+    client.files_info.return_value = _Resp(
+        {"ok": True, "file": {"id": "Fcanvas", "url_private_download": "https://files.slack.com/files-pri/T/F/download/canvas"}}
+    )
+    fake_cm = MagicMock()
+    fake_cm.read.return_value = b'{"markdown": "hello"}'
+    fake_cm.__enter__.return_value = fake_cm
+    fake_cm.__exit__.return_value = False
+    fake_resp = fake_cm
+    fake_resp.status = 200
+    with patch("red_team_prop_threader.slack_gateway.urllib.request.urlopen", return_value=fake_cm) as opener:
+        text = gateway.get_canvas_document("Fcanvas")
+    assert "hello" in text
+    request = opener.call_args.args[0]
+    header_blob = " ".join(f"{k}: {v}" for k, v in request.header_items())
+    assert "xoxb-test" in header_blob
+
+
+def test_get_canvas_document_missing_download_url(gateway: SlackGateway, client: MagicMock) -> None:
+    """files.info without url_private_download is INDEX unread, not empty success."""
+    client.files_info.return_value = _Resp({"ok": True, "file": {"id": "Fcanvas", "title": "INDEX"}})
+    with pytest.raises(ExternalServiceError, match="url_private_download"):
+        gateway.get_canvas_document("Fcanvas")
