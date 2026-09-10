@@ -15,6 +15,8 @@ from red_team_prop_threader._errors import ConflictError, NotFoundError, Externa
 
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from red_team_prop_threader.config import Settings
 
 
@@ -277,6 +279,38 @@ class SlackGateway:
         if thread_ts is not None:
             kwargs["thread_ts"] = thread_ts
         return self._call("chat_postMessage", **kwargs)
+
+    def upload_file(
+        self,
+        channel_id: str,
+        *,
+        file_path: Path,
+        thread_ts: str,
+        initial_comment: str | None = None,
+    ) -> dict[str, Any]:
+        """Upload a file into a thread via files.upload v2.
+
+        Args:
+            channel_id: destination channel id.
+            file_path: local path to the file to upload.
+            thread_ts: parent thread timestamp.
+            initial_comment: optional message text posted with the file.
+
+        Returns:
+            dict[str, Any]: files.upload v2 response body.
+
+        Raises:
+            ExternalServiceError: on Slack API failure.
+        """
+        kwargs: dict[str, Any] = {
+            "channel_id": channel_id,
+            "file": str(file_path),
+            "filename": file_path.name,
+            "thread_ts": thread_ts,
+        }
+        if initial_comment is not None:
+            kwargs["initial_comment"] = initial_comment
+        return self._call("files_upload_v2", **kwargs)
 
     def update_message(self, channel_id: str, ts: str, *, text: str, blocks: list[dict[str, Any]] | None = None) -> dict[str, Any]:
         """Update a bot message via chat.update.

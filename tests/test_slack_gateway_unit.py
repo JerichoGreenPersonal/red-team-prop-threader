@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 import urllib.error
 from unittest.mock import MagicMock, patch
 
@@ -12,6 +12,10 @@ from slack_sdk.errors import SlackApiError
 from red_team_prop_threader.config import Settings
 from red_team_prop_threader._errors import ConflictError, NotFoundError, ExternalServiceError, PermissionDeniedError, RetryableExternalServiceError
 from red_team_prop_threader.slack_gateway import SlackGateway
+
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 class _Resp:
@@ -107,6 +111,33 @@ def test_message_and_view_helpers(gateway: SlackGateway, client: MagicMock) -> N
     assert gateway.post_message("C1", text="hi", blocks=[{"type": "section"}], thread_ts="1.0")["ts"] == "1.1"
     assert gateway.update_message("C1", "1.1", text="bye", blocks=[])["ok"] is True
     assert gateway.get_permalink("C1", "1.1") == "https://slack.example/p"
+
+
+def test_upload_file(gateway: SlackGateway, client: MagicMock, tmp_path: Path) -> None:
+    """upload_file forwards files_upload_v2 with channel, file path, filename, and thread_ts."""
+    client.files_upload_v2.return_value = _Resp({"ok": True, "file": {"id": "Fupload"}})
+    file_path = tmp_path / "submission.jpg"
+    file_path.write_bytes(b"image-bytes")
+
+    result = gateway.upload_file("C1", file_path=file_path, thread_ts="1234.5678")
+    assert result["file"]["id"] == "Fupload"
+    client.files_upload_v2.assert_called_once_with(
+        channel_id="C1",
+        file=str(file_path),
+        filename="submission.jpg",
+        thread_ts="1234.5678",
+    )
+
+    client.files_upload_v2.reset_mock()
+    client.files_upload_v2.return_value = _Resp({"ok": True, "file": {"id": "Fupload2"}})
+    gateway.upload_file("C1", file_path=file_path, thread_ts="1234.5678", initial_comment="Post CL")
+    client.files_upload_v2.assert_called_once_with(
+        channel_id="C1",
+        file=str(file_path),
+        filename="submission.jpg",
+        thread_ts="1234.5678",
+        initial_comment="Post CL",
+    )
 
 
 def test_conversation_history_paginates(gateway: SlackGateway, client: MagicMock) -> None:
