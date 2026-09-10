@@ -11,6 +11,7 @@ from red_team_prop_threader.jobs import BatchExecutor
 from red_team_prop_threader.config import Settings
 from red_team_prop_threader.leases import ChannelLeaseRepository
 from red_team_prop_threader.repositories import Repositories
+from red_team_prop_threader.mint_from_job import process_cl_jobs
 from red_team_prop_threader.slack_gateway import SlackGateway
 
 
@@ -53,6 +54,9 @@ def run_forever(*, settings: Settings | None = None, once: bool = False) -> None
             if result is not None:
                 worked = True
                 _LOG.info("batch %s finished with status %s", result.batch_id, result.status.value)
+        
+        process_cl_jobs(cfg.reviewprep_external_links_root, slack, engine=engine)
+        
         if once:
             return
         if not worked:
