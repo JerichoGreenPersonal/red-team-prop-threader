@@ -31,7 +31,7 @@ Usage hint for create (confirm in the Slack UI if prompted): `[ShotGrid page URL
 
 ## Scope justification (method-by-method)
 
-Only bot token scopes are requested. No user-token scopes, `chat:write.public`, file-write scopes, or channel-management scopes are used.
+Only bot token scopes are requested. No user-token scopes, `chat:write.public`, or channel-management scopes are used.
 
 | Scope | Slack methods / capability | Why required |
 | --- | --- | --- |
@@ -42,6 +42,7 @@ Only bot token scopes are requested. No user-token scopes, `chat:write.public`, 
 | `groups:read` | `conversations.info`, `conversations.members` | Same as above for private channels (development and production targets may be private). |
 | `groups:history` | `conversations.history` | Same leftover-root lookup as `channels:history` for private satellite channels. |
 | `files:read` | `files.info` | Read the built-in channel-canvas file object so preflight can validate/create/rename the canvas title safely before writing. `/adopt-prop-threads` also GETs `url_private_download` with the bot token so INDEX **hrefs** (not section ids or link labels) can be parsed. |
+| `files:write` | `files.uploadV2` | ReviewPrep submission image in official thread. |
 | `users:read` | `users.info` | Resolve display names for non-notifying mentions and busy-owner copy. |
 | `im:write` | `conversations.open`, `chat.postMessage` / `chat.update` in the DM | Open and update a single private progress DM to the submitting user. |
 | `canvases:read` | `canvases.sections.lookup` | Look up existing group/header sections before indexing so updates can replace in place instead of blindly appending. |
