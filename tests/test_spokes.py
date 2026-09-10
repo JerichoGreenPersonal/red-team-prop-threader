@@ -5,7 +5,15 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING
 
-from red_team_prop_threader.spokes import permalink_parts, harvest_lookup_text, history_root_spokes, upsert_season_spoke, canvas_latest_spokes
+from red_team_prop_threader.spokes import (
+    permalink_parts,
+    harvest_lookup_text,
+    history_root_spokes,
+    upsert_season_spoke,
+    canvas_latest_spokes,
+    occupied_asset_ids,
+    decode_canvas_body,
+)
 
 
 if TYPE_CHECKING:
@@ -228,3 +236,83 @@ def test_upsert_skips_when_season_missing(tmp_path: Path) -> None:
     )
     slack_dir = tmp_path / "slack_threads"
     assert not slack_dir.exists() or not list(slack_dir.glob("*.json"))
+
+
+def test_canvas_labeled_shotgrid_and_emote_href_pairs() -> None:
+    """INDEX labels are ignored; ShotGrid href + next archives href become the spoke."""
+    md = """
+### Motorcycle Nano-Shape Prop
+- :shotgrid: [ShotGrid](https://respawn.shotgunstudio.com/detail/Asset/38862)
+- :slack3: [skydive_emote_axle_s31_v26_epic_evoconbp_roadrush](https://respawn.slack.com/archives/C02PGV4E6KV/p1778706626350199)
+"""
+    spokes = canvas_latest_spokes(md)
+    assert 38862 in spokes
+    assert spokes[38862].source == "canvas"
+    assert spokes[38862].channel_id == "C02PGV4E6KV"
+    assert spokes[38862].permalink == "https://respawn.slack.com/archives/C02PGV4E6KV/p1778706626350199"
+    assert spokes[38862].thread_ts == "1778706626.350199"
+
+
+def test_canvas_html_hrefs_pair() -> None:
+    """Canvas download may be HTML; href attributes still pair."""
+    html = (
+        '<a href="https://respawn.shotgunstudio.com/detail/Asset/38863">ShotGrid</a>'
+        '<a href="https://respawn.slack.com/archives/C02PGV4E6KV/p1778706777172689">thread</a>'
+    )
+    spokes = canvas_latest_spokes(html)
+    assert 38863 in spokes
+    assert spokes[38863].permalink.endswith("p1778706777172689")
+
+
+def test_canvas_enterprise_host_normalizes_to_respawn() -> None:
+    """Enterprise archives hrefs store respawn.slack.com."""
+    md = (
+        "https://respawn.shotgunstudio.com/detail/Asset/38868 "
+        "https://electronic-arts.enterprise.slack.com/archives/C02PGV4E6KV/p1778706626350199"
+    )
+    spokes = canvas_latest_spokes(md)
+    assert spokes[38868].permalink.startswith("https://respawn.slack.com/archives/")
+    channel, ts = permalink_parts(
+        "https://electronic-arts.enterprise.slack.com/archives/C02PGV4E6KV/p1778706626350199"
+    )
+    assert channel == "C02PGV4E6KV"
+    assert ts == "1778706626.350199"
+
+
+def test_canvas_skips_block_without_archives_href() -> None:
+    """Emote-only rows with no archives href do not produce a spoke."""
+    md = "https://respawn.shotgunstudio.com/detail/Asset/111 skydive_emote_only"
+    assert canvas_latest_spokes(md) == {}
+
+
+def test_occupied_asset_ids_reads_all_season_files(tmp_path: Path) -> None:
+    """Occupancy is any asset key under slack_threads, not one season file."""
+    root = tmp_path / "SG_Card_Links"
+    upsert_season_spoke(
+        root,
+        season_id="S31.1",
+        asset_id=38867,
+        permalink="https://respawn.slack.com/archives/C1/p1000000000000000",
+        channel_id="C1",
+        thread_ts="1.0",
+        source="search",
+        updated_at="t0",
+    )
+    upsert_season_spoke(
+        root,
+        season_id="S30",
+        asset_id=1,
+        permalink="https://respawn.slack.com/archives/C1/p1000000000000000",
+        channel_id="C1",
+        thread_ts="1.0",
+        source="canvas",
+        updated_at="t0",
+    )
+    assert occupied_asset_ids(root) == frozenset({38867, 1})
+
+
+def test_decode_canvas_body_json_envelope_harvests_strings() -> None:
+    """Quip/JSON envelopes contribute nested string fields."""
+    raw = b'{"markdown": "[ShotGrid](https://respawn.shotgunstudio.com/detail/Asset/9)"}'
+    text = decode_canvas_body(raw)
+    assert "detail/Asset/9" in text

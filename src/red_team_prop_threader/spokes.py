@@ -13,8 +13,10 @@ from dataclasses import dataclass
 __all__ = (
     "SpokeCandidate",
     "canvas_latest_spokes",
+    "decode_canvas_body",
     "harvest_lookup_text",
     "history_root_spokes",
+    "occupied_asset_ids",
     "permalink_from_ts",
     "permalink_parts",
     "upsert_season_spoke",
@@ -23,10 +25,8 @@ __all__ = (
 _LOG = logging.getLogger(__name__)
 
 _ASSET_URL_RE = re.compile(r"https://respawn\.shotgunstudio\.com/detail/Asset/(\d+)", re.I)
-_PERMALINK_RE = re.compile(r"https://respawn\.slack\.com/archives/([A-Z0-9]+)/p(\d+)", re.I)
-_CANVAS_TOKEN_RE = re.compile(
-    r"https://respawn\.shotgunstudio\.com/detail/Asset/(\d+)"
-    r"|https://respawn\.slack\.com/archives/([A-Z0-9]+)/p(\d+)\)\s*—\s*Latest",
+_ARCHIVES_RE = re.compile(
+    r"https://(?:respawn\.slack\.com|[A-Za-z0-9.-]+\.enterprise\.slack\.com)/archives/([A-Z0-9]+)/p(\d+)",
     re.I,
 )
 
@@ -44,7 +44,7 @@ class SpokeCandidate:
 
 def permalink_parts(url: str) -> tuple[str, str]:
     """Return ``(channel_id, thread_ts)`` from a slack archive permalink."""
-    match = _PERMALINK_RE.search(url or "")
+    match = _ARCHIVES_RE.search(url or "")
     if match is None:
         return "", ""
     channel_id = match.group(1)
@@ -85,22 +85,31 @@ def harvest_lookup_text(payloads: object) -> str:
 
 
 def canvas_latest_spokes(markdown: str) -> dict[int, SpokeCandidate]:
-    """Parse INDEX markdown: Latest permalink after each ShotGrid asset url."""
+    """Parse INDEX body: ShotGrid Asset href plus archives href in that block."""
+    text = markdown or ""
+    sg_matches = list(_ASSET_URL_RE.finditer(text))
     spokes: dict[int, SpokeCandidate] = {}
-    current_asset: int | None = None
-    for match in _CANVAS_TOKEN_RE.finditer(markdown or ""):
-        asset_raw = match.group(1)
-        if asset_raw:
-            current_asset = int(asset_raw)
+    for index, sg in enumerate(sg_matches):
+        block_end = sg_matches[index + 1].start() if index + 1 < len(sg_matches) else len(text)
+        block = text[sg.end() : block_end]
+        archives = list(_ARCHIVES_RE.finditer(block))
+        if not archives:
             continue
-        if current_asset is None:
-            continue
-        channel_id = match.group(2)
-        digits = match.group(3)
-        permalink = f"https://respawn.slack.com/archives/{channel_id}/p{digits}"
-        channel, thread_ts = permalink_parts(permalink)
-        spokes[current_asset] = SpokeCandidate(
-            asset_id=current_asset,
+        chosen = None
+        for match in archives:
+            tail = block[match.end() : match.end() + 80]
+            if re.search(r"—\s*Latest", tail):
+                chosen = match
+                break
+        if chosen is None:
+            chosen = archives[-1]
+        channel_id = chosen.group(1)
+        raw = f"https://respawn.slack.com/archives/{channel_id}/p{chosen.group(2)}"
+        channel, thread_ts = permalink_parts(raw)
+        permalink = permalink_from_ts(channel, thread_ts)
+        asset_id = int(sg.group(1))
+        spokes[asset_id] = SpokeCandidate(
+            asset_id=asset_id,
             permalink=permalink,
             channel_id=channel,
             thread_ts=thread_ts,
@@ -216,3 +225,41 @@ def upsert_season_spoke(
         return True
     _LOG.warning("season file %s changed during upsert; skipped", path.name)
     return False
+
+
+def occupied_asset_ids(share_root: Path) -> frozenset[int]:
+    """Return Asset ids already present in any slack_threads/*.json."""
+    folder = Path(share_root) / "slack_threads"
+    found: set[int] = set()
+    if not folder.is_dir():
+        return frozenset()
+    for path in folder.glob("*.json"):
+        try:
+            data: Any = json.loads(path.read_text(encoding="utf-8-sig"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        assets = data.get("assets")
+        if not isinstance(assets, dict):
+            continue
+        for key in assets:
+            try:
+                found.add(int(str(key).strip()))
+            except ValueError:
+                continue
+    return frozenset(found)
+
+
+def decode_canvas_body(raw: bytes) -> str:
+    """Decode canvas download bytes; harvest strings from a JSON envelope."""
+    text = raw.decode("utf-8-sig", errors="replace")
+    stripped = text.lstrip()
+    if stripped.startswith("{") or stripped.startswith("["):
+        try:
+            data: Any = json.loads(text)
+        except json.JSONDecodeError:
+            return text
+        harvested = harvest_lookup_text(data)
+        return harvested if harvested.strip() else text
+    return text
