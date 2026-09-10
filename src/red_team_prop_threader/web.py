@@ -6,6 +6,7 @@ import sys
 from time import time
 from typing import TYPE_CHECKING, Any
 import logging
+from pathlib import Path
 from datetime import datetime, timezone
 import threading
 
@@ -18,6 +19,7 @@ from slack_sdk.socket_mode.response import SocketModeResponse
 from slack_bolt.adapter.socket_mode.internals import run_bolt_app, send_response
 
 from red_team_prop_threader.db import build_engine
+from red_team_prop_threader.adopt import AdoptService
 from red_team_prop_threader.edits import EditService
 from red_team_prop_threader.canvas import CanvasService
 from red_team_prop_threader.config import Settings
@@ -153,7 +155,15 @@ def create_app(settings: Settings | None = None, *, engine: Engine | None = None
             primary_asset_index_canvas_id=cfg.primary_asset_index_canvas_id,
         )
 
-    register_listeners(bolt_app, workflow_factory, edit_factory)
+    def adopt_factory() -> AdoptService:
+        return AdoptService(
+            canvas=CanvasService(slack),
+            slack=slack,
+            shotgrid=shotgrid,
+            share_root=Path(cfg.reviewprep_external_links_root),
+        )
+
+    register_listeners(bolt_app, workflow_factory, edit_factory, adopt_factory)
     handler = SlackRequestHandler(bolt_app)
 
     app = Flask(__name__)

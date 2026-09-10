@@ -11,8 +11,8 @@ slack-app-manifest.yaml
 ```
 
 App display name: **RED Team Prop Threader**  
-Slash command: `/create-prop-threads`  
-Usage hint (confirm in the Slack UI if prompted): `[ShotGrid page URL]`
+Slash commands: `/create-prop-threads`, `/adopt-prop-threads`  
+Usage hint for create (confirm in the Slack UI if prompted): `[ShotGrid page URL]`
 
 ## Create the app from the manifest
 
@@ -35,11 +35,13 @@ Only bot token scopes are requested. No user-token scopes, `chat:write.public`, 
 
 | Scope | Slack methods / capability | Why required |
 | --- | --- | --- |
-| `commands` | Slash command `/create-prop-threads` | Receive the prop-thread creation command and optional ShotGrid page URL. |
-| `chat:write` | `chat.postMessage`, `chat.update`, `chat.getPermalink` | Post one root message per asset, update bot messages (progress/edit flows), and obtain permalinks for canvas indexing. The bot posts only in channels where it is a member. |
+| `commands` | Slash commands `/create-prop-threads`, `/adopt-prop-threads` | Receive the prop-thread creation command (optional ShotGrid page URL) and the satellite-channel adopt command that writes ReviewPrep Slack-thread links. |
+| `chat:write` | `chat.postMessage`, `chat.update`, `chat.getPermalink`, `chat.postEphemeral` | Post one root message per asset, update bot messages (progress/edit flows), obtain permalinks for canvas indexing, and send adopt summaries. The bot posts only in channels where it is a member. |
 | `channels:read` | `conversations.info`, `conversations.members` | Read public-channel metadata and membership when the bot is invited to a public target channel. Membership is used to validate mentioned users. |
+| `channels:history` | `conversations.history` | Read public-channel root messages when `/adopt-prop-threads` looks up leftover ShotGrid asset threads not listed as Latest on INDEX OF PROP REQUESTS. |
 | `groups:read` | `conversations.info`, `conversations.members` | Same as above for private channels (development and production targets may be private). |
-| `files:read` | `files.info` | Read the built-in channel-canvas file object so preflight can validate/create/rename the canvas title safely before writing. |
+| `groups:history` | `conversations.history` | Same leftover-root lookup as `channels:history` for private satellite channels. |
+| `files:read` | `files.info` | Read the built-in channel-canvas file object so preflight can validate/create/rename the canvas title safely before writing. `/adopt-prop-threads` also GETs `url_private_download` with the bot token so INDEX **hrefs** (not section ids or link labels) can be parsed. |
 | `users:read` | `users.info` | Resolve display names for non-notifying mentions and busy-owner copy. |
 | `im:write` | `conversations.open`, `chat.postMessage` / `chat.update` in the DM | Open and update a single private progress DM to the submitting user. |
 | `canvases:read` | `canvases.sections.lookup` | Look up existing group/header sections before indexing so updates can replace in place instead of blindly appending. |
@@ -67,7 +69,7 @@ Rotation:
 2. Rotate the App-Level Token if Socket Mode credentials must change.
 3. Update approved secrets storage.
 4. Restart web and worker processes so they load the new values.
-5. Re-verify `/create-prop-threads` in the development channel.
+5. Re-verify `/create-prop-threads` in the development channel. After adding `channels:history` / `groups:history` or `/adopt-prop-threads`, reinstall the app and re-invite it to private/Connect channels before verifying `/adopt-prop-threads`.
 
 ## Private-channel invitation
 

@@ -171,6 +171,40 @@ def test_register_listeners_command_and_nav_paths() -> None:
     workflow.open_confirmation.assert_called()
 
 
+def test_register_listeners_adopt_command() -> None:
+    """Slash /adopt-prop-threads acks then runs AdoptService."""
+    app = MagicMock()
+    registered: dict[str, Any] = {}
+
+    def _wrap(kind: str):
+        def deco_factory(name: str):
+            def deco(fn: Any) -> Any:
+                registered[f"{kind}:{name}"] = fn
+                return fn
+
+            return deco
+
+        return deco_factory
+
+    app.command.side_effect = _wrap("command")
+    app.action.side_effect = _wrap("action")
+    app.view.side_effect = _wrap("view")
+
+    adopt = MagicMock()
+    adopt.run.return_value = MagicMock(
+        adopted=(1,), unmatched=(), history_available=True, already_present=(), detail=None
+    )
+    register_listeners(app, MagicMock, None, lambda: adopt)
+    ack = MagicMock()
+    client = MagicMock()
+    registered["command:/adopt-prop-threads"](
+        ack, {"channel_id": "C1", "user_id": "U1"}, client, MagicMock()
+    )
+    ack.assert_called_once()
+    adopt.run.assert_called_once_with("C1")
+    client.chat_postEphemeral.assert_called_once()
+
+
 def test_view_submits_ack_before_slow_work() -> None:
     """Import, asset confirm, and post-threads must ack before Slack API work."""
     app = MagicMock()

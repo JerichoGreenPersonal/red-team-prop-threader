@@ -34,6 +34,8 @@ _ENV_KEYS = (
     "TUNNEL_COMMAND",
     "TUNNEL_HEALTH_URL",
     "PRIMARY_ASSET_INDEX_CHANNEL_ID",
+    "PRIMARY_ASSET_INDEX_CANVAS_ID",
+    "REVIEWPREP_EXTERNAL_LINKS_ROOT",
 )
 
 
@@ -209,6 +211,22 @@ def test_primary_asset_index_canvas_id_empty_uses_channel_canvas(monkeypatch: py
     monkeypatch.setenv("PRIMARY_ASSET_INDEX_CANVAS_ID", "")
     settings = Settings.from_env()
     assert settings.primary_asset_index_canvas_id is None
+
+
+def test_reviewprep_external_links_root_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    """REVIEWPREP_EXTERNAL_LINKS_ROOT defaults to the studio SG_Card_Links share."""
+    _set_required(monkeypatch)
+    monkeypatch.delenv("REVIEWPREP_EXTERNAL_LINKS_ROOT", raising=False)
+    settings = Settings.from_env()
+    assert settings.reviewprep_external_links_root.endswith("SG_Card_Links")
+
+
+def test_reviewprep_external_links_root_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    """REVIEWPREP_EXTERNAL_LINKS_ROOT can be overridden."""
+    _set_required(monkeypatch)
+    monkeypatch.setenv("REVIEWPREP_EXTERNAL_LINKS_ROOT", r"D:\links")
+    settings = Settings.from_env()
+    assert settings.reviewprep_external_links_root == r"D:\links"
 
 
 def test_settings_defaults(monkeypatch: pytest.MonkeyPatch) -> None:

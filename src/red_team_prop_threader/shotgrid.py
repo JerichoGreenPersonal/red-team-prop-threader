@@ -352,6 +352,60 @@ class ShotGridGateway:
 
         return result
 
+    def find_asset_labels(self, asset_ids: tuple[int, ...]) -> dict[int, tuple[list[str], list[str], str]]:
+        """Return jira version names, tags, and code for each asset id.
+
+        Args:
+            asset_ids: shotgrid asset entity ids.
+
+        Returns:
+            dict[int, tuple[list[str], list[str], str]]: jira labels, tags, code.
+
+        Raises:
+            ExternalServiceError: if the find call fails.
+        """
+        ids = [int(asset_id) for asset_id in asset_ids if int(asset_id) > 0]
+        if not ids:
+            return {}
+        records: list[Any] = []
+        chunk_size = 100
+        try:
+            for start in range(0, len(ids), chunk_size):
+                chunk = ids[start : start + chunk_size]
+                page = self._client.find("Asset", [["id", "in", chunk]], ["id", "code", "sg_jira_versions", "tag_list"])
+                if page:
+                    records.extend(page)
+        except Exception:
+            _LOG.warning("shotgrid find assets failed count=%s error skipped", len(ids))
+            raise ExternalServiceError("shotgrid asset find failed") from None
+        result: dict[int, tuple[list[str], list[str], str]] = {}
+        for record in records:
+            if not isinstance(record, dict):
+                continue
+            try:
+                asset_id = int(record.get("id"))
+            except (TypeError, ValueError):
+                continue
+            code = str(record.get("code") or "").strip()
+            result[asset_id] = (_entity_names(record.get("sg_jira_versions")), _entity_names(record.get("tag_list")), code)
+        return result
+
+
+def _entity_names(raw: object) -> list[str]:
+    """Extract display names from shotgun multi-entity or tag fields."""
+    names: list[str] = []
+    if isinstance(raw, list):
+        items = raw
+    elif raw:
+        items = [raw]
+    else:
+        items = []
+    for item in items:
+        name = str(item.get("name") or item.get("code") or "").strip() if isinstance(item, dict) else str(item or "").strip()
+        if name:
+            names.append(name)
+    return names
+
 
 def _safe_export_failure_message(page_id: int, exc: BaseException) -> str:
     """Map a ShotGrid export exception to a user-safe message.
