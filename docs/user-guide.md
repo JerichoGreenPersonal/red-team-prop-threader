@@ -220,13 +220,14 @@ Run this in a satellite channel whose canvas is titled **INDEX OF PROP REQUESTS*
 /adopt-prop-threads
 ```
 
-1. Latest permalink per asset on this channel's INDEX
+1. Download this channel's INDEX file and read **link targets** (ShotGrid Asset URL + Slack thread URL on that block). Link labels such as `ShotGrid` or an emote code are ignored. An explicit `— Latest` marker still wins when Threader minted prior+Latest lines.
 2. Leftover **root** messages in this channel that contain a ShotGrid Asset URL (replies are ignored)
 3. Season from ShotGrid Jira / tags; assets with no season are reported unmatched
+4. Asset ids already in `slack_threads` are left alone (`Already present`). To point an asset at a different INDEX thread, delete that asset key from the season JSON and run adopt again.
 
-You will get an ephemeral count of adopted vs unmatched. If Slack Connect hides channel history, INDEX Latest links still adopt.
+You will get an ephemeral count of **new** writes vs already present vs unmatched. If the INDEX file cannot be downloaded, the reply includes `INDEX file unread` and history leftovers may still fill missing ids. If Slack Connect hides channel history, INDEX hrefs still adopt.
 
-Do not run a second bot instance on a laptop; adopt on the always-on host after an admin reinstalls with `channels:history` and `groups:history`.
+Do not run a second bot instance on a laptop; adopt on the always-on host.
 
 ---
 

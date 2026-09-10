@@ -41,7 +41,7 @@ Only bot token scopes are requested. No user-token scopes, `chat:write.public`, 
 | `channels:history` | `conversations.history` | Read public-channel root messages when `/adopt-prop-threads` looks up leftover ShotGrid asset threads not listed as Latest on INDEX OF PROP REQUESTS. |
 | `groups:read` | `conversations.info`, `conversations.members` | Same as above for private channels (development and production targets may be private). |
 | `groups:history` | `conversations.history` | Same leftover-root lookup as `channels:history` for private satellite channels. |
-| `files:read` | `files.info` | Read the built-in channel-canvas file object so preflight can validate/create/rename the canvas title safely before writing. |
+| `files:read` | `files.info` | Read the built-in channel-canvas file object so preflight can validate/create/rename the canvas title safely before writing. `/adopt-prop-threads` also GETs `url_private_download` with the bot token so INDEX **hrefs** (not section ids or link labels) can be parsed. |
 | `users:read` | `users.info` | Resolve display names for non-notifying mentions and busy-owner copy. |
 | `im:write` | `conversations.open`, `chat.postMessage` / `chat.update` in the DM | Open and update a single private progress DM to the submitting user. |
 | `canvases:read` | `canvases.sections.lookup` | Look up existing group/header sections before indexing so updates can replace in place instead of blindly appending. |
