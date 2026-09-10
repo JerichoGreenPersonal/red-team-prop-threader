@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 import contextlib
 from dataclasses import dataclass
 
-from red_team_prop_threader._errors import NotFoundError, ExternalServiceError
+from red_team_prop_threader._errors import NotFoundError, ExternalServiceError, RetryableExternalServiceError
 
 
 if TYPE_CHECKING:
@@ -35,7 +35,7 @@ class SlackClJob:
     channel: str | None = None
     group_title: str | None = None
     creative_stakeholder: str | None = None
-    additional_stakeholders: list[str] | None = None
+    additional_stakeholders: tuple[str, ...] | None = None
     spoke_channel_id: str | None = None
     spoke_thread_ts: str | None = None
 
@@ -62,6 +62,9 @@ def parse_job(path: Path) -> SlackClJob | None:
     cls_raw = data.get("cls", [])
     cls = tuple(cls_raw) if isinstance(cls_raw, list) else ()
 
+    stakeholders_raw = data.get("additional_stakeholders")
+    additional_stakeholders = tuple(stakeholders_raw) if isinstance(stakeholders_raw, list) else None
+
     return SlackClJob(
         job_id=job_id.strip(),
         asset_id=asset_id.strip(),
@@ -74,7 +77,7 @@ def parse_job(path: Path) -> SlackClJob | None:
         channel=data.get("channel"),
         group_title=data.get("group_title"),
         creative_stakeholder=data.get("creative_stakeholder"),
-        additional_stakeholders=data.get("additional_stakeholders"),
+        additional_stakeholders=additional_stakeholders,
         spoke_channel_id=data.get("spoke_channel_id"),
         spoke_thread_ts=data.get("spoke_thread_ts"),
     )
@@ -100,10 +103,10 @@ def sent_has(root: Path, asset_id: str, cl: int) -> bool:
         return False
     if not isinstance(data, dict):
         return False
-    cl_str = str(cl)
-    asset_ids = data.get(cl_str, [])
-    if isinstance(asset_ids, list):
-        return asset_id in asset_ids
+    
+    asset_entry = data.get(asset_id, [])
+    if isinstance(asset_entry, list):
+        return str(cl) in asset_entry
     return False
 
 
@@ -119,15 +122,15 @@ def stamp_sent(root: Path, asset_id: str, cls: Sequence[int]) -> None:
                 raw = json.loads(sent_path.read_text(encoding="utf-8"))
                 if isinstance(raw, dict):
                     data = raw
-            except (json.JSONDecodeError, OSError):
+            except json.JSONDecodeError:
                 pass
         
-        for cl in cls:
-            cl_str = str(cl)
-            if cl_str not in data:
-                data[cl_str] = []
-            if asset_id not in data[cl_str]:
-                data[cl_str].append(asset_id)
+        cl_strs = [str(c) for c in cls]
+        if asset_id not in data:
+            data[asset_id] = []
+        for c in cl_strs:
+            if c not in data[asset_id]:
+                data[asset_id].append(c)
         
         tmp = sent_path.with_suffix(".json.tmp")
         tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
@@ -150,10 +153,21 @@ def write_failed(root: Path, job_id: str, asset_id: str, error: str) -> None:
         "error": error,
         "at": datetime.now(timezone.utc).isoformat(),
     }
-    line = json.dumps(entry) + "\n"
     
-    with failed_path.open("a", encoding="utf-8") as f:
-        f.write(line)
+    data = []
+    if failed_path.is_file():
+        try:
+            raw = json.loads(failed_path.read_text(encoding="utf-8"))
+            if isinstance(raw, list):
+                data = raw
+        except (json.JSONDecodeError, OSError):
+            pass
+            
+    data.append(entry)
+    
+    tmp = failed_path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    tmp.replace(failed_path)
 
 
 def resolve_channel(gateway: SlackGateway, raw: str) -> str:
@@ -179,6 +193,8 @@ def resolve_channel(gateway: SlackGateway, raw: str) -> str:
             
             try:
                 response = gateway._call("conversations_list", **kwargs)
+            except RetryableExternalServiceError:
+                raise
             except ExternalServiceError as e:
                 raise NotFoundError(f"failed to list channels: {e}") from e
                 

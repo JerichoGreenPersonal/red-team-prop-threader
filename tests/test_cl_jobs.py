@@ -4,7 +4,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from red_team_prop_threader._errors import NotFoundError
+from red_team_prop_threader._errors import NotFoundError, RetryableExternalServiceError
 from red_team_prop_threader.cl_jobs import sent_has, parse_job, list_inbox, stamp_sent, move_to_done, write_failed, resolve_channel
 from red_team_prop_threader.slack_gateway import SlackGateway
 
@@ -21,7 +21,8 @@ def test_parse_job(tmp_path: "Path") -> None:
         "asset_id": "asset_123",
         "cls": [{"label": "CL", "number": 12345}],
         "channel": "#r5-test",
-        "image_filename": "job_123.jpg"
+        "image_filename": "job_123.jpg",
+        "additional_stakeholders": ["jgreen2", "someone"]
     }), encoding="utf-8")
     
     job = parse_job(job_path)
@@ -32,6 +33,7 @@ def test_parse_job(tmp_path: "Path") -> None:
     assert job.image_filename == "job_123.jpg"
     assert len(job.cls) == 1
     assert job.cls[0] == {"label": "CL", "number": 12345}
+    assert job.additional_stakeholders == ("jgreen2", "someone")
 
 
 def test_parse_job_invalid(tmp_path: "Path") -> None:
@@ -64,7 +66,8 @@ def test_sent_has(tmp_path: "Path") -> None:
     sent_path = tmp_path / "slack_jobs" / "sent.json"
     sent_path.parent.mkdir(parents=True)
     sent_path.write_text(json.dumps({
-        "12345": ["asset_1", "asset_2"]
+        "asset_1": ["12345"],
+        "asset_2": ["12345"]
     }), encoding="utf-8")
     
     assert sent_has(tmp_path, "asset_1", 12345) is True
@@ -78,23 +81,25 @@ def test_stamp_sent(tmp_path: "Path") -> None:
     
     sent_path = tmp_path / "slack_jobs" / "sent.json"
     data = json.loads(sent_path.read_text(encoding="utf-8"))
-    assert "12345" in data
-    assert "67890" in data
-    assert "asset_1" in data["12345"]
+    assert "asset_1" in data
+    assert "12345" in data["asset_1"]
+    assert "67890" in data["asset_1"]
     
     stamp_sent(tmp_path, "asset_2", [12345])
     data = json.loads(sent_path.read_text(encoding="utf-8"))
-    assert "asset_2" in data["12345"]
-    assert "asset_1" in data["12345"]
+    assert "asset_2" in data
+    assert "12345" in data["asset_2"]
+    assert "12345" in data["asset_1"]
 
 
 def test_write_failed(tmp_path: "Path") -> None:
     """Test writing a failure record."""
     write_failed(tmp_path, "job_1", "asset_1", "timeout")
     failed_path = tmp_path / "slack_jobs" / "failed.json"
-    lines = failed_path.read_text(encoding="utf-8").strip().split("\n")
-    assert len(lines) == 1
-    entry = json.loads(lines[0])
+    data = json.loads(failed_path.read_text(encoding="utf-8"))
+    assert isinstance(data, list)
+    assert len(data) == 1
+    entry = data[0]
     assert entry["job_id"] == "job_1"
     assert entry["asset_id"] == "asset_1"
     assert entry["error"] == "timeout"
@@ -123,6 +128,10 @@ def test_resolve_channel() -> None:
         
     with pytest.raises(NotFoundError):
         resolve_channel(gateway, "invalid")
+        
+    gateway._call.side_effect = RetryableExternalServiceError("rate limited")
+    with pytest.raises(RetryableExternalServiceError):
+        resolve_channel(gateway, "#ratelimited")
 
 
 def test_move_to_done(tmp_path: "Path") -> None:
