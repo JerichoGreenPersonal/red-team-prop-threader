@@ -294,13 +294,16 @@ def process_job(job_path: Path, job: SlackClJob, *, slack: SlackGateway, season_
             image_path = job_path.parent / job.image_filename
             if image_path.is_file():
                 slack.upload_file(channel_id, file_path=image_path, thread_ts=thread_ts)
+            else:
+                write_failed(season_root, job.job_id, job.asset_id, f"image file missing: {job.image_filename}")
+                return
 
         # 6. stamp_sent
         if job.cls:
             stamp_sent(season_root, job.asset_id, job.cls)
         move_to_done(season_root, job_path)
 
-    except (ExternalServiceError, RetryableExternalServiceError) as e:
+    except Exception as e:
         # 4 & 7. Write failed, do not stamp sent, leave inbox file
         write_failed(season_root, job.job_id, job.asset_id, str(e))
 

@@ -82,6 +82,90 @@ def test_upload_fail_does_not_stamp(tmp_path: Path) -> None:
     # Should leave inbox file
     assert job_path.exists()
 
+def test_missing_image_file_writes_failed(tmp_path: Path) -> None:
+    """Test missing image file on disk writes failed and skips stamp."""
+    inbox = tmp_path / "slack_jobs" / "inbox"
+    inbox.mkdir(parents=True)
+    
+    job_path = inbox / "job_missing_img.json"
+    job_data = {
+        "job_id": "job_miss",
+        "asset_id": "127",
+        "cls": [104],
+        "body": "Hello 5",
+        "spoke_channel_id": "C1",
+        "spoke_thread_ts": "100.1",
+        "image_filename": "job_missing.jpg"
+    }
+    job_path.write_text(json.dumps(job_data))
+    # Note: We do NOT write the actual image file to disk
+    
+    slack = MagicMock(spec=SlackGateway)
+    slack._call.return_value = {"messages": []}
+    
+    process_cl_jobs(tmp_path, slack)
+    
+    # Post message was likely called, upload file skipped
+    slack.upload_file.assert_not_called()
+    
+    # Should not stamp sent
+    assert not (tmp_path / "slack_jobs" / "sent.json").exists()
+    
+    failed = json.loads((tmp_path / "slack_jobs" / "failed.json").read_text())
+    assert failed[0]["error"] == "image file missing: job_missing.jpg"
+    assert job_path.exists()
+    assert failed[0]["job_id"] == "job_miss"
+    assert failed[0]["asset_id"] == "127"
+
+def test_broad_exception_caught(tmp_path: Path) -> None:
+    """Test broad exception does not abort loop."""
+    inbox = tmp_path / "slack_jobs" / "inbox"
+    inbox.mkdir(parents=True)
+    
+    # Create two jobs. First raises ValueError from mock.
+    job_path1 = inbox / "job_err.json"
+    job_data1 = {
+        "job_id": "job_err",
+        "asset_id": "128",
+        "spoke_channel_id": "C1",
+        "spoke_thread_ts": "100.1",
+        "body": "err",
+        "image_filename": ""
+    }
+    job_path1.write_text(json.dumps(job_data1))
+    
+    job_path2 = inbox / "job_ok.json"
+    job_data2 = {
+        "job_id": "job_ok",
+        "asset_id": "129",
+        "spoke_channel_id": "C1",
+        "spoke_thread_ts": "100.1",
+        "body": "ok",
+        "image_filename": ""
+    }
+    job_path2.write_text(json.dumps(job_data2))
+    
+    slack = MagicMock(spec=SlackGateway)
+    slack._call.return_value = {"messages": []}
+    
+    call_count = 0
+    def _post(*args, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            raise ValueError("unexpected sdk error")
+        return {"ts": "100.1"}
+    slack.post_message.side_effect = _post
+    
+    process_cl_jobs(tmp_path, slack)
+    
+    failed = json.loads((tmp_path / "slack_jobs" / "failed.json").read_text())
+    assert failed[0]["error"] == "unexpected sdk error"
+    
+    # The second job should have processed successfully
+    assert not job_path2.exists()
+    assert (tmp_path / "slack_jobs" / "done" / "job_ok.json").exists()
+
 def test_reply_already_posted_skips_post_message(tmp_path: Path) -> None:
     """Test reply already posted skips post message."""
     inbox = tmp_path / "slack_jobs" / "inbox"
