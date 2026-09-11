@@ -39,6 +39,55 @@ def test_parse_job(tmp_path: "Path") -> None:
     assert job.additional_stakeholders == ("jgreen2", "someone")
 
 
+def test_parse_job_reviewprep_242_handles_not_ids(tmp_path: "Path") -> None:
+    """ReviewPrep 2.4.2 jobs use handles; *_id keys are ignored and not required."""
+    job_path = tmp_path / "job_242.json"
+    job_path.write_text(
+        json.dumps({
+            "job_id": "uuid-123",
+            "asset_id": 777,
+            "version_id": 123,
+            "season_id": "S2",
+            "cls": [{"label": "WIP CL", "number": 12345}],
+            "body": "canned line",
+            "template_id": "default",
+            "image_filename": "uuid-123.jpg",
+            "channel": "C777",
+            "group_title": "DB Mint Test",
+            "creative_stakeholder": "@alice",
+            "additional_stakeholders": ["U012ABC"],
+            "spoke_channel_id": "C777",
+            "spoke_thread_ts": "777.7",
+            "creative_stakeholder_id": "UWRONG",
+            "ic_poc_id": "UALSOWRONG",
+        }),
+        encoding="utf-8",
+    )
+
+    job = parse_job(job_path)
+    assert job is not None
+    assert job.creative_stakeholder == "@alice"
+    assert job.additional_stakeholders == ("U012ABC",)
+    assert job.ic_poc is None
+    assert job.additional_ics is None
+    assert not hasattr(job, "creative_stakeholder_id")
+    assert not hasattr(job, "ic_poc_id")
+
+
+def test_parse_job_optional_ic_poc_handles(tmp_path: "Path") -> None:
+    """Later jobs may add ic_poc / additional_ics handles without requiring *_id."""
+    job_path = tmp_path / "job_ic.json"
+    job_path.write_text(
+        json.dumps({"job_id": "job_ic", "asset_id": "1", "creative_stakeholder": "", "ic_poc": "@alice", "additional_ics": ["bob"]}), encoding="utf-8"
+    )
+
+    job = parse_job(job_path)
+    assert job is not None
+    assert job.creative_stakeholder == ""
+    assert job.ic_poc == "@alice"
+    assert job.additional_ics == ("bob",)
+
+
 def test_parse_job_invalid(tmp_path: "Path") -> None:
     """Test parsing an invalid job JSON."""
     job_path = tmp_path / "job2.json"

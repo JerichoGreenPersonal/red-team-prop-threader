@@ -36,6 +36,8 @@ class SlackClJob:
     group_title: str | None = None
     creative_stakeholder: str | None = None
     additional_stakeholders: tuple[str, ...] | None = None
+    ic_poc: str | None = None
+    additional_ics: tuple[str, ...] | None = None
     spoke_channel_id: str | None = None
     spoke_thread_ts: str | None = None
 
@@ -71,19 +73,17 @@ def parse_job(path: Path) -> SlackClJob | None:
     if isinstance(cls_raw, list):
         for c in cls_raw:
             if isinstance(c, dict) and "number" in c:
-                try:
+                with contextlib.suppress(ValueError, TypeError):
                     parsed_cls.append(int(c["number"]))
-                except (ValueError, TypeError):
-                    pass
             else:
-                try:
+                with contextlib.suppress(ValueError, TypeError):
                     parsed_cls.append(int(c))
-                except (ValueError, TypeError):
-                    pass
     cls = tuple(parsed_cls)
 
     stakeholders_raw = data.get("additional_stakeholders")
-    additional_stakeholders = tuple(stakeholders_raw) if isinstance(stakeholders_raw, list) else None
+    additional_stakeholders = tuple(str(item) for item in stakeholders_raw) if isinstance(stakeholders_raw, list) else None
+    ics_raw = data.get("additional_ics")
+    additional_ics = tuple(str(item) for item in ics_raw) if isinstance(ics_raw, list) else None
 
     return SlackClJob(
         job_id=job_id.strip(),
@@ -96,8 +96,10 @@ def parse_job(path: Path) -> SlackClJob | None:
         image_filename=data.get("image_filename"),
         channel=data.get("channel"),
         group_title=data.get("group_title"),
-        creative_stakeholder=data.get("creative_stakeholder"),
+        creative_stakeholder=data.get("creative_stakeholder") if isinstance(data.get("creative_stakeholder"), str) else None,
         additional_stakeholders=additional_stakeholders,
+        ic_poc=data.get("ic_poc") if isinstance(data.get("ic_poc"), str) else None,
+        additional_ics=additional_ics,
         spoke_channel_id=data.get("spoke_channel_id"),
         spoke_thread_ts=data.get("spoke_thread_ts"),
     )

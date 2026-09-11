@@ -3,14 +3,15 @@
 from __future__ import annotations
 
 import json
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 import logging
 from datetime import datetime, timezone
+from dataclasses import dataclass
 
 from red_team_prop_threader.spokes import occupied_asset_ids, upsert_season_spoke
 from red_team_prop_threader._errors import NotFoundError, ExternalServiceError, RetryableExternalServiceError
 from red_team_prop_threader.cl_jobs import sent_has, parse_job, list_inbox, stamp_sent, move_to_done, write_failed, resolve_channel
-from red_team_prop_threader.validation import normalize_group_title
+from red_team_prop_threader.validation import normalize_group_title, validate_channel_members
 
 
 if TYPE_CHECKING:
@@ -19,13 +20,159 @@ if TYPE_CHECKING:
     from sqlalchemy.engine import Engine
 
     from red_team_prop_threader.cl_jobs import SlackClJob
-    from red_team_prop_threader.slack_gateway import SlackGateway
     from red_team_prop_threader.shotgrid import ShotGridGateway
+    from red_team_prop_threader.slack_gateway import SlackGateway
 
 
 __all__ = ("process_cl_jobs", "process_job", "reply_already_posted")
 
 _LOG = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True, slots=True)
+class _ResolvedJobPeople:
+    """slack ids mapped from a Post CL job after handle resolve and membership check."""
+
+    creative_stakeholder_id: str
+    additional_stakeholder_ids: tuple[str, ...]
+    ic_poc_id: str
+    additional_ic_ids: tuple[str, ...]
+
+
+def _is_slack_user_id(value: str) -> bool:
+    """Return True when *value* looks like a Slack user or guest id.
+
+    Args:
+        value: job handle or id string.
+
+    Returns:
+        bool: True for ``U…`` / ``W…`` ids.
+    """
+    return len(value) > 1 and value[0] in {"U", "W"} and value[1:].isalnum()
+
+
+def _cached_user_info(slack: SlackGateway, member_id: str, info_cache: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    """Return cached ``users.info`` for *member_id*, fetching once on miss.
+
+    Args:
+        slack: slack gateway.
+        member_id: channel member slack id.
+        info_cache: mutable cache of user objects keyed by slack id.
+
+    Returns:
+        dict[str, Any]: user object, or empty dict when lookup fails.
+    """
+    if member_id not in info_cache:
+        try:
+            info_cache[member_id] = slack.get_user_info(member_id)
+        except ExternalServiceError:
+            info_cache[member_id] = {}
+    return info_cache[member_id]
+
+
+def _resolve_job_person(raw: str | None, *, members: set[str], slack: SlackGateway, info_cache: dict[str, dict[str, Any]]) -> str:
+    """Resolve a job handle or slack id to a candidate user id.
+
+    Membership is not applied here. ``@username`` / bare username is matched
+    against channel members' ``name``. ``U…`` / ``W…`` values pass through.
+
+    Args:
+        raw: job field value from ReviewPrep (handle or slack id).
+        members: slack user ids in the target channel.
+        slack: slack gateway for ``users.info``.
+        info_cache: mutable cache of user objects keyed by slack id.
+
+    Returns:
+        str: candidate slack id, or empty string when missing or unmatched.
+    """
+    handle = str(raw or "").strip()
+    if not handle:
+        return ""
+    if _is_slack_user_id(handle):
+        return handle
+    name = handle.lstrip("@").lower()
+    if not name:
+        return ""
+    for member_id in members:
+        info = _cached_user_info(slack, member_id, info_cache)
+        if str(info.get("name") or "").lower() == name:
+            return member_id
+    return ""
+
+
+def _unique_member_ids(ids: list[str], *, missing: set[str], exclude: set[str]) -> tuple[str, ...]:
+    """Keep first-seen ids that survived the member check.
+
+    Args:
+        ids: resolved ids in job order.
+        missing: ids rejected by ``validate_channel_members``.
+        exclude: ids already assigned to another role.
+
+    Returns:
+        tuple[str, ...]: unique member ids.
+    """
+    seen = set(exclude)
+    out: list[str] = []
+    for uid in ids:
+        if not uid or uid in missing or uid in seen:
+            continue
+        seen.add(uid)
+        out.append(uid)
+    return tuple(out)
+
+
+def _map_job_people(job: SlackClJob, *, members: set[str], slack: SlackGateway, info_cache: dict[str, dict[str, Any]]) -> _ResolvedJobPeople:
+    """Map job handles to internal slack ids, then drop non-members.
+
+    Job JSON keeps ``creative_stakeholder`` / ``additional_stakeholders`` (and
+    optional ``ic_poc`` / ``additional_ics``) as handles. This does not read
+    ``*_id`` keys from the job.
+
+    Args:
+        job: parsed inbox job.
+        members: slack user ids in the target channel.
+        slack: slack gateway.
+        info_cache: mutable cache of user objects keyed by slack id.
+
+    Returns:
+        _ResolvedJobPeople: member ids for snapshots and message context.
+    """
+    creative = _resolve_job_person(job.creative_stakeholder, members=members, slack=slack, info_cache=info_cache)
+    additional = [_resolve_job_person(item, members=members, slack=slack, info_cache=info_cache) for item in job.additional_stakeholders or ()]
+    ic_poc = _resolve_job_person(job.ic_poc, members=members, slack=slack, info_cache=info_cache)
+    additional_ics = [_resolve_job_person(item, members=members, slack=slack, info_cache=info_cache) for item in job.additional_ics or ()]
+    selected = {uid for uid in (creative, *additional, ic_poc, *additional_ics) if uid}
+    missing = validate_channel_members(selected, members)
+    creative_stakeholder_id = "" if (not creative or creative in missing) else creative
+    ic_poc_id = "" if (not ic_poc or ic_poc in missing) else ic_poc
+    return _ResolvedJobPeople(
+        creative_stakeholder_id=creative_stakeholder_id,
+        additional_stakeholder_ids=_unique_member_ids(additional, missing=missing, exclude={creative_stakeholder_id}),
+        ic_poc_id=ic_poc_id,
+        additional_ic_ids=_unique_member_ids(additional_ics, missing=missing, exclude={ic_poc_id}),
+    )
+
+
+def _display_name_from_cache(uid: str, slack: SlackGateway, info_cache: dict[str, dict[str, Any]]) -> str:
+    """Return a slack display name for *uid*, or the id when unknown.
+
+    Args:
+        uid: slack user id.
+        slack: slack gateway.
+        info_cache: mutable cache of user objects keyed by slack id.
+
+    Returns:
+        str: display name, or *uid* when lookup fails.
+    """
+    if not uid:
+        return ""
+    info = _cached_user_info(slack, uid, info_cache)
+    profile = info.get("profile") if isinstance(info.get("profile"), dict) else {}
+    for key in ("display_name", "real_name"):
+        value = profile.get(key) if isinstance(profile, dict) else None
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return uid
 
 
 def reply_already_posted(gateway: SlackGateway, channel_id: str, thread_ts: str, body: str) -> bool:
@@ -73,8 +220,6 @@ def process_job(
     workspace_id: str = "W1",
 ) -> None:
     """Process a single SlackClJob."""
-    from typing import Any
-
     # 1. If all cls already sent -> move to done, return
     if job.cls and all(sent_has(season_root, job.asset_id, cl) for cl in job.cls):
         move_to_done(season_root, job_path)
@@ -134,94 +279,48 @@ def process_job(
                 ).scalar_one_or_none()
 
                 now = datetime.now(timezone.utc)
+                try:
+                    members = set(slack.get_conversation_members(channel_id))
+                except ExternalServiceError:
+                    members = set()
+                info_cache: dict[str, dict[str, Any]] = {}
+                people = _map_job_people(job, members=members, slack=slack, info_cache=info_cache)
+                creative_stakeholder_id = people.creative_stakeholder_id
+                additional_stakeholder_ids = people.additional_stakeholder_ids
+                ic_poc_id = people.ic_poc_id
+                additional_ic_ids = people.additional_ic_ids
+                creative_stakeholder_display = _display_name_from_cache(creative_stakeholder_id, slack, info_cache)
+                additional_stakeholder_displays = tuple(_display_name_from_cache(uid, slack, info_cache) for uid in additional_stakeholder_ids)
+
+                from red_team_prop_threader.messages import AssetRootContext, GroupSummaryContext, render_asset_root, render_group_summary
+                from red_team_prop_threader.repositories import MessageKind, NewMessageInput
+
+                def _blocks(rnd: dict[str, object]) -> list[dict[str, Any]]:
+                    b = rnd.get("blocks")
+                    if not isinstance(b, list):
+                        return []
+                    return [{str(k): v for k, v in block.items()} for block in b if isinstance(block, dict)]
+
                 if group_row is None:
-                    # Create group
                     group = repos.groups.create(
                         workspace_id=workspace_id, channel_id=channel_id, display_title=job.group_title or "", normalized_title=group_title_norm, now=now
                     )
                     group_id = group.id
 
-                    # Validate channel members for POCs
-                    try:
-                        members = set(slack.get_conversation_members(channel_id))
-                    except ExternalServiceError:
-                        members = set()
-
-                    selected_pocs = set()
-                    if job.creative_stakeholder:
-                        selected_pocs.add(job.creative_stakeholder)
-                    if job.additional_stakeholders:
-                        selected_pocs.update(job.additional_stakeholders)
-
-                    member_info_cache: dict[str, dict[str, Any]] = {}
-                    valid_pocs = set()
-                    for poc in selected_pocs:
-                        if poc in members:
-                            valid_pocs.add(poc)
-                        elif poc.startswith("@") or not poc.startswith("U"):
-                            name_to_match = poc.lstrip("@").lower()
-                            for member_id in members:
-                                if member_id not in member_info_cache:
-                                    try:
-                                        member_info_cache[member_id] = slack.get_user_info(member_id)
-                                    except ExternalServiceError:
-                                        member_info_cache[member_id] = {}
-                                info = member_info_cache[member_id]
-                                if info.get("name", "").lower() == name_to_match:
-                                    valid_pocs.add(member_id)
-                                    break
-
-                    valid_pocs_list = list(valid_pocs)
-
-                    # Mint group summary
-                    from red_team_prop_threader.messages import AssetRootContext, GroupSummaryContext, render_asset_root, render_group_summary
-
-                    # Need an animator to pass to context
-                    animator_id = job.creative_stakeholder if job.creative_stakeholder in valid_pocs_list else ""
-                    additional_ids = [p for p in valid_pocs_list if p != animator_id]
-
                     context = GroupSummaryContext(
                         group_title=job.group_title or "",
-                        animator_id=animator_id,
-                        additional_ids=tuple(additional_ids),
+                        animator_id=creative_stakeholder_id or None,
+                        additional_ids=additional_stakeholder_ids,
                         links=(),
                         included_asset_count=1,
                         processing_status="Complete",
                         summary_identity=group_id,
                         canvas_url=None,
                     )
-
-                    def _display_name(uid: str) -> str:
-                        if not uid:
-                            return ""
-                        try:
-                            info = slack.get_user_info(uid)
-                            profile = info.get("profile", {})
-                            for k in ("display_name", "real_name"):
-                                val = profile.get(k)
-                                if isinstance(val, str) and val.strip():
-                                    return val.strip()
-                        except ExternalServiceError:
-                            pass
-                        return uid
-
-                    group_animator_display = _display_name(animator_id)
-                    group_additional_displays = tuple(_display_name(uid) for uid in additional_ids)
-
                     rendered = render_group_summary(context)
-
-                    def _blocks(rnd: dict[str, object]) -> list[dict[str, Any]]:
-                        b = rnd.get("blocks")
-                        if not isinstance(b, list):
-                            return []
-                        return [{str(k): v for k, v in block.items()} for block in b if isinstance(block, dict)]
-
                     resp = slack.post_message(channel_id, text=str(rendered["text"]), blocks=_blocks(rendered))
                     summary_ts = str(resp["ts"])
                     summary_link = slack.get_permalink(channel_id, summary_ts)
-
-                    from red_team_prop_threader.repositories import MessageKind, NewMessageInput
-
                     repos.history.record(
                         NewMessageInput(
                             workspace_id=workspace_id,
@@ -232,26 +331,25 @@ def process_job(
                             asset_entity_id=None,
                             slack_ts=summary_ts,
                             permalink=summary_link,
-                            canvas_metadata=None,
+                            canvas_metadata={
+                                "edit": {
+                                    "kind": "group_summary",
+                                    "group_title": job.group_title or "",
+                                    "group_animator_id": creative_stakeholder_id,
+                                    "group_additional_ids": list(additional_stakeholder_ids),
+                                    "group_links": [],
+                                    "group_animator_display": creative_stakeholder_display,
+                                    "group_additional_displays": list(additional_stakeholder_displays),
+                                    "included_asset_count": 1,
+                                    "processing_status": "Complete",
+                                    "message_identity": group_id,
+                                }
+                            },
                             now=now,
                         )
                     )
                 else:
                     group_id = group_row.id
-                    valid_pocs = []
-                    group_animator_display = ""
-                    group_additional_displays = ()
-                    animator_id = ""
-                    additional_ids = []
-
-                def _blocks(rnd: dict[str, object]) -> list[dict[str, Any]]:
-                    b = rnd.get("blocks")
-                    if not isinstance(b, list):
-                        return []
-                    return [{str(k): v for k, v in block.items()} for block in b if isinstance(block, dict)]
-
-                # Post the asset root
-                from red_team_prop_threader.messages import AssetRootContext, render_asset_root
 
                 asset_name = f"Asset {asset_int}"
                 if shotgrid is not None:
@@ -262,16 +360,17 @@ def process_job(
                     except ExternalServiceError:
                         pass
 
+                created_ts = int(now.timestamp())
                 asset_ctx = AssetRootContext(
                     asset_entity_id=asset_int,
                     asset_name=asset_name,
                     asset_url=f"https://respawn.shotgunstudio.com/detail/Asset/{asset_int}",
                     group_title=job.group_title or "",
-                    created_ts=int(now.timestamp()),
-                    asset_animator_id="",
-                    asset_additional_ids=(),
-                    group_animator_display=group_animator_display,
-                    group_additional_displays=group_additional_displays,
+                    created_ts=created_ts,
+                    asset_animator_id=ic_poc_id,
+                    asset_additional_ids=additional_ic_ids,
+                    group_animator_display=creative_stakeholder_display,
+                    group_additional_displays=additional_stakeholder_displays,
                     group_links=(),
                     asset_links=(),
                     message_identity=f"{group_id}:{asset_int}",
@@ -283,8 +382,6 @@ def process_job(
                 thread_ts = str(resp_asset["ts"])
                 permalink = slack.get_permalink(channel_id, thread_ts)
 
-                from red_team_prop_threader.repositories import MessageKind, NewMessageInput
-
                 repos.history.record(
                     NewMessageInput(
                         workspace_id=workspace_id,
@@ -295,7 +392,26 @@ def process_job(
                         asset_entity_id=asset_int,
                         slack_ts=thread_ts,
                         permalink=permalink,
-                        canvas_metadata=None,
+                        canvas_metadata={
+                            "edit": {
+                                "kind": "asset_root",
+                                "entity_id": asset_int,
+                                "asset_name": asset_name,
+                                "asset_url": f"https://respawn.shotgunstudio.com/detail/Asset/{asset_int}",
+                                "group_title": job.group_title or "",
+                                "created_ts": created_ts,
+                                "asset_animator_id": ic_poc_id,
+                                "asset_additional_ids": list(additional_ic_ids),
+                                "asset_links": [],
+                                "group_animator_id": creative_stakeholder_id,
+                                "group_additional_ids": list(additional_stakeholder_ids),
+                                "group_links": [],
+                                "group_animator_display": creative_stakeholder_display,
+                                "group_additional_displays": list(additional_stakeholder_displays),
+                                "message_identity": f"{group_id}:{asset_int}",
+                                "has_prior_thread": False,
+                            }
+                        },
                         now=now,
                     )
                 )

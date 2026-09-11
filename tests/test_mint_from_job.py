@@ -327,8 +327,9 @@ def test_real_shaped_payload_stamps_digit_strings(tmp_path: Path) -> None:
 def test_mint_uses_auth_test_workspace_id(tmp_path: Path) -> None:
     """Test mint uses workspace_id from auth_test."""
     from sqlalchemy import create_engine
-    from red_team_prop_threader.tables import Base, Group, Message
     from sqlalchemy.orm import Session
+
+    from red_team_prop_threader.tables import Base, Group, Message
 
     engine = create_engine("sqlite:///:memory:")
     Base.metadata.create_all(engine)
@@ -356,3 +357,162 @@ def test_mint_uses_auth_test_workspace_id(tmp_path: Path) -> None:
         history = session.query(Message).first()
         assert history is not None
         assert history.workspace_id == "T_MOCK"
+
+
+def _people_slack() -> MagicMock:
+    slack = MagicMock(spec=SlackGateway)
+    slack._call.return_value = {"messages": []}
+    slack.get_conversation_members.return_value = ["U123", "U456", "W789"]
+    users = {
+        "U123": {"name": "alice", "profile": {"display_name": "Alice"}},
+        "U456": {"name": "bob", "profile": {"display_name": "Bob"}},
+        "W789": {"name": "guest", "profile": {"display_name": "Guest"}},
+    }
+    slack.get_user_info.side_effect = lambda uid: users[uid]
+    slack.post_message.return_value = {"ts": "123.45"}
+    slack.get_permalink.return_value = "https://example.com"
+    slack.auth_test.return_value = {"team_id": "T1"}
+    return slack
+
+
+def _summary_blocks(slack: MagicMock) -> str:
+    return json.dumps(slack.post_message.call_args_list[0].kwargs["blocks"])
+
+
+def test_mint_maps_handle_to_creative_stakeholder_id(tmp_path: Path) -> None:
+    """@alice resolves to U123 and is assigned CS, not parked as Additional."""
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import Session
+
+    from red_team_prop_threader.tables import Base, Message
+
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+
+    inbox = tmp_path / "slack_jobs" / "inbox"
+    inbox.mkdir(parents=True)
+    job_data = {
+        "job_id": "job_cs",
+        "asset_id": "777",
+        "channel": "C777",
+        "group_title": "Handle Mint",
+        "season_id": "S2",
+        "body": "Hi there",
+        "creative_stakeholder": "@alice",
+        "additional_stakeholders": ["U456"],
+    }
+    (inbox / "job_cs.json").write_text(json.dumps(job_data))
+
+    slack = _people_slack()
+    process_cl_jobs(tmp_path, slack, engine=engine)
+
+    summary = _summary_blocks(slack)
+    assert "*Creative Stakeholder:* <@U123>" in summary
+    assert "*Additional:* <@U456>" in summary
+    assert "*Creative Stakeholder:* unassigned" not in summary
+
+    with Session(engine) as session:
+        row = session.query(Message).filter_by(kind="group_summary").one()
+        edit = (row.canvas_metadata_json or {})["edit"]
+        assert edit["group_animator_id"] == "U123"
+        assert edit["group_additional_ids"] == ["U456"]
+        assert "@alice" not in json.dumps(edit)
+
+
+def test_mint_empty_handle_leaves_creative_stakeholder_unassigned(tmp_path: Path) -> None:
+    """Empty creative_stakeholder stays unassigned after mapping."""
+    from sqlalchemy import create_engine
+
+    from red_team_prop_threader.tables import Base
+
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+
+    inbox = tmp_path / "slack_jobs" / "inbox"
+    inbox.mkdir(parents=True)
+    job_data = {
+        "job_id": "job_empty_cs",
+        "asset_id": "778",
+        "channel": "C778",
+        "group_title": "Empty CS",
+        "creative_stakeholder": "",
+        "additional_stakeholders": [],
+        "body": "Hi",
+    }
+    (inbox / "job_empty.json").write_text(json.dumps(job_data))
+
+    slack = _people_slack()
+    process_cl_jobs(tmp_path, slack, engine=engine)
+
+    summary = _summary_blocks(slack)
+    assert "*Creative Stakeholder:* unassigned" in summary
+
+
+def test_mint_optional_ic_poc_handle_and_empty_unassigned(tmp_path: Path) -> None:
+    """Optional ic_poc handle maps to the asset root; empty ic_poc stays unassigned."""
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import Session
+
+    from red_team_prop_threader.tables import Base, Message
+
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+
+    inbox = tmp_path / "slack_jobs" / "inbox"
+    inbox.mkdir(parents=True)
+    assigned = {
+        "job_id": "job_ic",
+        "asset_id": "779",
+        "channel": "C779",
+        "group_title": "IC Mint",
+        "creative_stakeholder": "@alice",
+        "ic_poc": "@alice",
+        "additional_ics": ["U456"],
+        "body": "Hi",
+    }
+    (inbox / "job_ic.json").write_text(json.dumps(assigned))
+
+    slack = _people_slack()
+    process_cl_jobs(tmp_path, slack, engine=engine)
+
+    asset_blocks = json.dumps(slack.post_message.call_args_list[1].kwargs["blocks"])
+    assert "*Requestor:* <@U123>" in asset_blocks
+    assert "<@U456>" in asset_blocks
+
+    with Session(engine) as session:
+        row = session.query(Message).filter_by(kind="asset_root").one()
+        edit = (row.canvas_metadata_json or {})["edit"]
+        assert edit["asset_animator_id"] == "U123"
+        assert edit["asset_additional_ids"] == ["U456"]
+        assert edit["group_animator_id"] == "U123"
+        assert "@alice" not in json.dumps(edit)
+
+
+def test_mint_ignores_star_id_keys_on_job_file(tmp_path: Path) -> None:
+    """A stray creative_stakeholder_id on the job file must not win over the handle."""
+    from sqlalchemy import create_engine
+
+    from red_team_prop_threader.tables import Base
+
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+
+    inbox = tmp_path / "slack_jobs" / "inbox"
+    inbox.mkdir(parents=True)
+    job_data = {
+        "job_id": "job_ignore_id",
+        "asset_id": "780",
+        "channel": "C780",
+        "group_title": "Ignore Id",
+        "creative_stakeholder": "@alice",
+        "creative_stakeholder_id": "U456",
+        "body": "Hi",
+    }
+    (inbox / "job_ignore.json").write_text(json.dumps(job_data))
+
+    slack = _people_slack()
+    process_cl_jobs(tmp_path, slack, engine=engine)
+
+    summary = _summary_blocks(slack)
+    assert "*Creative Stakeholder:* <@U123>" in summary
+    assert "*Creative Stakeholder:* <@U456>" not in summary
