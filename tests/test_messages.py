@@ -275,7 +275,7 @@ def test_asset_root_includes_shotgrid_emoji_and_threadparrot() -> None:
 
 
 def test_asset_root_header_fields_are_single_section() -> None:
-    """Asset/Group/Requestor/Group POCs share one section (tight four-line block)."""
+    """Asset/Group/IC POC/Group POCs share one section (tight four-line block)."""
     message = render_asset_root(sample_asset_context())
     header = next(block for block in message["blocks"] if block.get("block_id") == "ar_header")  # type: ignore[union-attr]
     text = header["text"]["text"]  # type: ignore[index]
@@ -283,7 +283,8 @@ def test_asset_root_header_fields_are_single_section() -> None:
     assert len(lines) == 4
     assert lines[0].startswith(":threadparrot: *Asset:*")
     assert lines[1].startswith("*Group:*")
-    assert "*Requestor:*" in lines[2]
+    assert "*IC POC:*" in lines[2]
+    assert "*Requestor:*" not in text
     assert lines[3].startswith("*Group POCs:*")
     assert {block.get("block_id") for block in message["blocks"]} == {"ar_header", "ar_actions"}  # type: ignore[union-attr]
 

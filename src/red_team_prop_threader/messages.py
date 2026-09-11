@@ -346,7 +346,7 @@ def render_asset_root(context: AssetRootContext) -> dict[str, object]:
     fallback = f":threadparrot: Asset: {context.asset_name} \u2014 {context.group_title} :threadparrot:"
     blocks: list[dict[str, object]] = []
 
-    # Asset / Group / Requestor / Group POCs share one section so Slack does not
+    # asset / group / ic poc / group pocs share one section so slack does not
     # insert section padding between them (reads as four tight lines).
     asset_link = f":shotgrid: <{context.asset_url}|{escaped_name}>"
     asset_line = f":threadparrot: *Asset:* {asset_link} (ShotGrid ID: {context.asset_entity_id})"
@@ -357,12 +357,12 @@ def render_asset_root(context: AssetRootContext) -> dict[str, object]:
     asset_animator_id = (context.asset_animator_id or "").strip()
     requestor_parts: list[str] = []
     if asset_animator_id:
-        requestor_parts.append(f"*Requestor:* {_mention(asset_animator_id)}")
+        requestor_parts.append(f"*IC POC:* {_mention(asset_animator_id)}")
     if context.asset_additional_ids:
         add_str = " ".join(_mention(uid) for uid in context.asset_additional_ids if uid)
         if add_str:
             requestor_parts.append(f"*Additional:* {add_str}")
-    requestor_line = "*Requestor:* unassigned" if not requestor_parts else "  ".join(requestor_parts)
+    requestor_line = "*IC POC:* unassigned" if not requestor_parts else "  ".join(requestor_parts)
 
     pocs: list[str] = []
     if (context.group_animator_display or "").strip():

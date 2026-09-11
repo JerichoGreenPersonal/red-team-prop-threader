@@ -502,7 +502,7 @@ def test_apply_asset_edit_can_clear_pocs_added_after_post(
     assert isinstance(edit, dict)
     assert edit["asset_animator_id"] == ""
     assert edit["asset_additional_ids"] == []
-    assert "*Requestor:* unassigned" in str(fake_slack.updates[-1].blocks)
+    assert "*IC POC:* unassigned" in str(fake_slack.updates[-1].blocks)
 
 
 def test_open_editor_omits_empty_initial_user(edit_service: EditService, repositories: Repositories, session: Session, clock: FakeClock) -> None:
