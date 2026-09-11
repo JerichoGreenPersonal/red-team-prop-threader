@@ -18,11 +18,11 @@ from red_team_prop_threader.views import (
     AID_CANVAS_RENAME,
     AID_IMPORT_RESUME,
     AID_CANVAS_DECLINE,
-    BID_GROUP_ANIMATOR,
-    BID_GROUP_ADDITIONAL,
     AID_IMPORT_START_OVER,
     AID_CONFIRM_GROUP_TITLE,
     BID_CONFIRM_GROUP_TITLE,
+    BID_CREATIVE_STAKEHOLDER,
+    BID_ADDITIONAL_STAKEHOLDERS,
     AssetDraft,
     ImportContext,
     AssetSelection,
@@ -53,7 +53,7 @@ def _asset(i: int) -> ImportedAsset:
 
 
 def _selection(i: int, **kwargs: Any) -> AssetSelection:
-    base: dict[str, Any] = dict(entity_id=100 + i, included=True, animator_id=None, additional_ids=(), links_text="")
+    base: dict[str, Any] = dict(entity_id=100 + i, included=True, ic_poc_id=None, additional_ic_ids=(), links_text="")
     base.update(kwargs)
     return AssetSelection(**base)
 
@@ -66,8 +66,8 @@ def sample_draft(asset_count: int = 5, **kwargs: Any) -> AssetDraft:
         draft_id="draft-001",
         assets=assets,
         group_title="SEASON 31 PROP REQUEST THREADS",
-        group_animator_id=None,
-        group_additional_ids=(),
+        creative_stakeholder_id=None,
+        additional_stakeholder_ids=(),
         group_links_text="",
         selections=selections,
         channel_members=(
@@ -376,9 +376,9 @@ def test_asset_page_preserves_shotgrid_order() -> None:
         ImportedAsset(entity_id=202, name="Prop_B", url="https://sg.example.com/202", source_index=1),
         ImportedAsset(entity_id=103, name="Prop_C", url="https://sg.example.com/103", source_index=2),
     )
-    selections = tuple(AssetSelection(entity_id=a.entity_id, included=True, animator_id=None, additional_ids=(), links_text="") for a in assets)
+    selections = tuple(AssetSelection(entity_id=a.entity_id, included=True, ic_poc_id=None, additional_ic_ids=(), links_text="") for a in assets)
     draft = AssetDraft(
-        draft_id="d1", assets=assets, group_title="G", group_animator_id=None, group_additional_ids=(), group_links_text="", selections=selections
+        draft_id="d1", assets=assets, group_title="G", creative_stakeholder_id=None, additional_stakeholder_ids=(), group_links_text="", selections=selections
     )
     view = render_asset_page(draft, page_index=0)
     # collect entity IDs from asset_include block IDs in order
@@ -409,9 +409,9 @@ def test_asset_page_all_blocks_have_block_id() -> None:
 def test_asset_page_initial_checkbox_set_when_included() -> None:
     """Include block has initial_options when included=True."""
     assets = (_asset(0),)
-    selections = (AssetSelection(entity_id=100, included=True, animator_id=None, additional_ids=(), links_text=""),)
+    selections = (AssetSelection(entity_id=100, included=True, ic_poc_id=None, additional_ic_ids=(), links_text=""),)
     draft = AssetDraft(
-        draft_id="d1", assets=assets, group_title="G", group_animator_id=None, group_additional_ids=(), group_links_text="", selections=selections
+        draft_id="d1", assets=assets, group_title="G", creative_stakeholder_id=None, additional_stakeholder_ids=(), group_links_text="", selections=selections
     )
     view = render_asset_page(draft, page_index=0)
     include_block = next(b for b in view["blocks"] if b.get("block_id") == "asset_100_include")  # type: ignore[union-attr]
@@ -421,9 +421,9 @@ def test_asset_page_initial_checkbox_set_when_included() -> None:
 def test_asset_page_initial_checkbox_absent_when_not_included() -> None:
     """Include block has no initial_options when included=False."""
     assets = (_asset(0),)
-    selections = (AssetSelection(entity_id=100, included=False, animator_id=None, additional_ids=(), links_text=""),)
+    selections = (AssetSelection(entity_id=100, included=False, ic_poc_id=None, additional_ic_ids=(), links_text=""),)
     draft = AssetDraft(
-        draft_id="d1", assets=assets, group_title="G", group_animator_id=None, group_additional_ids=(), group_links_text="", selections=selections
+        draft_id="d1", assets=assets, group_title="G", creative_stakeholder_id=None, additional_stakeholder_ids=(), group_links_text="", selections=selections
     )
     view = render_asset_page(draft, page_index=0)
     include_block = next(b for b in view["blocks"] if b.get("block_id") == "asset_100_include")  # type: ignore[union-attr]
@@ -431,21 +431,21 @@ def test_asset_page_initial_checkbox_absent_when_not_included() -> None:
 
 
 def test_asset_page_initial_user_set_when_animator_present() -> None:
-    """Animator block has initial_option when animator_id is set."""
+    """Animator block has initial_option when ic_poc_id is set."""
     assets = (_asset(0),)
-    selections = (AssetSelection(entity_id=100, included=True, animator_id="U_ANIM", additional_ids=(), links_text=""),)
+    selections = (AssetSelection(entity_id=100, included=True, ic_poc_id="U_ANIM", additional_ic_ids=(), links_text=""),)
     draft = AssetDraft(
         draft_id="d1",
         assets=assets,
         group_title="G",
-        group_animator_id=None,
-        group_additional_ids=(),
+        creative_stakeholder_id=None,
+        additional_stakeholder_ids=(),
         group_links_text="",
         selections=selections,
         channel_members=(ChannelMemberOption("U_ANIM", "Animator (@uanim)"),),
     )
     view = render_asset_page(draft, page_index=0)
-    anim_block = next(b for b in view["blocks"] if b.get("block_id") == "asset_100_animator")  # type: ignore[union-attr]
+    anim_block = next(b for b in view["blocks"] if b.get("block_id") == "asset_100_ic_poc")  # type: ignore[union-attr]
     assert anim_block["element"]["type"] == "static_select"  # type: ignore[index]
     assert anim_block["element"]["initial_option"]["value"] == "U_ANIM"  # type: ignore[index]
     assert "@uanim" in anim_block["element"]["initial_option"]["text"]["text"]  # type: ignore[index]
@@ -454,7 +454,7 @@ def test_asset_page_initial_user_set_when_animator_present() -> None:
 def test_asset_page_animator_input_is_optional() -> None:
     """Per-asset animator input is optional so create can proceed unassigned."""
     view = render_asset_page(sample_draft(asset_count=1), page_index=0)
-    animator = next(block for block in view["blocks"] if block.get("block_id") == "asset_100_animator")  # type: ignore[union-attr]
+    animator = next(block for block in view["blocks"] if block.get("block_id") == "asset_100_ic_poc")  # type: ignore[union-attr]
 
     assert animator["type"] == "input"
     assert animator["optional"] is True
@@ -463,9 +463,15 @@ def test_asset_page_animator_input_is_optional() -> None:
 def test_asset_page_plain_text_asset_label_preserves_special_characters() -> None:
     """Plain-text labels retain raw special characters while mrkdwn stays escaped."""
     asset = ImportedAsset(entity_id=42, name="Prop & <Hero>", url="https://sg.example.com/42", source_index=0)
-    selection = AssetSelection(entity_id=42, included=True, animator_id=None, additional_ids=(), links_text="")
+    selection = AssetSelection(entity_id=42, included=True, ic_poc_id=None, additional_ic_ids=(), links_text="")
     draft = AssetDraft(
-        draft_id="d1", assets=(asset,), group_title="G", group_animator_id=None, group_additional_ids=(), group_links_text="", selections=(selection,)
+        draft_id="d1",
+        assets=(asset,),
+        group_title="G",
+        creative_stakeholder_id=None,
+        additional_stakeholder_ids=(),
+        group_links_text="",
+        selections=(selection,),
     )
     view = render_asset_page(draft, page_index=0)
     include = next(block for block in view["blocks"] if block.get("block_id") == "asset_42_include")  # type: ignore[union-attr]
@@ -481,9 +487,15 @@ def test_asset_context_mrkdwn_accepts_exact_slack_limit() -> None:
     suffix = "> · ShotGrid ID: 42"
     name = "N" * (3000 - len(prefix) - len(suffix))
     asset = ImportedAsset(entity_id=42, name=name, url="https://sg.example.com/42", source_index=0)
-    selection = AssetSelection(entity_id=42, included=True, animator_id=None, additional_ids=(), links_text="")
+    selection = AssetSelection(entity_id=42, included=True, ic_poc_id=None, additional_ic_ids=(), links_text="")
     draft = AssetDraft(
-        draft_id="d1", assets=(asset,), group_title="G", group_animator_id=None, group_additional_ids=(), group_links_text="", selections=(selection,)
+        draft_id="d1",
+        assets=(asset,),
+        group_title="G",
+        creative_stakeholder_id=None,
+        additional_stakeholder_ids=(),
+        group_links_text="",
+        selections=(selection,),
     )
 
     view = render_asset_page(draft, page_index=0)
@@ -497,9 +509,15 @@ def test_asset_context_mrkdwn_rejects_over_slack_limit() -> None:
     suffix = "> · ShotGrid ID: 42"
     name = "N" * (3001 - len(prefix) - len(suffix))
     asset = ImportedAsset(entity_id=42, name=name, url="https://sg.example.com/42", source_index=0)
-    selection = AssetSelection(entity_id=42, included=True, animator_id=None, additional_ids=(), links_text="")
+    selection = AssetSelection(entity_id=42, included=True, ic_poc_id=None, additional_ic_ids=(), links_text="")
     draft = AssetDraft(
-        draft_id="d1", assets=(asset,), group_title="G", group_animator_id=None, group_additional_ids=(), group_links_text="", selections=(selection,)
+        draft_id="d1",
+        assets=(asset,),
+        group_title="G",
+        creative_stakeholder_id=None,
+        additional_stakeholder_ids=(),
+        group_links_text="",
+        selections=(selection,),
     )
 
     with pytest.raises(ValidationError, match="asset context"):
@@ -509,9 +527,15 @@ def test_asset_context_mrkdwn_rejects_over_slack_limit() -> None:
 def test_asset_context_mrkdwn_rejects_oversized_url() -> None:
     """An impossible oversized imported URL fails safely before link rendering."""
     asset = ImportedAsset(entity_id=42, name="Prop", url=f"https://sg.example.com/{'x' * 3000}", source_index=0)
-    selection = AssetSelection(entity_id=42, included=True, animator_id=None, additional_ids=(), links_text="")
+    selection = AssetSelection(entity_id=42, included=True, ic_poc_id=None, additional_ic_ids=(), links_text="")
     draft = AssetDraft(
-        draft_id="d1", assets=(asset,), group_title="G", group_animator_id=None, group_additional_ids=(), group_links_text="", selections=(selection,)
+        draft_id="d1",
+        assets=(asset,),
+        group_title="G",
+        creative_stakeholder_id=None,
+        additional_stakeholder_ids=(),
+        group_links_text="",
+        selections=(selection,),
     )
 
     with pytest.raises(ValidationError, match="asset context"):
@@ -519,21 +543,21 @@ def test_asset_context_mrkdwn_rejects_oversized_url() -> None:
 
 
 def test_asset_page_initial_users_set_for_additional() -> None:
-    """Additional block has initial_options when additional_ids are present."""
+    """Additional block has initial_options when additional_ic_ids are present."""
     assets = (_asset(0),)
-    selections = (AssetSelection(entity_id=100, included=True, animator_id=None, additional_ids=("U_ADD1", "U_ADD2"), links_text=""),)
+    selections = (AssetSelection(entity_id=100, included=True, ic_poc_id=None, additional_ic_ids=("U_ADD1", "U_ADD2"), links_text=""),)
     draft = AssetDraft(
         draft_id="d1",
         assets=assets,
         group_title="G",
-        group_animator_id=None,
-        group_additional_ids=(),
+        creative_stakeholder_id=None,
+        additional_stakeholder_ids=(),
         group_links_text="",
         selections=selections,
         channel_members=(ChannelMemberOption("U_ADD1", "Add One (@uadd1)"), ChannelMemberOption("U_ADD2", "Add Two (@uadd2)")),
     )
     view = render_asset_page(draft, page_index=0)
-    add_block = next(b for b in view["blocks"] if b.get("block_id") == "asset_100_additional")  # type: ignore[union-attr]
+    add_block = next(b for b in view["blocks"] if b.get("block_id") == "asset_100_additional_ics")  # type: ignore[union-attr]
     assert add_block["element"]["type"] == "multi_static_select"  # type: ignore[index]
     assert [o["value"] for o in add_block["element"]["initial_options"]] == ["U_ADD1", "U_ADD2"]  # type: ignore[index]
 
@@ -541,9 +565,9 @@ def test_asset_page_initial_users_set_for_additional() -> None:
 def test_asset_page_initial_links_text_set() -> None:
     """Links block has initial_value when links_text is non-empty."""
     assets = (_asset(0),)
-    selections = (AssetSelection(entity_id=100, included=True, animator_id=None, additional_ids=(), links_text="Miro: https://miro.com/1"),)
+    selections = (AssetSelection(entity_id=100, included=True, ic_poc_id=None, additional_ic_ids=(), links_text="Miro: https://miro.com/1"),)
     draft = AssetDraft(
-        draft_id="d1", assets=assets, group_title="G", group_animator_id=None, group_additional_ids=(), group_links_text="", selections=selections
+        draft_id="d1", assets=assets, group_title="G", creative_stakeholder_id=None, additional_stakeholder_ids=(), group_links_text="", selections=selections
     )
     view = render_asset_page(draft, page_index=0)
     links_block = next(b for b in view["blocks"] if b.get("block_id") == "asset_100_links")  # type: ignore[union-attr]
@@ -551,10 +575,10 @@ def test_asset_page_initial_links_text_set() -> None:
 
 
 def test_asset_page_group_initial_animator_set() -> None:
-    """group_animator block has initial_option when group_animator_id is set."""
-    draft = sample_draft(asset_count=1, group_animator_id="U_GROUP_ANIM")
+    """group_animator block has initial_option when creative_stakeholder_id is set."""
+    draft = sample_draft(asset_count=1, creative_stakeholder_id="U_GROUP_ANIM")
     view = render_asset_page(draft, page_index=0)
-    anim_block = next(b for b in view["blocks"] if b.get("block_id") == BID_GROUP_ANIMATOR)  # type: ignore[union-attr]
+    anim_block = next(b for b in view["blocks"] if b.get("block_id") == BID_CREATIVE_STAKEHOLDER)  # type: ignore[union-attr]
     assert anim_block["element"]["type"] == "static_select"  # type: ignore[index]
     assert anim_block["element"]["initial_option"]["value"] == "U_GROUP_ANIM"  # type: ignore[index]
     assert "@ugroupanim" in anim_block["element"]["initial_option"]["text"]["text"]  # type: ignore[index]
@@ -627,9 +651,17 @@ def test_asset_page_page_1_when_fifteen_assets_raises() -> None:
 def test_asset_page_too_many_assets_raises() -> None:
     """Draft with >30 assets raises ValidationError."""
     assets = tuple(ImportedAsset(entity_id=i, name=f"Prop_{i}", url=f"https://sg.example.com/{i}", source_index=i) for i in range(31))
-    selections = tuple(AssetSelection(entity_id=a.entity_id, included=True, animator_id=None, additional_ids=(), links_text="") for a in assets)
+    selections = tuple(AssetSelection(entity_id=a.entity_id, included=True, ic_poc_id=None, additional_ic_ids=(), links_text="") for a in assets)
     with pytest.raises(ValidationError):
-        AssetDraft(draft_id="d1", assets=assets, group_title="G", group_animator_id=None, group_additional_ids=(), group_links_text="", selections=selections)
+        AssetDraft(
+            draft_id="d1",
+            assets=assets,
+            group_title="G",
+            creative_stakeholder_id=None,
+            additional_stakeholder_ids=(),
+            group_links_text="",
+            selections=selections,
+        )
 
 
 def test_asset_page_duplicate_entity_ids_raises() -> None:
@@ -639,19 +671,27 @@ def test_asset_page_duplicate_entity_ids_raises() -> None:
         ImportedAsset(entity_id=100, name="P2", url="https://sg.example.com/100b", source_index=1),
     )
     selections = (
-        AssetSelection(entity_id=100, included=True, animator_id=None, additional_ids=(), links_text=""),
-        AssetSelection(entity_id=100, included=True, animator_id=None, additional_ids=(), links_text=""),
+        AssetSelection(entity_id=100, included=True, ic_poc_id=None, additional_ic_ids=(), links_text=""),
+        AssetSelection(entity_id=100, included=True, ic_poc_id=None, additional_ic_ids=(), links_text=""),
     )
     with pytest.raises(ValidationError):
-        AssetDraft(draft_id="d1", assets=assets, group_title="G", group_animator_id=None, group_additional_ids=(), group_links_text="", selections=selections)
+        AssetDraft(
+            draft_id="d1",
+            assets=assets,
+            group_title="G",
+            creative_stakeholder_id=None,
+            additional_stakeholder_ids=(),
+            group_links_text="",
+            selections=selections,
+        )
 
 
 def test_asset_page_asset_name_visible_in_view() -> None:
     """Asset name appears somewhere in the rendered view."""
     assets = (ImportedAsset(entity_id=42, name="MY_UNIQUE_PROP_NAME", url="https://sg.example.com/42", source_index=0),)
-    selections = (AssetSelection(entity_id=42, included=True, animator_id=None, additional_ids=(), links_text=""),)
+    selections = (AssetSelection(entity_id=42, included=True, ic_poc_id=None, additional_ic_ids=(), links_text=""),)
     draft = AssetDraft(
-        draft_id="d1", assets=assets, group_title="G", group_animator_id=None, group_additional_ids=(), group_links_text="", selections=selections
+        draft_id="d1", assets=assets, group_title="G", creative_stakeholder_id=None, additional_stakeholder_ids=(), group_links_text="", selections=selections
     )
     view = render_asset_page(draft, page_index=0)
     rendered = json.dumps(view)
@@ -661,9 +701,9 @@ def test_asset_page_asset_name_visible_in_view() -> None:
 def test_asset_page_asset_url_visible_in_view() -> None:
     """Asset URL appears somewhere in the rendered view."""
     assets = (ImportedAsset(entity_id=42, name="Prop", url="https://sg.example.com/unique-url-42", source_index=0),)
-    selections = (AssetSelection(entity_id=42, included=True, animator_id=None, additional_ids=(), links_text=""),)
+    selections = (AssetSelection(entity_id=42, included=True, ic_poc_id=None, additional_ic_ids=(), links_text=""),)
     draft = AssetDraft(
-        draft_id="d1", assets=assets, group_title="G", group_animator_id=None, group_additional_ids=(), group_links_text="", selections=selections
+        draft_id="d1", assets=assets, group_title="G", creative_stakeholder_id=None, additional_stakeholder_ids=(), group_links_text="", selections=selections
     )
     view = render_asset_page(draft, page_index=0)
     rendered = json.dumps(view)
@@ -686,10 +726,13 @@ def test_asset_page_copy_matches_pilot_feedback() -> None:
     view = render_asset_page(sample_draft(asset_count=1), page_index=0)
     blocks = {b["block_id"]: b for b in view["blocks"] if isinstance(b, dict) and "block_id" in b}  # type: ignore[index]
     assert blocks[BID_GROUP_TITLE]["element"]["placeholder"]["text"] == "ex: Season or Map Name"
-    assert blocks[BID_GROUP_ANIMATOR]["element"]["placeholder"]["text"] == "Select an AD or Feature Owner"
+    assert blocks[BID_CREATIVE_STAKEHOLDER]["element"]["placeholder"]["text"] == "Select an AD or Feature Owner"
     assert blocks[BID_GROUP_LINKS]["element"]["placeholder"]["text"] == "Ex: Map Miro, Season Deck, etc (Format: Label: https://...)"
-    assert blocks["asset_100_animator"]["label"]["text"] == "IC POC"
-    assert blocks["asset_100_animator"]["element"]["placeholder"]["text"] == "Animator or Concept Artist"
+    assert blocks["asset_100_ic_poc"]["label"]["text"] == "IC POC"
+    assert blocks["asset_100_additional_ics"]["label"]["text"] == "Additional ICs"
+    assert blocks[BID_CREATIVE_STAKEHOLDER]["label"]["text"] == "Creative Stakeholder"
+    assert blocks[BID_ADDITIONAL_STAKEHOLDERS]["label"]["text"] == "Additional stakeholders"
+    assert blocks["asset_100_ic_poc"]["element"]["placeholder"]["text"] == "Animator or Concept Artist"
     assert blocks["asset_100_links"]["label"]["text"] == "Asset Links"
     assert blocks["asset_100_links"]["element"]["placeholder"]["text"] == ("Ex: Area in Miro, SyncSketch, Reverence Folder, etc (Format: Label: https://...)")
     assert not any(isinstance(b, dict) and b.get("block_id") == "form_errors" for b in view["blocks"])  # type: ignore[union-attr]
@@ -708,17 +751,17 @@ def test_asset_page_json_serializable() -> None:
 
 def test_decode_user_select_empty_string_is_none() -> None:
     """Cleared users_select may submit empty string; treat as no selection."""
-    state = {"values": {"group_animator": {"group_animator": {"selected_user": "  "}}}}
+    state = {"values": {"creative_stakeholder": {"creative_stakeholder": {"selected_user": "  "}}}}
     decoded = decode_asset_page_state(state, page_index=0)
-    assert decoded.group_animator_id is None
+    assert decoded.creative_stakeholder_id is None
 
 
 def test_constrain_asset_page_errors_moves_offscreen_keys_to_group_title() -> None:
     """Off-page asset errors are remapped so Slack will accept the ack."""
     entity_ids = tuple(range(100, 116))
-    errors = {"asset_115_animator": "must be a member of this channel", "group_title": "group title is required"}
+    errors = {"asset_115_ic_poc": "must be a member of this channel", "group_title": "group title is required"}
     constrained = constrain_asset_page_errors(errors, page_index=0, entity_ids=entity_ids)
-    assert "asset_115_animator" not in constrained
+    assert "asset_115_ic_poc" not in constrained
     assert "group title is required" in constrained["group_title"]
     assert "must be a member of this channel" in constrained["group_title"]
     on_page = constrain_asset_page_errors({"asset_100_links": "line 1: Supporting links require a label (label: link)"}, page_index=0, entity_ids=entity_ids)
@@ -744,24 +787,24 @@ def test_confirm_view_omits_notice_and_keeps_field_errors() -> None:
     assert not any(isinstance(b, dict) and b.get("block_id") == "form_errors" for b in confirm["blocks"])  # type: ignore[union-attr]
     title_block = next(b for b in confirm["blocks"] if b.get("block_id") == BID_CONFIRM_GROUP_TITLE)  # type: ignore[union-attr]
     assert title_block["element"]["placeholder"]["text"] == "ex: Season or Map Name"  # type: ignore[index]
-    noticed = with_form_error_notice({"group_animator": "nope"})
-    assert noticed == {"group_animator": "nope"}
+    noticed = with_form_error_notice({"creative_stakeholder": "nope"})
+    assert noticed == {"creative_stakeholder": "nope"}
 
 
 def test_decode_asset_page_strict_roundtrip() -> None:
     """Encode selections into a view then decode back to the same values."""
     assets = tuple(_asset(i) for i in range(3))
     selections = (
-        AssetSelection(entity_id=100, included=True, animator_id="U_ANIM1", additional_ids=("U_ADD1",), links_text="A: https://a.example.com"),
-        AssetSelection(entity_id=101, included=False, animator_id=None, additional_ids=(), links_text=""),
-        AssetSelection(entity_id=102, included=True, animator_id="U_ANIM3", additional_ids=(), links_text=""),
+        AssetSelection(entity_id=100, included=True, ic_poc_id="U_ANIM1", additional_ic_ids=("U_ADD1",), links_text="A: https://a.example.com"),
+        AssetSelection(entity_id=101, included=False, ic_poc_id=None, additional_ic_ids=(), links_text=""),
+        AssetSelection(entity_id=102, included=True, ic_poc_id="U_ANIM3", additional_ic_ids=(), links_text=""),
     )
     draft = AssetDraft(
         draft_id="d1",
         assets=assets,
         group_title="SEASON 31",
-        group_animator_id="U_GROUP_ANIM",
-        group_additional_ids=("U_GROUP_ADD1",),
+        creative_stakeholder_id="U_GROUP_ANIM",
+        additional_stakeholder_ids=("U_GROUP_ADD1",),
         group_links_text="Miro: https://miro.com/1",
         selections=selections,
         channel_members=(
@@ -779,18 +822,18 @@ def test_decode_asset_page_strict_roundtrip() -> None:
     assert isinstance(decoded, DecodedAssetPage)
     assert decoded.page_index == 0
     assert decoded.group_title == "SEASON 31"
-    assert decoded.group_animator_id == "U_GROUP_ANIM"
-    assert decoded.group_additional_ids == ("U_GROUP_ADD1",)
+    assert decoded.creative_stakeholder_id == "U_GROUP_ANIM"
+    assert decoded.additional_stakeholder_ids == ("U_GROUP_ADD1",)
     assert decoded.group_links_text == "Miro: https://miro.com/1"
     assert len(decoded.asset_states) == 3
     assert decoded.asset_states[0].entity_id == 100
     assert decoded.asset_states[0].included is True
-    assert decoded.asset_states[0].animator_id == "U_ANIM1"
-    assert decoded.asset_states[0].additional_ids == ("U_ADD1",)
+    assert decoded.asset_states[0].ic_poc_id == "U_ANIM1"
+    assert decoded.asset_states[0].additional_ic_ids == ("U_ADD1",)
     assert decoded.asset_states[0].links_text == "A: https://a.example.com"
     assert decoded.asset_states[1].entity_id == 101
     assert decoded.asset_states[1].included is False
-    assert decoded.asset_states[1].animator_id is None
+    assert decoded.asset_states[1].ic_poc_id is None
     assert decoded.asset_states[2].entity_id == 102
     assert decoded.asset_states[2].included is True
 
@@ -807,8 +850,8 @@ def test_decode_checkbox_absent_means_not_included() -> None:
     state = {
         "values": {
             BID_GROUP_TITLE: {BID_GROUP_TITLE: {"type": "plain_text_input", "value": "G"}},
-            BID_GROUP_ANIMATOR: {BID_GROUP_ANIMATOR: {"type": "users_select", "selected_user": None}},
-            BID_GROUP_ADDITIONAL: {BID_GROUP_ADDITIONAL: {"type": "multi_users_select", "selected_users": []}},
+            BID_CREATIVE_STAKEHOLDER: {BID_CREATIVE_STAKEHOLDER: {"type": "users_select", "selected_user": None}},
+            BID_ADDITIONAL_STAKEHOLDERS: {BID_ADDITIONAL_STAKEHOLDERS: {"type": "multi_users_select", "selected_users": []}},
             BID_GROUP_LINKS: {BID_GROUP_LINKS: {"type": "plain_text_input", "value": ""}},
         }
     }
@@ -821,8 +864,8 @@ def test_decode_checkbox_present_empty_means_not_included() -> None:
     state: dict[str, Any] = {
         "values": {
             "asset_100_include": {"asset_100_include": {"type": "checkboxes", "selected_options": []}},
-            "asset_100_animator": {"asset_100_animator": {"type": "users_select", "selected_user": None}},
-            "asset_100_additional": {"asset_100_additional": {"type": "multi_users_select", "selected_users": []}},
+            "asset_100_ic_poc": {"asset_100_ic_poc": {"type": "users_select", "selected_user": None}},
+            "asset_100_additional_ics": {"asset_100_additional_ics": {"type": "multi_users_select", "selected_users": []}},
             "asset_100_links": {"asset_100_links": {"type": "plain_text_input", "value": ""}},
         }
     }
@@ -835,8 +878,8 @@ def test_decode_checkbox_present_filled_means_included() -> None:
     state: dict[str, Any] = {
         "values": {
             "asset_100_include": {"asset_100_include": {"type": "checkboxes", "selected_options": [{"value": "included"}]}},
-            "asset_100_animator": {"asset_100_animator": {"type": "users_select", "selected_user": None}},
-            "asset_100_additional": {"asset_100_additional": {"type": "multi_users_select", "selected_users": []}},
+            "asset_100_ic_poc": {"asset_100_ic_poc": {"type": "users_select", "selected_user": None}},
+            "asset_100_additional_ics": {"asset_100_additional_ics": {"type": "multi_users_select", "selected_users": []}},
             "asset_100_links": {"asset_100_links": {"type": "plain_text_input", "value": ""}},
         }
     }
@@ -856,8 +899,8 @@ def test_decode_malformed_users_select_raises() -> None:
     state: dict[str, Any] = {
         "values": {
             "asset_100_include": {"asset_100_include": {"type": "checkboxes", "selected_options": []}},
-            "asset_100_animator": {"asset_100_animator": {"type": "users_select", "selected_user": 12345}},  # int, not str/None
-            "asset_100_additional": {"asset_100_additional": {"type": "multi_users_select", "selected_users": []}},
+            "asset_100_ic_poc": {"asset_100_ic_poc": {"type": "users_select", "selected_user": 12345}},  # int, not str/None
+            "asset_100_additional_ics": {"asset_100_additional_ics": {"type": "multi_users_select", "selected_users": []}},
             "asset_100_links": {"asset_100_links": {"type": "plain_text_input", "value": ""}},
         }
     }
@@ -871,12 +914,12 @@ def test_decode_multi_user_select_accepts_empty_values(selected_users: object) -
     state: dict[str, Any] = {
         "values": {
             "asset_100_include": {"asset_100_include": {"type": "checkboxes", "selected_options": []}},
-            "asset_100_additional": {"asset_100_additional": {"type": "multi_users_select", "selected_users": selected_users}},
+            "asset_100_additional_ics": {"asset_100_additional_ics": {"type": "multi_users_select", "selected_users": selected_users}},
         }
     }
 
     decoded = decode_asset_page_state(state, page_index=0)
-    assert decoded.asset_states[0].additional_ids == ()
+    assert decoded.asset_states[0].additional_ic_ids == ()
 
 
 def test_decode_multi_user_select_accepts_missing_selected_users() -> None:
@@ -884,12 +927,12 @@ def test_decode_multi_user_select_accepts_missing_selected_users() -> None:
     state: dict[str, Any] = {
         "values": {
             "asset_100_include": {"asset_100_include": {"type": "checkboxes", "selected_options": []}},
-            "asset_100_additional": {"asset_100_additional": {"type": "multi_users_select"}},
+            "asset_100_additional_ics": {"asset_100_additional_ics": {"type": "multi_users_select"}},
         }
     }
 
     decoded = decode_asset_page_state(state, page_index=0)
-    assert decoded.asset_states[0].additional_ids == ()
+    assert decoded.asset_states[0].additional_ic_ids == ()
 
 
 def test_decode_multi_user_select_rejects_non_list() -> None:
@@ -897,7 +940,7 @@ def test_decode_multi_user_select_rejects_non_list() -> None:
     state: dict[str, Any] = {
         "values": {
             "asset_100_include": {"asset_100_include": {"type": "checkboxes", "selected_options": []}},
-            "asset_100_additional": {"asset_100_additional": {"type": "multi_users_select", "selected_users": "U_BAD"}},
+            "asset_100_additional_ics": {"asset_100_additional_ics": {"type": "multi_users_select", "selected_users": "U_BAD"}},
         }
     }
 
@@ -910,7 +953,7 @@ def test_decode_multi_user_select_rejects_non_string_member() -> None:
     state: dict[str, Any] = {
         "values": {
             "asset_100_include": {"asset_100_include": {"type": "checkboxes", "selected_options": []}},
-            "asset_100_additional": {"asset_100_additional": {"type": "multi_users_select", "selected_users": ["U_OK", 42]}},
+            "asset_100_additional_ics": {"asset_100_additional_ics": {"type": "multi_users_select", "selected_users": ["U_OK", 42]}},
         }
     }
 
@@ -931,12 +974,12 @@ def test_decode_preserves_asset_order() -> None:
     state: dict[str, Any] = {
         "values": {
             "asset_301_include": {"asset_301_include": {"type": "checkboxes", "selected_options": []}},
-            "asset_301_animator": {"asset_301_animator": {"type": "users_select", "selected_user": None}},
-            "asset_301_additional": {"asset_301_additional": {"type": "multi_users_select", "selected_users": []}},
+            "asset_301_ic_poc": {"asset_301_ic_poc": {"type": "users_select", "selected_user": None}},
+            "asset_301_additional_ics": {"asset_301_additional_ics": {"type": "multi_users_select", "selected_users": []}},
             "asset_301_links": {"asset_301_links": {"type": "plain_text_input", "value": ""}},
             "asset_202_include": {"asset_202_include": {"type": "checkboxes", "selected_options": [{"value": "included"}]}},
-            "asset_202_animator": {"asset_202_animator": {"type": "users_select", "selected_user": None}},
-            "asset_202_additional": {"asset_202_additional": {"type": "multi_users_select", "selected_users": []}},
+            "asset_202_ic_poc": {"asset_202_ic_poc": {"type": "users_select", "selected_user": None}},
+            "asset_202_additional_ics": {"asset_202_additional_ics": {"type": "multi_users_select", "selected_users": []}},
             "asset_202_links": {"asset_202_links": {"type": "plain_text_input", "value": ""}},
         }
     }
@@ -950,8 +993,8 @@ def test_decode_entity_id_comes_from_block_id_not_value() -> None:
     state: dict[str, Any] = {
         "values": {
             "asset_100_include": {"asset_100_include": {"type": "checkboxes", "selected_options": [{"value": "included"}]}},
-            "asset_100_animator": {"asset_100_animator": {"type": "users_select", "selected_user": "U_CORRECT"}},
-            "asset_100_additional": {"asset_100_additional": {"type": "multi_users_select", "selected_users": []}},
+            "asset_100_ic_poc": {"asset_100_ic_poc": {"type": "users_select", "selected_user": "U_CORRECT"}},
+            "asset_100_additional_ics": {"asset_100_additional_ics": {"type": "multi_users_select", "selected_users": []}},
             "asset_100_links": {"asset_100_links": {"type": "plain_text_input", "value": ""}},
         }
     }
@@ -964,8 +1007,8 @@ def test_decode_repeated_asset_fields_form_one_asset_state() -> None:
     state: dict[str, Any] = {
         "values": {
             "asset_100_include": {"asset_100_include": {"type": "checkboxes", "selected_options": []}},
-            "asset_100_animator": {"asset_100_animator": {"type": "users_select", "selected_user": None}},
-            "asset_100_additional": {"asset_100_additional": {"type": "multi_users_select", "selected_users": []}},
+            "asset_100_ic_poc": {"asset_100_ic_poc": {"type": "users_select", "selected_user": None}},
+            "asset_100_additional_ics": {"asset_100_additional_ics": {"type": "multi_users_select", "selected_users": []}},
             "asset_100_links": {"asset_100_links": {"type": "plain_text_input", "value": ""}},
         }
     }

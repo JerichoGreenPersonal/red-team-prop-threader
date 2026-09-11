@@ -81,8 +81,8 @@ class GroupIndexRequest:
     channel_id: str
     canvas_id: str
     group_title: str
-    animator_display: str
-    additional_displays: tuple[str, ...]
+    creative_stakeholder_display: str
+    additional_stakeholder_displays: tuple[str, ...]
     links: tuple[SupportingLink, ...]
     assets: tuple[IndexedAsset, ...]
     for_primary: bool = False
@@ -321,7 +321,7 @@ def _render_satellite_group_markdown(request: GroupIndexRequest) -> str:
     """Render INDEX OF PROP REQUESTS group markdown."""
     title = normalize_group_title(request.group_title)
     heading = f"## {title}"
-    people_parts = [part for part in (request.animator_display, *request.additional_displays) if part and part.strip()]
+    people_parts = [part for part in (request.creative_stakeholder_display, *request.additional_stakeholder_displays) if part and part.strip()]
     people = ", ".join(people_parts) if people_parts else "unassigned"
     link_lines = "\n".join(f"- [{_escape_md(link.label)}]({link.url})" for link in request.links)
     asset_parts: list[str] = []
@@ -351,8 +351,7 @@ def _render_primary_group_markdown(request: GroupIndexRequest) -> str:
         lines = [
             f"{SLACK_THREAD_EMOJI} {_escape_md(asset.name)}",
             f"* SG Link - [{_escape_md(sg_label)}]({asset.asset_url})",
-            f"* Thread - [{format_canvas_timestamp(asset.created_at)}]({asset.permalink})"
-            + (" — Latest" if asset.is_latest else ""),
+            f"* Thread - [{format_canvas_timestamp(asset.created_at)}]({asset.permalink})" + (" — Latest" if asset.is_latest else ""),
         ]
         if asset.prior_permalink and asset.prior_created_at is not None:
             lines.append(f"* Thread - [{format_canvas_timestamp(asset.prior_created_at)}]({asset.prior_permalink})")

@@ -24,9 +24,9 @@ __all__ = (
     "AID_NAV_BACK",
     "AID_NAV_CONFIRM",
     "AID_NAV_NEXT",
+    "BID_ADDITIONAL_STAKEHOLDERS",
     "BID_CONFIRM_GROUP_TITLE",
-    "BID_GROUP_ADDITIONAL",
-    "BID_GROUP_ANIMATOR",
+    "BID_CREATIVE_STAKEHOLDER",
     "BID_GROUP_LINKS",
     "BID_GROUP_TITLE",
     "AssetDraft",
@@ -68,8 +68,8 @@ AID_NAV_CONFIRM = "nav_confirm"
 # ---------------------------------------------------------------------------
 
 BID_GROUP_TITLE = "group_title"
-BID_GROUP_ANIMATOR = "group_animator"
-BID_GROUP_ADDITIONAL = "group_additional"
+BID_CREATIVE_STAKEHOLDER = "creative_stakeholder"
+BID_ADDITIONAL_STAKEHOLDERS = "additional_stakeholders"
 BID_GROUP_LINKS = "group_links"
 BID_CONFIRM_GROUP_TITLE = "confirm_group_title"
 _PLACEHOLDER_GROUP_TITLE = "ex: Season or Map Name"
@@ -152,15 +152,15 @@ class AssetSelection:
     Args:
         entity_id: ShotGrid entity ID; must match the paired ImportedAsset.
         included: whether this asset is flagged for thread creation.
-        animator_id: Slack user ID of the selected animator, or None.
-        additional_ids: ordered Slack user IDs for additional people.
+        ic_poc_id: Slack user ID of the selected animator, or None.
+        additional_ic_ids: ordered Slack user IDs for additional people.
         links_text: raw multiline supporting-link text entered by the user.
     """
 
     entity_id: int
     included: bool
-    animator_id: str | None
-    additional_ids: tuple[str, ...]
+    ic_poc_id: str | None
+    additional_ic_ids: tuple[str, ...]
     links_text: str
 
 
@@ -172,8 +172,8 @@ class AssetDraft:
         draft_id: opaque draft identifier (bounded string).
         assets: all imported assets in ShotGrid source_index order.
         group_title: current group title text.
-        group_animator_id: Slack user ID of the group animator, or None.
-        group_additional_ids: ordered Slack user IDs for group additional people.
+        creative_stakeholder_id: Slack user ID of the group animator, or None.
+        additional_stakeholder_ids: ordered Slack user IDs for group additional people.
         group_links_text: raw multiline supporting-link text for the group.
         selections: per-asset selections; must be parallel to assets.
         channel_members: human channel members for people pickers (verbose labels).
@@ -186,8 +186,8 @@ class AssetDraft:
     draft_id: str
     assets: tuple[ImportedAsset, ...]
     group_title: str
-    group_animator_id: str | None
-    group_additional_ids: tuple[str, ...]
+    creative_stakeholder_id: str | None
+    additional_stakeholder_ids: tuple[str, ...]
     group_links_text: str
     selections: tuple[AssetSelection, ...]
     channel_members: tuple[ChannelMemberOption, ...] = ()
@@ -218,15 +218,15 @@ class DecodedAssetState:
     Args:
         entity_id: ShotGrid entity ID inferred from the block ID.
         included: true when the include checkbox was checked.
-        animator_id: selected Slack user ID, or None.
-        additional_ids: selected Slack user IDs for additional people.
+        ic_poc_id: selected Slack user ID, or None.
+        additional_ic_ids: selected Slack user IDs for additional people.
         links_text: raw supporting-link text value.
     """
 
     entity_id: int
     included: bool
-    animator_id: str | None
-    additional_ids: tuple[str, ...]
+    ic_poc_id: str | None
+    additional_ic_ids: tuple[str, ...]
     links_text: str
 
 
@@ -237,16 +237,16 @@ class DecodedAssetPage:
     Args:
         page_index: the page index (0 or 1) this state corresponds to.
         group_title: decoded group title text.
-        group_animator_id: decoded group animator Slack user ID, or None.
-        group_additional_ids: decoded group additional Slack user IDs.
+        creative_stakeholder_id: decoded group animator Slack user ID, or None.
+        additional_stakeholder_ids: decoded group additional Slack user IDs.
         group_links_text: decoded group supporting-link text.
         asset_states: decoded per-asset states in block order.
     """
 
     page_index: int
     group_title: str
-    group_animator_id: str | None
-    group_additional_ids: tuple[str, ...]
+    creative_stakeholder_id: str | None
+    additional_stakeholder_ids: tuple[str, ...]
     group_links_text: str
     asset_states: tuple[DecodedAssetState, ...]
 
@@ -522,9 +522,9 @@ def constrain_asset_page_errors(errors: dict[str, str], *, page_index: int, enti
         return errors
     start = page_index * _PAGE_SIZE
     page_ids = entity_ids[start : start + _PAGE_SIZE]
-    visible = {BID_GROUP_TITLE, BID_GROUP_ANIMATOR, BID_GROUP_ADDITIONAL, BID_GROUP_LINKS}
+    visible = {BID_GROUP_TITLE, BID_CREATIVE_STAKEHOLDER, BID_ADDITIONAL_STAKEHOLDERS, BID_GROUP_LINKS}
     for entity_id in page_ids:
-        visible.update({f"asset_{entity_id}_include", f"asset_{entity_id}_animator", f"asset_{entity_id}_additional", f"asset_{entity_id}_links"})
+        visible.update({f"asset_{entity_id}_include", f"asset_{entity_id}_ic_poc", f"asset_{entity_id}_additional_ics", f"asset_{entity_id}_links"})
     constrained: dict[str, str] = {}
     overflow: list[str] = []
     for block_id, message in errors.items():
@@ -649,16 +649,16 @@ def _group_blocks(draft: AssetDraft) -> list[dict[str, object]]:
     return [
         _input_block(BID_GROUP_TITLE, "Group title", _plain_text_input(BID_GROUP_TITLE, _PLACEHOLDER_GROUP_TITLE, draft.group_title or None)),
         _input_block(
-            BID_GROUP_ANIMATOR,
+            BID_CREATIVE_STAKEHOLDER,
             "Creative Stakeholder",
-            _users_select(BID_GROUP_ANIMATOR, _PLACEHOLDER_GROUP_STAKEHOLDER, draft.group_animator_id, members),
+            _users_select(BID_CREATIVE_STAKEHOLDER, _PLACEHOLDER_GROUP_STAKEHOLDER, draft.creative_stakeholder_id, members),
             optional=True,
             hint="Only people already in this channel are listed.",
         ),
         _input_block(
-            BID_GROUP_ADDITIONAL,
+            BID_ADDITIONAL_STAKEHOLDERS,
             "Additional stakeholders",
-            _multi_users_select(BID_GROUP_ADDITIONAL, "Select channel members", draft.group_additional_ids, members),
+            _multi_users_select(BID_ADDITIONAL_STAKEHOLDERS, "Select channel members", draft.additional_stakeholder_ids, members),
             optional=True,
             hint="Only people already in this channel are listed.",
         ),
@@ -691,16 +691,16 @@ def _asset_blocks(asset: ImportedAsset, sel: AssetSelection, members: tuple[Chan
         _context_block(ctx_bid, [_mrkdwn(context_text)]),
         _input_block(f"asset_{eid}_include", f"{asset.name} (ID: {eid})", _checkboxes(f"asset_{eid}_include", sel.included), optional=True),
         _input_block(
-            f"asset_{eid}_animator",
+            f"asset_{eid}_ic_poc",
             "IC POC",
-            _users_select(f"asset_{eid}_animator", _PLACEHOLDER_ASSET_POC, sel.animator_id, members),
+            _users_select(f"asset_{eid}_ic_poc", _PLACEHOLDER_ASSET_POC, sel.ic_poc_id, members),
             optional=True,
             hint="Only people already in this channel are listed.",
         ),
         _input_block(
-            f"asset_{eid}_additional",
-            "Additional requestors",
-            _multi_users_select(f"asset_{eid}_additional", "Select channel members", sel.additional_ids, members),
+            f"asset_{eid}_additional_ics",
+            "Additional ICs",
+            _multi_users_select(f"asset_{eid}_additional_ics", "Select channel members", sel.additional_ic_ids, members),
             optional=True,
             hint="Only people already in this channel are listed.",
         ),
@@ -981,8 +981,8 @@ def decode_asset_page_state(view_state: dict[str, object], page_index: int) -> D
 
     # decode group fields (absent keys default to empty/None)
     group_title = _decode_plain_text(values, BID_GROUP_TITLE)
-    group_animator_id = _decode_user_select(values, BID_GROUP_ANIMATOR)
-    group_additional_ids = _decode_multi_user_select(values, BID_GROUP_ADDITIONAL)
+    creative_stakeholder_id = _decode_user_select(values, BID_CREATIVE_STAKEHOLDER)
+    additional_stakeholder_ids = _decode_multi_user_select(values, BID_ADDITIONAL_STAKEHOLDERS)
     group_links_text = _decode_plain_text(values, BID_GROUP_LINKS)
 
     # collect asset entity IDs from _include block keys, in dict-insertion order
@@ -996,16 +996,18 @@ def decode_asset_page_state(view_state: dict[str, object], page_index: int) -> D
     asset_states: list[DecodedAssetState] = []
     for eid in ordered_ids:
         included = _decode_checkbox(values, f"asset_{eid}_include", eid)
-        animator_id = _decode_user_select(values, f"asset_{eid}_animator")
-        additional_ids = _decode_multi_user_select(values, f"asset_{eid}_additional")
+        ic_poc_id = _decode_user_select(values, f"asset_{eid}_ic_poc")
+        additional_ic_ids = _decode_multi_user_select(values, f"asset_{eid}_additional_ics")
         links_text = _decode_plain_text(values, f"asset_{eid}_links")
-        asset_states.append(DecodedAssetState(entity_id=eid, included=included, animator_id=animator_id, additional_ids=additional_ids, links_text=links_text))
+        asset_states.append(
+            DecodedAssetState(entity_id=eid, included=included, ic_poc_id=ic_poc_id, additional_ic_ids=additional_ic_ids, links_text=links_text)
+        )
 
     return DecodedAssetPage(
         page_index=page_index,
         group_title=group_title,
-        group_animator_id=group_animator_id,
-        group_additional_ids=group_additional_ids,
+        creative_stakeholder_id=creative_stakeholder_id,
+        additional_stakeholder_ids=additional_stakeholder_ids,
         group_links_text=group_links_text,
         asset_states=tuple(asset_states),
     )

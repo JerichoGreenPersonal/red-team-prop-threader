@@ -113,12 +113,12 @@ class DraftSession:
     assets: tuple[ImportedAsset, ...]
     duplicate_count: int
     group_title: str
-    group_animator_id: str | None
-    group_additional_ids: tuple[str, ...]
+    creative_stakeholder_id: str | None
+    additional_stakeholder_ids: tuple[str, ...]
     group_links_text: str
     included_entity_ids: tuple[int, ...]
-    asset_animators: dict[int, str]
-    asset_additional: dict[int, tuple[str, ...]]
+    ic_poc_ids: dict[int, str]
+    asset_additional_ics: dict[int, tuple[str, ...]]
     asset_links_text: dict[int, str]
     imported_at: datetime
     canvas_id: str | None
@@ -248,12 +248,12 @@ class Workflow:
             assets=(),
             duplicate_count=0,
             group_title="",
-            group_animator_id=None,
-            group_additional_ids=(),
+            creative_stakeholder_id=None,
+            additional_stakeholder_ids=(),
             group_links_text="",
             included_entity_ids=(),
-            asset_animators={},
-            asset_additional={},
+            ic_poc_ids={},
+            asset_additional_ics={},
             asset_links_text={},
             imported_at=self.clock.now(),
             canvas_id=None,
@@ -361,8 +361,8 @@ class Workflow:
         draft.duplicate_count = imported.duplicate_count
         draft.group_title = title
         draft.included_entity_ids = tuple(asset.entity_id for asset in imported.assets)
-        draft.asset_animators = {}
-        draft.asset_additional = {}
+        draft.ic_poc_ids = {}
+        draft.asset_additional_ics = {}
         draft.asset_links_text = {asset.entity_id: "" for asset in imported.assets}
         draft.imported_at = self.clock.now()
         draft.page_index = 0
@@ -389,8 +389,8 @@ class Workflow:
         draft = self._require_draft(draft_id)
         decoded = decode_asset_page_state(view_state, page_index)
         draft.group_title = decoded.group_title
-        draft.group_animator_id = decoded.group_animator_id
-        draft.group_additional_ids = decoded.group_additional_ids
+        draft.creative_stakeholder_id = decoded.creative_stakeholder_id
+        draft.additional_stakeholder_ids = decoded.additional_stakeholder_ids
         draft.group_links_text = decoded.group_links_text
 
         included = list(draft.included_entity_ids)
@@ -400,12 +400,12 @@ class Workflow:
                     included.append(state.entity_id)
             elif state.entity_id in included:
                 included = [entity_id for entity_id in included if entity_id != state.entity_id]
-            if state.animator_id:
-                draft.asset_animators[state.entity_id] = state.animator_id
+            if state.ic_poc_id:
+                draft.ic_poc_ids[state.entity_id] = state.ic_poc_id
             else:
                 # Clear selection must remove a previously saved animator.
-                draft.asset_animators.pop(state.entity_id, None)
-            draft.asset_additional[state.entity_id] = state.additional_ids
+                draft.ic_poc_ids.pop(state.entity_id, None)
+            draft.asset_additional_ics[state.entity_id] = state.additional_ic_ids
             draft.asset_links_text[state.entity_id] = state.links_text
         draft.included_entity_ids = tuple(included)
         # recompute inferred title after exclusions when still season-shaped
@@ -527,8 +527,8 @@ class Workflow:
                 "entity_id": asset.entity_id,
                 "name": asset.name,
                 "url": asset.url,
-                "animator_id": draft.asset_animators.get(asset.entity_id) or "",
-                "additional_ids": list(draft.asset_additional.get(asset.entity_id, ())),
+                "ic_poc_id": draft.ic_poc_ids.get(asset.entity_id) or "",
+                "additional_ic_ids": list(draft.asset_additional_ics.get(asset.entity_id, ())),
                 "links": [{"label": link.label, "url": link.url} for link in asset_links],
             })
         return {
@@ -536,8 +536,8 @@ class Workflow:
             "primary_asset_index_channel_id": self._primary_asset_index_channel_id,
             "primary_asset_index_canvas_id": self._primary_asset_index_canvas_id or "",
             "group_title": title,
-            "group_animator_id": draft.group_animator_id or "",
-            "group_additional_ids": list(draft.group_additional_ids),
+            "creative_stakeholder_id": draft.creative_stakeholder_id or "",
+            "additional_stakeholder_ids": list(draft.additional_stakeholder_ids),
             "group_links": [{"label": link.label, "url": link.url} for link in group_links],
             "lease_token": lease_token,
             "assets": assets,
@@ -553,7 +553,7 @@ class Workflow:
         errors = self._confirm_field_errors(draft)
         if errors:
             # Prefer a people-field message when membership failed; otherwise first error.
-            for key in ("group_animator", "group_additional", "group_title"):
+            for key in ("creative_stakeholder", "additional_stakeholders", "group_title"):
                 if key in errors:
                     raise ValidationError(errors[key])
             raise ValidationError(next(iter(errors.values())))
@@ -580,16 +580,16 @@ class Workflow:
             label = self._display_name(user_id)
             errors.setdefault(block_id, f"{label} must be a member of this channel (invite them or pick someone already in the channel)")
 
-        _note_missing(draft.group_animator_id, "group_animator")
-        for user_id in draft.group_additional_ids:
-            _note_missing(user_id, "group_additional")
+        _note_missing(draft.creative_stakeholder_id, "creative_stakeholder")
+        for user_id in draft.additional_stakeholder_ids:
+            _note_missing(user_id, "additional_stakeholders")
 
         for entity_id in draft.included_entity_ids:
-            animator = draft.asset_animators.get(entity_id)
+            animator = draft.ic_poc_ids.get(entity_id)
             if animator:
-                _note_missing(animator, f"asset_{entity_id}_animator")
-            for user_id in draft.asset_additional.get(entity_id, ()):
-                _note_missing(user_id, f"asset_{entity_id}_additional")
+                _note_missing(animator, f"asset_{entity_id}_ic_poc")
+            for user_id in draft.asset_additional_ics.get(entity_id, ()):
+                _note_missing(user_id, f"asset_{entity_id}_additional_ics")
 
         try:
             if draft.group_links_text.strip():
@@ -614,8 +614,8 @@ class Workflow:
             AssetSelection(
                 entity_id=asset.entity_id,
                 included=asset.entity_id in included,
-                animator_id=draft.asset_animators.get(asset.entity_id),
-                additional_ids=draft.asset_additional.get(asset.entity_id, ()),
+                ic_poc_id=draft.ic_poc_ids.get(asset.entity_id),
+                additional_ic_ids=draft.asset_additional_ics.get(asset.entity_id, ()),
                 links_text=draft.asset_links_text.get(asset.entity_id, ""),
             )
             for asset in draft.assets
@@ -624,8 +624,8 @@ class Workflow:
             draft_id=draft.draft_id,
             assets=draft.assets,
             group_title=draft.group_title,
-            group_animator_id=draft.group_animator_id,
-            group_additional_ids=draft.group_additional_ids,
+            creative_stakeholder_id=draft.creative_stakeholder_id,
+            additional_stakeholder_ids=draft.additional_stakeholder_ids,
             group_links_text=draft.group_links_text,
             selections=selections,
             channel_members=self._channel_member_options(draft),

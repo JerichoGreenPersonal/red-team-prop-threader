@@ -168,12 +168,12 @@ def sample_draft(**kwargs: object) -> DraftSession:
         assets=assets,
         duplicate_count=0,
         group_title="SEASON 31 PROP REQUEST THREADS",
-        group_animator_id="U_SECOND",
-        group_additional_ids=(),
+        creative_stakeholder_id="U_SECOND",
+        additional_stakeholder_ids=(),
         group_links_text="",
         included_entity_ids=(1001, 1002),
-        asset_animators={1001: "U_SECOND", 1002: "U_SECOND"},
-        asset_additional={},
+        ic_poc_ids={1001: "U_SECOND", 1002: "U_SECOND"},
+        asset_additional_ics={},
         asset_links_text={},
         imported_at=datetime(2026, 7, 17, 17, 0, 0, tzinfo=timezone.utc),
         canvas_id="Fcanvas",
@@ -344,21 +344,21 @@ def test_asset_page_save_open_confirm_and_accept(workflow: Workflow, fake_slack:
     state = {
         "values": {
             "group_title": {"group_title": {"value": "SEASON 31 PROP REQUEST THREADS"}},
-            "group_animator": {"group_animator": {"selected_user": "U_COMMAND"}},
-            "group_additional": {"group_additional": {"selected_users": []}},
+            "creative_stakeholder": {"creative_stakeholder": {"selected_user": "U_COMMAND"}},
+            "additional_stakeholders": {"additional_stakeholders": {"selected_users": []}},
             "group_links": {"group_links": {"value": ""}},
             "asset_1001_include": {"asset_1001_include": {"selected_options": [{"value": "included"}]}},
-            "asset_1001_animator": {"asset_1001_animator": {"selected_user": "U_COMMAND"}},
-            "asset_1001_additional": {"asset_1001_additional": {"selected_users": []}},
+            "asset_1001_ic_poc": {"asset_1001_ic_poc": {"selected_user": "U_COMMAND"}},
+            "asset_1001_additional_ics": {"asset_1001_additional_ics": {"selected_users": []}},
             "asset_1001_links": {"asset_1001_links": {"value": ""}},
             "asset_1002_include": {"asset_1002_include": {"selected_options": [{"value": "included"}]}},
-            "asset_1002_animator": {"asset_1002_animator": {"selected_user": "U_COMMAND"}},
-            "asset_1002_additional": {"asset_1002_additional": {"selected_users": []}},
+            "asset_1002_ic_poc": {"asset_1002_ic_poc": {"selected_user": "U_COMMAND"}},
+            "asset_1002_additional_ics": {"asset_1002_additional_ics": {"selected_users": []}},
             "asset_1002_links": {"asset_1002_links": {"value": ""}},
         }
     }
     draft = workflow.save_asset_page(draft_id=draft_id, page_index=0, view_state=state)
-    assert draft.group_animator_id == "U_COMMAND"
+    assert draft.creative_stakeholder_id == "U_COMMAND"
     assert draft.included_entity_ids == (1001, 1002)
     page = workflow.open_asset_page(draft_id, 0)
     assert page["callback_id"] == "asset_page"
@@ -375,7 +375,7 @@ def test_confirm_succeeds_with_no_people_selected(workflow: Workflow, fake_slack
 
     fake_slack.channel_canvas_id = "Fcanvas"
     fake_slack.members = ("U_COMMAND",)
-    draft = sample_draft(group_animator_id=None, asset_animators={}, group_additional_ids=())
+    draft = sample_draft(creative_stakeholder_id=None, ic_poc_ids={}, additional_stakeholder_ids=())
     workflow.drafts.put(draft)
     confirm = workflow.open_confirmation(draft.draft_id)
     assert confirm["callback_id"] == "confirm_batch"
@@ -389,10 +389,31 @@ def test_confirm_succeeds_with_no_people_selected(workflow: Workflow, fake_slack
     assert any(op.kind is OperationKind.POST_ASSET for op in ops)
 
 
+def test_confirm_batch_payload_has_no_animator_keys(workflow: Workflow, session: Session) -> None:
+    """ReviewPrep job JSON uses role keys and must not gain animator_* keys."""
+    from sqlalchemy import select
+
+    draft = sample_draft()
+    workflow.drafts.put(draft)
+    response = workflow.confirm_batch(draft)
+    assert response.accepted
+    batch_id = session.execute(select(Batch.id)).scalar_one()
+    batch = Repositories.from_session(session).batches.get(batch_id)
+    assert batch is not None and batch.payload is not None
+    payload = batch.payload
+    assert "animator" not in str(payload)
+    assert payload["creative_stakeholder_id"] == "U_SECOND"
+    assert payload["additional_stakeholder_ids"] == []
+    assert payload["assets"][0]["ic_poc_id"] == "U_SECOND"
+    assert payload["assets"][0]["additional_ic_ids"] == []
+    assert "animator_id" not in payload["assets"][0]
+    assert "group_animator_id" not in payload
+
+
 def test_confirm_rejects_non_member_when_people_selected(workflow: Workflow, fake_slack: FakeSlackGateway) -> None:
     """Selected people must still be channel members."""
     fake_slack.members = ("U_COMMAND",)
-    draft = sample_draft(group_animator_id="U_OUTSIDER", asset_animators={1001: "U_OUTSIDER", 1002: "U_OUTSIDER"})
+    draft = sample_draft(creative_stakeholder_id="U_OUTSIDER", ic_poc_ids={1001: "U_OUTSIDER", 1002: "U_OUTSIDER"})
     workflow.drafts.put(draft)
     with pytest.raises(ValidationError, match="member"):
         workflow.open_confirmation(draft.draft_id)
@@ -409,43 +430,43 @@ def test_clearing_people_on_save_removes_stale_draft_ids(workflow: Workflow, fak
     dirty = {
         "values": {
             "group_title": {"group_title": {"value": "SEASON 31 PROP REQUEST THREADS"}},
-            "group_animator": {"group_animator": {"selected_user": "U_OUTSIDER"}},
-            "group_additional": {"group_additional": {"selected_users": ["U_OUTSIDER"]}},
+            "creative_stakeholder": {"creative_stakeholder": {"selected_user": "U_OUTSIDER"}},
+            "additional_stakeholders": {"additional_stakeholders": {"selected_users": ["U_OUTSIDER"]}},
             "group_links": {"group_links": {"value": ""}},
             "asset_1001_include": {"asset_1001_include": {"selected_options": [{"value": "included"}]}},
-            "asset_1001_animator": {"asset_1001_animator": {"selected_user": "U_OUTSIDER"}},
-            "asset_1001_additional": {"asset_1001_additional": {"selected_users": []}},
+            "asset_1001_ic_poc": {"asset_1001_ic_poc": {"selected_user": "U_OUTSIDER"}},
+            "asset_1001_additional_ics": {"asset_1001_additional_ics": {"selected_users": []}},
             "asset_1001_links": {"asset_1001_links": {"value": ""}},
             "asset_1002_include": {"asset_1002_include": {"selected_options": [{"value": "included"}]}},
-            "asset_1002_animator": {"asset_1002_animator": {"selected_user": "U_OUTSIDER"}},
-            "asset_1002_additional": {"asset_1002_additional": {"selected_users": []}},
+            "asset_1002_ic_poc": {"asset_1002_ic_poc": {"selected_user": "U_OUTSIDER"}},
+            "asset_1002_additional_ics": {"asset_1002_additional_ics": {"selected_users": []}},
             "asset_1002_links": {"asset_1002_links": {"value": ""}},
         }
     }
     draft = workflow.save_asset_page(draft_id=draft_id, page_index=0, view_state=dirty)
-    assert draft.group_animator_id == "U_OUTSIDER"
-    assert draft.asset_animators[1001] == "U_OUTSIDER"
+    assert draft.creative_stakeholder_id == "U_OUTSIDER"
+    assert draft.ic_poc_ids[1001] == "U_OUTSIDER"
 
     cleared = {
         "values": {
             "group_title": {"group_title": {"value": "SEASON 31 PROP REQUEST THREADS"}},
-            "group_animator": {"group_animator": {"selected_user": None}},
-            "group_additional": {"group_additional": {"selected_users": []}},
+            "creative_stakeholder": {"creative_stakeholder": {"selected_user": None}},
+            "additional_stakeholders": {"additional_stakeholders": {"selected_users": []}},
             "group_links": {"group_links": {"value": ""}},
             "asset_1001_include": {"asset_1001_include": {"selected_options": [{"value": "included"}]}},
-            "asset_1001_animator": {"asset_1001_animator": {"selected_user": None}},
-            "asset_1001_additional": {"asset_1001_additional": {"selected_users": []}},
+            "asset_1001_ic_poc": {"asset_1001_ic_poc": {"selected_user": None}},
+            "asset_1001_additional_ics": {"asset_1001_additional_ics": {"selected_users": []}},
             "asset_1001_links": {"asset_1001_links": {"value": ""}},
             "asset_1002_include": {"asset_1002_include": {"selected_options": [{"value": "included"}]}},
-            "asset_1002_animator": {"asset_1002_animator": {"selected_user": None}},
-            "asset_1002_additional": {"asset_1002_additional": {"selected_users": []}},
+            "asset_1002_ic_poc": {"asset_1002_ic_poc": {"selected_user": None}},
+            "asset_1002_additional_ics": {"asset_1002_additional_ics": {"selected_users": []}},
             "asset_1002_links": {"asset_1002_links": {"value": ""}},
         }
     }
     draft = workflow.save_asset_page(draft_id=draft_id, page_index=0, view_state=cleared)
-    assert draft.group_animator_id is None
-    assert draft.group_additional_ids == ()
-    assert draft.asset_animators == {}
+    assert draft.creative_stakeholder_id is None
+    assert draft.additional_stakeholder_ids == ()
+    assert draft.ic_poc_ids == {}
     confirm = workflow.open_confirmation(draft_id)
     assert confirm["callback_id"] == "confirm_batch"
 
@@ -453,12 +474,12 @@ def test_clearing_people_on_save_removes_stale_draft_ids(workflow: Workflow, fak
 def test_membership_errors_stay_on_offending_people_fields(workflow: Workflow, fake_slack: FakeSlackGateway) -> None:
     """Asset-only membership failures must not be blamed on Group Animator."""
     fake_slack.members = ("U_COMMAND",)
-    draft = sample_draft(group_animator_id=None, asset_animators={1001: "U_OUTSIDER"}, group_additional_ids=())
+    draft = sample_draft(creative_stakeholder_id=None, ic_poc_ids={1001: "U_OUTSIDER"}, additional_stakeholder_ids=())
     workflow.drafts.put(draft)
     errors = workflow._confirm_field_errors(draft)
-    assert "group_animator" not in errors
-    assert "asset_1001_animator" in errors
-    assert "member" in errors["asset_1001_animator"]
+    assert "creative_stakeholder" not in errors
+    assert "asset_1001_ic_poc" in errors
+    assert "member" in errors["asset_1001_ic_poc"]
 
 
 def test_asset_link_parse_errors_stay_on_asset_links(workflow: Workflow, fake_slack: FakeSlackGateway) -> None:

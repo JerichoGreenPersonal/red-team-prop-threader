@@ -13,8 +13,11 @@ from red_team_prop_threader.messages import (
     AID_EDIT_GROUP_DETAILS,
     AssetRootContext,
     GroupSummaryContext,
+    coalesce_ids,
+    coalesce_str,
     render_asset_root,
     render_group_summary,
+    migrate_people_snapshot,
 )
 
 
@@ -27,8 +30,8 @@ def sample_group_context(**kwargs: object) -> GroupSummaryContext:
     """Build a minimal GroupSummaryContext."""
     base: dict[str, object] = dict(
         group_title="SEASON 31 PROP REQUEST THREADS",
-        animator_id="U_ANIMATOR",
-        additional_ids=(),
+        creative_stakeholder_id="U_ANIMATOR",
+        additional_stakeholder_ids=(),
         links=(),
         included_asset_count=5,
         processing_status="In progress",
@@ -49,10 +52,10 @@ def sample_asset_context(**kwargs: object) -> AssetRootContext:
         asset_url="https://sg.example.com/12345",
         group_title="SEASON 31 PROP REQUEST THREADS",
         created_ts=1700000000,
-        asset_animator_id="U_ASSET_ANIMATOR",
-        asset_additional_ids=(),
-        group_animator_display="Group Animator Name",
-        group_additional_displays=(),
+        ic_poc_id="U_ASSET_ANIMATOR",
+        additional_ic_ids=(),
+        creative_stakeholder_display="Group Animator Name",
+        additional_stakeholder_displays=(),
         group_links=(),
         asset_links=(),
         message_identity="msg-001",
@@ -116,14 +119,14 @@ def test_group_summary_title_mrkdwn_escaped() -> None:
 
 def test_group_summary_animator_mention() -> None:
     """Animator is rendered as a notifying Slack mention."""
-    ctx = sample_group_context(animator_id="U_ANIM_XYZ")
+    ctx = sample_group_context(creative_stakeholder_id="U_ANIM_XYZ")
     rendered = json.dumps(render_group_summary(ctx))
     assert "<@U_ANIM_XYZ>" in rendered
 
 
 def test_group_summary_additional_mentions() -> None:
     """Additional people are rendered as notifying Slack mentions."""
-    ctx = sample_group_context(additional_ids=("U_ADD1", "U_ADD2"))
+    ctx = sample_group_context(additional_stakeholder_ids=("U_ADD1", "U_ADD2"))
     rendered = json.dumps(render_group_summary(ctx))
     assert "<@U_ADD1>" in rendered
     assert "<@U_ADD2>" in rendered
@@ -159,6 +162,15 @@ def test_group_summary_creative_stakeholder_label() -> None:
     assert "Creative Stakeholder" in rendered
     assert "*Animator:*" not in rendered
     assert "*People:*" not in rendered
+
+
+def test_group_summary_additional_stakeholders_label() -> None:
+    """Group extras use Additional stakeholders, not Additional or Additional ICs."""
+    ctx = sample_group_context(additional_stakeholder_ids=("U_EXTRA",))
+    rendered = json.dumps(render_group_summary(ctx))
+    assert "*Additional stakeholders:* <@U_EXTRA>" in rendered
+    assert "*Additional ICs:*" not in rendered
+    assert "*Additional:*" not in rendered.replace("*Additional stakeholders:*", "")
 
 
 def test_group_summary_group_links_label() -> None:
@@ -285,8 +297,20 @@ def test_asset_root_header_fields_are_single_section() -> None:
     assert lines[1].startswith("*Group:*")
     assert "*IC POC:*" in lines[2]
     assert "*Requestor:*" not in text
+    assert "*Additional:*" not in text
     assert lines[3].startswith("*Group POCs:*")
     assert {block.get("block_id") for block in message["blocks"]} == {"ar_header", "ar_actions"}  # type: ignore[union-attr]
+
+
+def test_asset_root_additional_ics_label() -> None:
+    """Asset extras use Additional ICs, not Additional or Additional requestors."""
+    ctx = sample_asset_context(additional_ic_ids=("U_EXTRA",))
+    header = next(block for block in render_asset_root(ctx)["blocks"] if block.get("block_id") == "ar_header")  # type: ignore[union-attr]
+    text = header["text"]["text"]  # type: ignore[index]
+    assert "*Additional ICs:* <@U_EXTRA>" in text
+    assert "*Requestor:*" not in text
+    assert "Additional requestors" not in text
+    assert "*Additional:*" not in text.replace("*Additional ICs:*", "")
 
 
 def test_asset_root_latest_marker_when_prior_exists() -> None:
@@ -345,14 +369,14 @@ def test_asset_root_group_title_in_output() -> None:
 
 def test_asset_root_asset_animator_mentioned() -> None:
     """Asset animator is rendered as a notifying Slack mention."""
-    ctx = sample_asset_context(asset_animator_id="U_ASSET_ANIM_UNIQUE")
+    ctx = sample_asset_context(ic_poc_id="U_ASSET_ANIM_UNIQUE")
     rendered = json.dumps(render_asset_root(ctx))
     assert "<@U_ASSET_ANIM_UNIQUE>" in rendered
 
 
-def test_asset_root_asset_additional_mentioned() -> None:
+def test_asset_root_asset_additional_ics_mentioned() -> None:
     """Asset additional people are rendered as notifying Slack mentions."""
-    ctx = sample_asset_context(asset_additional_ids=("U_ASSET_ADD1", "U_ASSET_ADD2"))
+    ctx = sample_asset_context(additional_ic_ids=("U_ASSET_ADD1", "U_ASSET_ADD2"))
     rendered = json.dumps(render_asset_root(ctx))
     assert "<@U_ASSET_ADD1>" in rendered
     assert "<@U_ASSET_ADD2>" in rendered
@@ -360,7 +384,7 @@ def test_asset_root_asset_additional_mentioned() -> None:
 
 def test_asset_root_group_animator_not_mentioned() -> None:
     """Group animator is shown as plain display name, never as <@ID>."""
-    ctx = sample_asset_context(group_animator_display="Jane Doe")
+    ctx = sample_asset_context(creative_stakeholder_display="Jane Doe")
     rendered = json.dumps(render_asset_root(ctx))
     # The display name should appear
     assert "Jane Doe" in rendered
@@ -369,7 +393,7 @@ def test_asset_root_group_animator_not_mentioned() -> None:
 
 def test_asset_root_group_additional_not_mentioned() -> None:
     """Group additional people appear as plain display names, not @-mentions."""
-    ctx = sample_asset_context(group_additional_displays=("Alice Smith", "Bob Jones"))
+    ctx = sample_asset_context(additional_stakeholder_displays=("Alice Smith", "Bob Jones"))
     rendered = json.dumps(render_asset_root(ctx))
     assert "Alice Smith" in rendered
     assert "Bob Jones" in rendered
@@ -487,7 +511,7 @@ def test_asset_root_mrkdwn_escaped_asset_name() -> None:
 
 def test_asset_root_group_pocs_not_slack_mentions() -> None:
     """Group POC display names are never rendered as <@...> mentions."""
-    ctx = sample_asset_context(group_animator_display="Jane Doe", group_additional_displays=("Alice", "Bob"))
+    ctx = sample_asset_context(creative_stakeholder_display="Jane Doe", additional_stakeholder_displays=("Alice", "Bob"))
     rendered = json.dumps(render_asset_root(ctx))
     # display names present
     assert "Jane Doe" in rendered
@@ -514,7 +538,7 @@ def test_asset_root_fallback_text_contains_asset_name() -> None:
 
 def test_group_summary_unassigned_people_when_empty() -> None:
     """Empty people render a non-notifying unassigned placeholder."""
-    ctx = sample_group_context(animator_id=None, additional_ids=())
+    ctx = sample_group_context(creative_stakeholder_id=None, additional_stakeholder_ids=())
     rendered = json.dumps(render_group_summary(ctx))
     assert "unassigned" in rendered
     assert "<@" not in rendered
@@ -522,7 +546,29 @@ def test_group_summary_unassigned_people_when_empty() -> None:
 
 def test_asset_root_unassigned_people_when_empty() -> None:
     """Empty asset and group people render unassigned placeholders."""
-    ctx = sample_asset_context(asset_animator_id="", asset_additional_ids=(), group_animator_display="", group_additional_displays=())
+    ctx = sample_asset_context(ic_poc_id="", additional_ic_ids=(), creative_stakeholder_display="", additional_stakeholder_displays=())
     rendered = json.dumps(render_asset_root(ctx))
     assert "unassigned" in rendered
     assert "<@" not in rendered
+
+
+def test_coalesce_str_present_empty_does_not_fall_back() -> None:
+    """A present empty new key wins over a legacy animator_* value."""
+    assert coalesce_str({"ic_poc_id": "", "asset_animator_id": "Uold"}, "ic_poc_id", "asset_animator_id") == ""
+    assert coalesce_str({"asset_animator_id": "Uold"}, "ic_poc_id", "asset_animator_id") == "Uold"
+    assert coalesce_ids({"additional_ic_ids": [], "asset_additional_ids": ["Uold"]}, "additional_ic_ids", "asset_additional_ids") == ()
+    assert coalesce_ids({"asset_additional_ids": ["Uold"]}, "additional_ic_ids", "asset_additional_ids") == ("Uold",)
+
+
+def test_migrate_people_snapshot_copies_legacy_then_drops_animator_keys() -> None:
+    """Write path copies animator_* into new keys, then removes the old keys."""
+    snapshot = {"asset_animator_id": "Uold", "group_animator_id": "Ugroup"}
+    migrate_people_snapshot(snapshot)
+    assert snapshot["ic_poc_id"] == "Uold"
+    assert snapshot["creative_stakeholder_id"] == "Ugroup"
+    assert "asset_animator_id" not in snapshot
+    assert "group_animator_id" not in snapshot
+    snapshot = {"ic_poc_id": "", "asset_animator_id": "Uold"}
+    migrate_people_snapshot(snapshot)
+    assert snapshot["ic_poc_id"] == ""
+    assert "asset_animator_id" not in snapshot

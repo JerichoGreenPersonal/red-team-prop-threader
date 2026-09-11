@@ -167,7 +167,7 @@ def dedupe_people(group_selection: PersonSelection, asset_selection: PersonSelec
     Precedence rules:
 
     - Asset-specific entries take precedence over group entries for the same user.
-    - Within a single selection, :attr:`PersonRole.ANIMATOR` takes precedence
+    - Within a single selection, :attr:`PersonRole.PRIMARY` takes precedence
       over :attr:`PersonRole.ADDITIONAL` for the same user.
     - Stable input order is preserved for additional-people entries.
 
@@ -188,7 +188,7 @@ def dedupe_people(group_selection: PersonSelection, asset_selection: PersonSelec
 def _dedup_selection(selection: PersonSelection) -> PersonSelection:
     """Deduplicate entries within a single PersonSelection.
 
-    ANIMATOR takes precedence over ADDITIONAL for the same Slack user ID.
+    PRIMARY takes precedence over ADDITIONAL for the same Slack user ID.
     Stable order is preserved using first-seen position.
 
     Args:
@@ -199,7 +199,7 @@ def _dedup_selection(selection: PersonSelection) -> PersonSelection:
     """
     seen: dict[str, PersonEntry] = {}
     for entry in selection.people:
-        if entry.slack_user_id not in seen or (entry.role == PersonRole.ANIMATOR and seen[entry.slack_user_id].role == PersonRole.ADDITIONAL):
+        if entry.slack_user_id not in seen or (entry.role == PersonRole.PRIMARY and seen[entry.slack_user_id].role == PersonRole.ADDITIONAL):
             seen[entry.slack_user_id] = entry
     return PersonSelection(tuple(seen.values()))
 

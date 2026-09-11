@@ -1,4 +1,4 @@
-"""rewrite posted asset-root Requestor labels to IC POC without new posts."""
+"""rewrite posted people labels to the current user-facing nomenclature."""
 
 from __future__ import annotations
 
@@ -10,13 +10,23 @@ from dataclasses import dataclass
 from red_team_prop_threader._errors import ExternalServiceError, PermissionDeniedError, RetryableExternalServiceError
 
 
-__all__ = ("ASSET_ROOT_BLOCK_ID", "BackfillResult", "RelabelHit", "backfill_requestor_labels", "rewrite_message_payload")
+__all__ = (
+    "ASSET_REPLACEMENTS",
+    "ASSET_ROOT_BLOCK_ID",
+    "GROUP_REPLACEMENTS",
+    "GROUP_SUMMARY_BLOCK_ID",
+    "BackfillResult",
+    "RelabelHit",
+    "backfill_requestor_labels",
+    "rewrite_message_payload",
+)
 
 _LOG = logging.getLogger(__name__)
 
 ASSET_ROOT_BLOCK_ID = "ar_header"
-_OLD_LABEL = "*Requestor:*"
-_NEW_LABEL = "*IC POC:*"
+GROUP_SUMMARY_BLOCK_ID = "gs_header"
+ASSET_REPLACEMENTS: tuple[tuple[str, str], ...] = (("*Requestor:*", "*IC POC:*"), ("*Additional:*", "*Additional ICs:*"))
+GROUP_REPLACEMENTS: tuple[tuple[str, str], ...] = (("*Additional:*", "*Additional stakeholders:*"),)
 _UPDATE_ATTEMPTS = 5
 
 
@@ -38,7 +48,7 @@ class RelabelSlack(Protocol):
 
 @dataclass(frozen=True, slots=True)
 class RelabelHit:
-    """one asset-root message that still has the Requestor label."""
+    """one posted message whose people labels still need rewriting."""
 
     channel_id: str
     ts: str
@@ -46,7 +56,7 @@ class RelabelHit:
 
 @dataclass(frozen=True, slots=True)
 class BackfillResult:
-    """outcome of a Requestor to IC POC scan or apply pass."""
+    """outcome of a people-label scan or apply pass."""
 
     scanned_channels: int
     scanned_messages: int
@@ -56,23 +66,24 @@ class BackfillResult:
     dry_run: bool
 
 
-def rewrite_message_payload(*, text: str, blocks: object) -> tuple[str, object, bool]:
-    """Replace Requestor labels in fallback text and Block Kit JSON.
+def rewrite_message_payload(*, text: str, blocks: object, replacements: tuple[tuple[str, str], ...] = ASSET_REPLACEMENTS) -> tuple[str, object, bool]:
+    """Replace retired people labels in fallback text and Block Kit JSON.
 
     Args:
         text: message fallback text.
         blocks: message blocks payload, or None.
+        replacements: ordered old/new markup pairs to apply.
 
     Returns:
         tuple[str, object, bool]: rewritten text, rewritten blocks, and whether anything changed.
     """
-    new_text = text.replace(_OLD_LABEL, _NEW_LABEL)
-    new_blocks, blocks_changed = _replace_strings(blocks)
+    new_text = _apply_replacements(text, replacements)
+    new_blocks, blocks_changed = _replace_strings(blocks, replacements)
     return new_text, new_blocks, new_text != text or blocks_changed
 
 
 def backfill_requestor_labels(slack: RelabelSlack, *, apply: bool = False, channel_ids: tuple[str, ...] = ()) -> BackfillResult:
-    """Scan bot asset-root messages and optionally rewrite Requestor to IC POC.
+    """Scan bot asset-root and group-summary messages and rewrite people labels.
 
     Dry-run (apply=False) never calls chat.update. Apply rewrites matching messages
     in place and does not post new threads.
@@ -110,11 +121,12 @@ def backfill_requestor_labels(slack: RelabelSlack, *, apply: bool = False, chann
             scanned_messages += 1
             if not _is_our_bot(message, bot_id=bot_id, bot_user_id=bot_user_id):
                 continue
-            if not _is_asset_root(message):
+            replacements = _replacements_for_message(message)
+            if replacements is None:
                 continue
             text = str(message.get("text") or "")
             blocks = message.get("blocks")
-            new_text, new_blocks, changed = rewrite_message_payload(text=text, blocks=blocks)
+            new_text, new_blocks, changed = rewrite_message_payload(text=text, blocks=blocks, replacements=replacements)
             if not changed:
                 continue
             ts = str(message.get("ts") or "")
@@ -137,6 +149,15 @@ def backfill_requestor_labels(slack: RelabelSlack, *, apply: bool = False, chann
     )
 
 
+def _replacements_for_message(message: dict[str, Any]) -> tuple[tuple[str, str], ...] | None:
+    """Return people-label replacements for a posted asset root or group summary."""
+    if _has_block_id(message, ASSET_ROOT_BLOCK_ID):
+        return ASSET_REPLACEMENTS
+    if _has_block_id(message, GROUP_SUMMARY_BLOCK_ID):
+        return GROUP_REPLACEMENTS
+    return None
+
+
 def _is_our_bot(message: dict[str, Any], *, bot_id: str, bot_user_id: str) -> bool:
     """Return True when the history item was posted by this bot."""
     if bot_id and str(message.get("bot_id") or "") == bot_id:
@@ -144,12 +165,12 @@ def _is_our_bot(message: dict[str, Any], *, bot_id: str, bot_user_id: str) -> bo
     return bool(bot_user_id and str(message.get("user") or "") == bot_user_id)
 
 
-def _is_asset_root(message: dict[str, Any]) -> bool:
-    """Return True when the message is a posted asset-root Block Kit payload."""
+def _has_block_id(message: dict[str, Any], block_id: str) -> bool:
+    """Return True when the message includes a Block Kit block with the given id."""
     blocks = message.get("blocks")
     if not isinstance(blocks, list):
         return False
-    return any(isinstance(block, dict) and block.get("block_id") == ASSET_ROOT_BLOCK_ID for block in blocks)
+    return any(isinstance(block, dict) and block.get("block_id") == block_id for block in blocks)
 
 
 def _as_block_list(blocks: object) -> list[dict[str, Any]] | None:
@@ -163,16 +184,24 @@ def _as_block_list(blocks: object) -> list[dict[str, Any]] | None:
     return typed
 
 
-def _replace_strings(value: Any) -> tuple[Any, bool]:
-    """Recursively replace Requestor labels inside JSON-like values."""
+def _apply_replacements(text: str, replacements: tuple[tuple[str, str], ...]) -> str:
+    """Apply ordered old/new substitutions to a string."""
+    updated = text
+    for old, new in replacements:
+        updated = updated.replace(old, new)
+    return updated
+
+
+def _replace_strings(value: Any, replacements: tuple[tuple[str, str], ...]) -> tuple[Any, bool]:
+    """Recursively replace people labels inside JSON-like values."""
     if isinstance(value, str):
-        replaced = value.replace(_OLD_LABEL, _NEW_LABEL)
+        replaced = _apply_replacements(value, replacements)
         return replaced, replaced != value
     if isinstance(value, list):
         items: list[Any] = []
         changed = False
         for item in value:
-            new_item, item_changed = _replace_strings(item)
+            new_item, item_changed = _replace_strings(item, replacements)
             items.append(new_item)
             changed = changed or item_changed
         return items, changed
@@ -180,7 +209,7 @@ def _replace_strings(value: Any) -> tuple[Any, bool]:
         mapping: dict[Any, Any] = {}
         changed = False
         for key, item in value.items():
-            new_item, item_changed = _replace_strings(item)
+            new_item, item_changed = _replace_strings(item, replacements)
             mapping[key] = new_item
             changed = changed or item_changed
         return mapping, changed

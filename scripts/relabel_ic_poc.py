@@ -1,4 +1,4 @@
-"""Rewrite posted asset-root *Requestor:* labels to *IC POC:* via chat.update."""
+"""Rewrite posted people labels (Requestor/Additional) to IC POC / Additional ICs / Additional stakeholders."""
 
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ def main(argv: list[str] | None = None) -> int:
     Returns:
         int: 0 on success, 1 when one or more channel or update errors occurred.
     """
-    parser = argparse.ArgumentParser(description="Rewrite posted asset-root Requestor labels to IC POC.")
+    parser = argparse.ArgumentParser(description="Rewrite posted people labels to IC POC, Additional ICs, and Additional stakeholders.")
     parser.add_argument("--apply", action="store_true", help="chat.update matching messages. default is a dry-run.")
     parser.add_argument("--channel", action="append", default=[], metavar="ID", help="limit to a channel id. repeatable.")
     args = parser.parse_args(argv)

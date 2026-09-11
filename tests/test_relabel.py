@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from red_team_prop_threader._errors import PermissionDeniedError, RetryableExternalServiceError
-from red_team_prop_threader.relabel import RelabelHit, rewrite_message_payload, backfill_requestor_labels
+from red_team_prop_threader.relabel import GROUP_REPLACEMENTS, RelabelHit, rewrite_message_payload, backfill_requestor_labels
 
 
 _HEADER_REQUESTOR = {
@@ -17,6 +17,26 @@ _HEADER_IC_POC = {
     "type": "section",
     "block_id": "ar_header",
     "text": {"type": "mrkdwn", "text": ":threadparrot: *Asset:* Prop\n*Group:* G\n*IC POC:* <@U1>\n*Group POCs:* unassigned"},
+}
+_HEADER_IC_POC_ADDITIONAL = {
+    "type": "section",
+    "block_id": "ar_header",
+    "text": {"type": "mrkdwn", "text": ":threadparrot: *Asset:* Prop\n*Group:* G\n*IC POC:* <@U1>  *Additional:* <@U2>\n*Group POCs:* unassigned"},
+}
+_HEADER_IC_POC_ADDITIONAL_ICS = {
+    "type": "section",
+    "block_id": "ar_header",
+    "text": {"type": "mrkdwn", "text": ":threadparrot: *Asset:* Prop\n*Group:* G\n*IC POC:* <@U1>  *Additional ICs:* <@U2>\n*Group POCs:* unassigned"},
+}
+_GROUP_ADDITIONAL = {
+    "type": "section",
+    "block_id": "gs_header",
+    "text": {"type": "mrkdwn", "text": "*Title*\n*Creative Stakeholder:* <@U1>  *Additional:* <@U2>"},
+}
+_GROUP_ADDITIONAL_STAKEHOLDERS = {
+    "type": "section",
+    "block_id": "gs_header",
+    "text": {"type": "mrkdwn", "text": "*Title*\n*Creative Stakeholder:* <@U1>  *Additional stakeholders:* <@U2>"},
 }
 
 
@@ -77,6 +97,22 @@ def test_rewrite_is_noop_when_already_ic_poc() -> None:
     assert blocks == [_HEADER_IC_POC]
 
 
+def test_rewrite_asset_additional_to_additional_ics() -> None:
+    """Bare Additional on an asset root becomes Additional ICs."""
+    text, blocks, changed = rewrite_message_payload(text="*Additional:* <@U2>", blocks=[_HEADER_IC_POC_ADDITIONAL])
+    assert changed is True
+    assert text == "*Additional ICs:* <@U2>"
+    assert blocks == [_HEADER_IC_POC_ADDITIONAL_ICS]
+
+
+def test_rewrite_group_additional_to_additional_stakeholders() -> None:
+    """Bare Additional on a group summary becomes Additional stakeholders."""
+    text, blocks, changed = rewrite_message_payload(text="*Additional:* <@U2>", blocks=[_GROUP_ADDITIONAL], replacements=GROUP_REPLACEMENTS)
+    assert changed is True
+    assert text == "*Additional stakeholders:* <@U2>"
+    assert blocks == [_GROUP_ADDITIONAL_STAKEHOLDERS]
+
+
 def test_backfill_dry_run_does_not_update() -> None:
     """Dry-run reports hits without calling chat.update."""
     slack = _Slack(messages={"C1": (_bot_root("1.0", [_HEADER_REQUESTOR]),)})
@@ -130,6 +166,14 @@ def test_backfill_retries_rate_limit_then_updates() -> None:
     result = backfill_requestor_labels(slack, apply=True)
     assert result.updated == 1
     assert slack.updates[0][2] == "*IC POC:* <@U1>"
+
+
+def test_backfill_rewrites_group_summary_additional() -> None:
+    """Group summaries with bare Additional are rewritten to Additional stakeholders."""
+    slack = _Slack(messages={"C1": (_bot_root("1.0", [_GROUP_ADDITIONAL]),)})
+    result = backfill_requestor_labels(slack, apply=True)
+    assert result.updated == 1
+    assert slack.updates[0][3] == [_GROUP_ADDITIONAL_STAKEHOLDERS]
 
 
 def test_backfill_honors_explicit_channel_ids() -> None:

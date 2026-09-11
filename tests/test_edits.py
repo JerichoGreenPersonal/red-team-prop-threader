@@ -197,14 +197,14 @@ def _asset_snapshot(entity_id: int) -> dict[str, Any]:
         "asset_url": f"https://respawn.shotgunstudio.com/detail/Asset/{entity_id}",
         "group_title": "SEASON 31 PROP REQUEST THREADS",
         "created_ts": 1700000000,
-        "asset_animator_id": "Uasset",
-        "asset_additional_ids": [],
+        "ic_poc_id": "Uasset",
+        "additional_ic_ids": [],
         "asset_links": [],
-        "group_animator_id": "Uanim",
-        "group_additional_ids": [],
+        "creative_stakeholder_id": "Uanim",
+        "additional_stakeholder_ids": [],
         "group_links": [{"label": "Brief", "url": "https://example.com/brief"}],
-        "group_animator_display": "Name Uanim",
-        "group_additional_displays": [],
+        "creative_stakeholder_display": "Name Uanim",
+        "additional_stakeholder_displays": [],
         "message_identity": f"batch:{entity_id}",
     }
 
@@ -269,11 +269,11 @@ def sample_group_edit(repositories: Repositories, session: Session, clock: FakeC
                     "kind": "group_summary",
                     "canvas_id": "Fcanvas",
                     "group_title": "SEASON 31 PROP REQUEST THREADS",
-                    "group_animator_id": "Uanim",
-                    "group_additional_ids": [],
+                    "creative_stakeholder_id": "Uanim",
+                    "additional_stakeholder_ids": [],
                     "group_links": [{"label": "Brief", "url": "https://example.com/brief"}],
-                    "group_animator_display": "Name Uanim",
-                    "group_additional_displays": [],
+                    "creative_stakeholder_display": "Name Uanim",
+                    "additional_stakeholder_displays": [],
                     "included_asset_count": 3,
                     "processing_status": "Complete",
                     "completion_count": 3,
@@ -305,8 +305,8 @@ def sample_group_edit(repositories: Repositories, session: Session, clock: FakeC
         channel_id="C1",
         user_id="Ueditor",
         message_ts="200.1",
-        animator_id="Uanim",
-        additional_ids=("Uadd",),
+        creative_stakeholder_id="Uanim",
+        additional_stakeholder_ids=("Uadd",),
         links_text="Notes: https://example.com/notes",
     )
 
@@ -388,11 +388,11 @@ def test_group_edit_skips_primary_when_channel_is_primary(repositories: Reposito
                     "kind": "group_summary",
                     "canvas_id": "Fprimary",
                     "group_title": "SEASON 31 PROP REQUEST THREADS",
-                    "group_animator_id": "Uanim",
-                    "group_additional_ids": [],
+                    "creative_stakeholder_id": "Uanim",
+                    "additional_stakeholder_ids": [],
                     "group_links": [{"label": "Brief", "url": "https://example.com/brief"}],
-                    "group_animator_display": "Name Uanim",
-                    "group_additional_displays": [],
+                    "creative_stakeholder_display": "Name Uanim",
+                    "additional_stakeholder_displays": [],
                     "included_asset_count": 1,
                     "processing_status": "Complete",
                     "completion_count": 1,
@@ -421,7 +421,13 @@ def test_group_edit_skips_primary_when_channel_is_primary(repositories: Reposito
     service = EditService(repositories=repositories, slack=fake_slack, canvas_slack=fake_slack, clock=clock, primary_asset_index_channel_id=_PRIMARY_CHANNEL)
     service.apply_group_edit(
         GroupEditRequest(
-            workspace_id="W1", channel_id=_PRIMARY_CHANNEL, user_id="Ueditor", message_ts="200.1", animator_id="Uanim", additional_ids=(), links_text=""
+            workspace_id="W1",
+            channel_id=_PRIMARY_CHANNEL,
+            user_id="Ueditor",
+            message_ts="200.1",
+            creative_stakeholder_id="Uanim",
+            additional_stakeholder_ids=(),
+            links_text="",
         )
     )
     assert len(fake_slack.canvas_edits) == 1
@@ -456,8 +462,8 @@ def test_asset_edit_updates_one_latest_root(
             channel_id="C1",
             user_id="Ueditor",
             message_ts=root.slack_ts,
-            animator_id="Uasset",
-            additional_ids=("Uadd",),
+            ic_poc_id="Uasset",
+            additional_ic_ids=("Uadd",),
             links_text="Ref: https://example.com/ref",
         )
     )
@@ -466,18 +472,23 @@ def test_asset_edit_updates_one_latest_root(
     assert updated is not None
     assert updated.last_editor_id == "Ueditor"
     assert updated.last_edited_at == clock.now()
+    edit = (updated.canvas_metadata or {}).get("edit")
+    assert isinstance(edit, dict)
+    assert edit["ic_poc_id"] == "Uasset"
+    assert edit["additional_ic_ids"] == ["Uadd"]
+    assert not any("animator" in key for key in edit)
 
 
 def test_apply_asset_edit_can_clear_pocs_added_after_post(
     edit_service: EditService, fake_slack: FakeSlackGateway, repositories: Repositories, session: Session, clock: FakeClock
 ) -> None:
-    """Selecting Unassigned must remove IC POC and additional requestors from the root."""
+    """Selecting Unassigned must remove IC POC and Additional ICs from the root."""
     group_id = _seed_group(repositories, session, clock)
     batch = repositories.batches.create(group_id=group_id, workspace_id="W1", channel_id="C1", submitter_user_id="Ueditor", payload={}, now=clock.now())
     session.flush()
     snapshot = _asset_snapshot(1001)
-    snapshot["asset_animator_id"] = "Uasset"
-    snapshot["asset_additional_ids"] = ["Uadd"]
+    snapshot["ic_poc_id"] = "Uasset"
+    snapshot["additional_ic_ids"] = ["Uadd"]
     root = repositories.history.record(
         NewMessageInput(
             workspace_id="W1",
@@ -494,14 +505,15 @@ def test_apply_asset_edit_can_clear_pocs_added_after_post(
     )
     session.flush()
     edit_service.apply_asset_edit(
-        AssetEditRequest(workspace_id="W1", channel_id="C1", user_id="Ueditor", message_ts=root.slack_ts, animator_id="", additional_ids=(), links_text="")
+        AssetEditRequest(workspace_id="W1", channel_id="C1", user_id="Ueditor", message_ts=root.slack_ts, ic_poc_id="", additional_ic_ids=(), links_text="")
     )
     stored = repositories.history.get_by_channel_ts(workspace_id="W1", channel_id="C1", slack_ts="301.1")
     assert stored is not None
     edit = (stored.canvas_metadata or {}).get("edit")
     assert isinstance(edit, dict)
-    assert edit["asset_animator_id"] == ""
-    assert edit["asset_additional_ids"] == []
+    assert edit["ic_poc_id"] == ""
+    assert edit["additional_ic_ids"] == []
+    assert not any("animator" in key for key in edit)
     assert "*IC POC:* unassigned" in str(fake_slack.updates[-1].blocks)
 
 
@@ -511,8 +523,8 @@ def test_open_editor_omits_empty_initial_user(edit_service: EditService, reposit
     batch = repositories.batches.create(group_id=group_id, workspace_id="W1", channel_id="C1", submitter_user_id="Ueditor", payload={}, now=clock.now())
     session.flush()
     snapshot = _asset_snapshot(1001)
-    snapshot["asset_animator_id"] = ""
-    snapshot["asset_additional_ids"] = []
+    snapshot["ic_poc_id"] = ""
+    snapshot["additional_ic_ids"] = []
     root = repositories.history.record(
         NewMessageInput(
             workspace_id="W1",
@@ -583,7 +595,7 @@ def test_edit_validation_errors_route_link_parse_to_links_block() -> None:
     errors = edit_validation_errors(ValidationError("line 1: Supporting links require a label (label: link)"))
     assert errors == {"edit_links": "line 1: Supporting links require a label (label: link)"}
     membership = edit_validation_errors(ValidationError("selected users must be members of the target channel"))
-    assert membership == {"edit_animator": "selected users must be members of the target channel"}
+    assert membership == {"edit_primary": "selected users must be members of the target channel"}
 
 
 def test_decode_edit_submission_parses_metadata_and_fields() -> None:
@@ -592,7 +604,7 @@ def test_decode_edit_submission_parses_metadata_and_fields() -> None:
         "private_metadata": "C1|12.34",
         "state": {
             "values": {
-                "edit_animator": {"edit_animator": {"selected_user": "Uanim"}},
+                "edit_primary": {"edit_primary": {"selected_user": "Uanim"}},
                 "edit_additional": {"edit_additional": {"selected_users": ["Uadd"]}},
                 "edit_links": {"edit_links": {"value": "A: https://example.com/a"}},
             }
@@ -612,7 +624,7 @@ def test_decode_edit_submission_unassigned_clears_people() -> None:
         "private_metadata": "C1|12.34",
         "state": {
             "values": {
-                "edit_animator": {"edit_animator": {"selected_option": {"value": "__none__"}}},
+                "edit_primary": {"edit_primary": {"selected_option": {"value": "__none__"}}},
                 "edit_additional": {"edit_additional": {"selected_options": []}},
                 "edit_links": {"edit_links": {"value": ""}},
             }
@@ -635,3 +647,129 @@ def test_open_asset_editor_accepts_mismatched_workspace_id(edit_service: EditSer
     )
     assert not result.refused
     assert result.view is not None
+
+
+def test_open_asset_editor_reads_legacy_animator_snapshot_keys(
+    edit_service: EditService, repositories: Repositories, session: Session, clock: FakeClock
+) -> None:
+    """Edit POCs still opens from snapshots that only have asset_animator_id."""
+    group_id = _seed_group(repositories, session, clock)
+    batch = repositories.batches.create(group_id=group_id, workspace_id="W1", channel_id="C1", submitter_user_id="Ueditor", payload={}, now=clock.now())
+    session.flush()
+    snapshot = _asset_snapshot(1001)
+    for key in (
+        "ic_poc_id",
+        "additional_ic_ids",
+        "creative_stakeholder_id",
+        "additional_stakeholder_ids",
+        "creative_stakeholder_display",
+        "additional_stakeholder_displays",
+    ):
+        snapshot.pop(key, None)
+    snapshot["asset_animator_id"] = "Uasset"
+    snapshot["asset_additional_ids"] = ["Uadd"]
+    snapshot["group_animator_id"] = "Uanim"
+    snapshot["group_additional_ids"] = []
+    snapshot["group_animator_display"] = "Name Uanim"
+    snapshot["group_additional_displays"] = []
+    root = repositories.history.record(
+        NewMessageInput(
+            workspace_id="W1",
+            channel_id="C1",
+            group_id=group_id,
+            batch_id=batch.id,
+            kind=MessageKind.ASSET_ROOT,
+            asset_entity_id=1001,
+            slack_ts="410.1",
+            permalink="https://slack.example/410",
+            canvas_metadata={"edit": snapshot},
+            now=clock.now(),
+        )
+    )
+    session.flush()
+    result = edit_service.open_asset_editor(MessageRef(workspace_id="W1", channel_id="C1", user_id="Ueditor", message_ts=root.slack_ts, message_identity="a"))
+    assert not result.refused
+    assert result.view is not None
+    primary = result.view["blocks"][0]["element"]
+    assert primary["initial_option"]["value"] == "Uasset"
+    extra = result.view["blocks"][1]["element"]
+    assert extra["initial_options"][0]["value"] == "Uadd"
+
+
+def test_apply_asset_edit_rewrites_legacy_snapshot_to_new_keys(
+    edit_service: EditService, fake_slack: FakeSlackGateway, repositories: Repositories, session: Session, clock: FakeClock
+) -> None:
+    """Saving Edit POCs writes ic_poc_id and drops animator_* without a history rewrite first."""
+    group_id = _seed_group(repositories, session, clock)
+    batch = repositories.batches.create(group_id=group_id, workspace_id="W1", channel_id="C1", submitter_user_id="Ueditor", payload={}, now=clock.now())
+    session.flush()
+    snapshot = _asset_snapshot(1001)
+    snapshot.pop("ic_poc_id", None)
+    snapshot.pop("additional_ic_ids", None)
+    snapshot["asset_animator_id"] = "Uasset"
+    snapshot["asset_additional_ids"] = ["Uadd"]
+    root = repositories.history.record(
+        NewMessageInput(
+            workspace_id="W1",
+            channel_id="C1",
+            group_id=group_id,
+            batch_id=batch.id,
+            kind=MessageKind.ASSET_ROOT,
+            asset_entity_id=1001,
+            slack_ts="411.1",
+            permalink="https://slack.example/411",
+            canvas_metadata={"edit": snapshot},
+            now=clock.now(),
+        )
+    )
+    session.flush()
+    edit_service.apply_asset_edit(
+        AssetEditRequest(
+            workspace_id="W1", channel_id="C1", user_id="Ueditor", message_ts=root.slack_ts, ic_poc_id="Uasset", additional_ic_ids=("Uadd",), links_text=""
+        )
+    )
+    stored = repositories.history.get_by_channel_ts(workspace_id="W1", channel_id="C1", slack_ts="411.1")
+    assert stored is not None
+    edit = (stored.canvas_metadata or {}).get("edit")
+    assert isinstance(edit, dict)
+    assert edit["ic_poc_id"] == "Uasset"
+    assert edit["additional_ic_ids"] == ["Uadd"]
+    assert "asset_animator_id" not in edit
+    assert "asset_additional_ids" not in edit
+    assert not any("animator" in key for key in edit)
+
+
+def test_empty_ic_poc_id_does_not_fall_back_to_asset_animator_id(
+    edit_service: EditService, repositories: Repositories, session: Session, clock: FakeClock
+) -> None:
+    """A present empty ic_poc_id must not resurrect a legacy asset_animator_id."""
+    group_id = _seed_group(repositories, session, clock)
+    batch = repositories.batches.create(group_id=group_id, workspace_id="W1", channel_id="C1", submitter_user_id="Ueditor", payload={}, now=clock.now())
+    session.flush()
+    snapshot = _asset_snapshot(1001)
+    snapshot["ic_poc_id"] = ""
+    snapshot["additional_ic_ids"] = []
+    snapshot["asset_animator_id"] = "Uasset"
+    snapshot["asset_additional_ids"] = ["Uadd"]
+    root = repositories.history.record(
+        NewMessageInput(
+            workspace_id="W1",
+            channel_id="C1",
+            group_id=group_id,
+            batch_id=batch.id,
+            kind=MessageKind.ASSET_ROOT,
+            asset_entity_id=1001,
+            slack_ts="412.1",
+            permalink="https://slack.example/412",
+            canvas_metadata={"edit": snapshot},
+            now=clock.now(),
+        )
+    )
+    session.flush()
+    result = edit_service.open_asset_editor(MessageRef(workspace_id="W1", channel_id="C1", user_id="Ueditor", message_ts=root.slack_ts, message_identity="a"))
+    assert not result.refused
+    assert result.view is not None
+    primary = result.view["blocks"][0]["element"]
+    assert "initial_option" not in primary
+    extra = result.view["blocks"][1]["element"]
+    assert "initial_options" not in extra

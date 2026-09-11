@@ -206,8 +206,8 @@ def _sample_payload(*, assets: list[dict[str, Any]] | None = None, lease_token: 
     return {
         "canvas_id": "Fcanvas",
         "group_title": "SEASON 31 PROP REQUEST THREADS",
-        "group_animator_id": "Uanim",
-        "group_additional_ids": [],
+        "creative_stakeholder_id": "Uanim",
+        "additional_stakeholder_ids": [],
         "group_links": [{"label": "Brief", "url": "https://example.com/brief"}],
         "lease_token": lease_token,
         "assets": assets
@@ -216,16 +216,16 @@ def _sample_payload(*, assets: list[dict[str, Any]] | None = None, lease_token: 
                 "entity_id": 1001,
                 "name": "Prop A",
                 "url": "https://respawn.shotgunstudio.com/detail/Asset/1001",
-                "animator_id": "Uasset",
-                "additional_ids": [],
+                "ic_poc_id": "Uasset",
+                "additional_ic_ids": [],
                 "links": [],
             },
             {
                 "entity_id": 1002,
                 "name": "Prop B",
                 "url": "https://respawn.shotgunstudio.com/detail/Asset/1002",
-                "animator_id": "Uasset",
-                "additional_ids": [],
+                "ic_poc_id": "Uasset",
+                "additional_ic_ids": [],
                 "links": [],
             },
         ],
@@ -465,3 +465,35 @@ def test_individual_asset_failure_continues(
     statuses = sorted(op.status.value for op in repositories.operations.get_for_batch(batch_id) if op.kind is OperationKind.POST_ASSET)
     assert OperationStatus.FAILED.value in statuses
     assert OperationStatus.SUCCEEDED.value in statuses
+
+
+def test_executor_reads_legacy_animator_job_payload(
+    repositories: Repositories, leases: ChannelLeaseRepository, session: Session, clock: FakeClock, fake_slack: FakeSlackGateway, executor: BatchExecutor
+) -> None:
+    """In-flight jobs with animator_* keys still post IC POC and Creative Stakeholder mentions."""
+    payload = _sample_payload(assets=[_sample_payload()["assets"][0]])
+    payload.pop("creative_stakeholder_id")
+    payload.pop("additional_stakeholder_ids")
+    payload["group_animator_id"] = "Uanim"
+    payload["group_additional_ids"] = ["Uaddg"]
+    asset = payload["assets"][0]
+    asset.pop("ic_poc_id")
+    asset.pop("additional_ic_ids")
+    asset["animator_id"] = "Uasset"
+    asset["additional_ids"] = ["Uadda"]
+    batch_id = sample_confirmed_batch(repositories, leases, session, clock, payload=payload)
+    result = executor.execute(batch_id)
+    assert result.status is BatchStatus.SUCCEEDED
+    posted = str(fake_slack.posts)
+    assert "<@Uanim>" in posted
+    assert "<@Uaddg>" in posted
+    assert "<@Uasset>" in posted
+    assert "<@Uadda>" in posted
+    root = repositories.history.latest_asset_root("W1", "C1", 1001)
+    assert root is not None
+    edit = (root.canvas_metadata or {}).get("edit")
+    assert isinstance(edit, dict)
+    assert edit["ic_poc_id"] == "Uasset"
+    assert edit["additional_ic_ids"] == ["Uadda"]
+    assert edit["creative_stakeholder_id"] == "Uanim"
+    assert not any("animator" in key for key in edit)

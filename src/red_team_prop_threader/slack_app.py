@@ -263,7 +263,7 @@ def register_listeners(app: App, workflow_factory: Callable[[], Workflow], edit_
         try:
             field_errors = workflow._confirm_field_errors(draft)
             if field_errors:
-                message = field_errors.get("group_animator") or field_errors.get("group_title") or next(iter(field_errors.values()))
+                message = field_errors.get("creative_stakeholder") or field_errors.get("group_title") or next(iter(field_errors.values()))
                 _notify_draft_user(client, draft, message, logger)
                 return
             response = workflow.confirm_batch(draft)
@@ -301,8 +301,8 @@ def _register_edit_listeners(app: App, edit_factory: Callable[[], EditService]) 
                     channel_id=channel_id,
                     user_id=_user_id_from_body(body),
                     message_ts=message_ts,
-                    animator_id=animator_id,
-                    additional_ids=additional_ids,
+                    ic_poc_id=animator_id,
+                    additional_ic_ids=additional_ids,
                     links_text=links_text,
                 )
             )
@@ -324,8 +324,8 @@ def _register_edit_listeners(app: App, edit_factory: Callable[[], EditService]) 
                     channel_id=channel_id,
                     user_id=_user_id_from_body(body),
                     message_ts=message_ts,
-                    animator_id=animator_id,
-                    additional_ids=additional_ids,
+                    creative_stakeholder_id=animator_id,
+                    additional_stakeholder_ids=additional_ids,
                     links_text=links_text,
                 )
             )
