@@ -24,13 +24,11 @@ __all__ = (
     "AID_NAV_BACK",
     "AID_NAV_CONFIRM",
     "AID_NAV_NEXT",
+    "BID_ADDITIONAL_STAKEHOLDERS",
     "BID_CONFIRM_GROUP_TITLE",
-    "BID_FORM_ERRORS",
-    "BID_GROUP_ADDITIONAL",
-    "BID_GROUP_ANIMATOR",
+    "BID_CREATIVE_STAKEHOLDER",
     "BID_GROUP_LINKS",
     "BID_GROUP_TITLE",
-    "FORM_ERRORS_NOTICE",
     "AssetDraft",
     "AssetSelection",
     "CanvasPreflightContext",
@@ -39,12 +37,15 @@ __all__ = (
     "DecodedAssetPage",
     "DecodedAssetState",
     "ImportContext",
+    "asset_page_count",
+    "constrain_asset_page_errors",
     "decode_asset_page_state",
     "render_asset_page",
     "render_canvas_loading_view",
     "render_canvas_preflight_view",
     "render_confirmation_view",
     "render_import_view",
+    "render_working_view",
     "with_form_error_notice",
 )
 
@@ -67,12 +68,15 @@ AID_NAV_CONFIRM = "nav_confirm"
 # ---------------------------------------------------------------------------
 
 BID_GROUP_TITLE = "group_title"
-BID_GROUP_ANIMATOR = "group_animator"
-BID_GROUP_ADDITIONAL = "group_additional"
+BID_CREATIVE_STAKEHOLDER = "creative_stakeholder"
+BID_ADDITIONAL_STAKEHOLDERS = "additional_stakeholders"
 BID_GROUP_LINKS = "group_links"
 BID_CONFIRM_GROUP_TITLE = "confirm_group_title"
-BID_FORM_ERRORS = "form_errors"
-FORM_ERRORS_NOTICE = "Errors exist, see above."
+_PLACEHOLDER_GROUP_TITLE = "ex: Season or Map Name"
+_PLACEHOLDER_GROUP_STAKEHOLDER = "Select an AD or Feature Owner"
+_PLACEHOLDER_GROUP_LINKS = "Ex: Map Miro, Season Deck, etc (Format: Label: https://...)"
+_PLACEHOLDER_ASSET_POC = "Animator or Concept Artist"
+_PLACEHOLDER_ASSET_LINKS = "Ex: Area in Miro, SyncSketch, Reverence Folder, etc (Format: Label: https://...)"
 
 # ---------------------------------------------------------------------------
 # Slack limits
@@ -148,15 +152,15 @@ class AssetSelection:
     Args:
         entity_id: ShotGrid entity ID; must match the paired ImportedAsset.
         included: whether this asset is flagged for thread creation.
-        animator_id: Slack user ID of the selected animator, or None.
-        additional_ids: ordered Slack user IDs for additional people.
+        ic_poc_id: Slack user ID of the selected animator, or None.
+        additional_ic_ids: ordered Slack user IDs for additional people.
         links_text: raw multiline supporting-link text entered by the user.
     """
 
     entity_id: int
     included: bool
-    animator_id: str | None
-    additional_ids: tuple[str, ...]
+    ic_poc_id: str | None
+    additional_ic_ids: tuple[str, ...]
     links_text: str
 
 
@@ -168,8 +172,8 @@ class AssetDraft:
         draft_id: opaque draft identifier (bounded string).
         assets: all imported assets in ShotGrid source_index order.
         group_title: current group title text.
-        group_animator_id: Slack user ID of the group animator, or None.
-        group_additional_ids: ordered Slack user IDs for group additional people.
+        creative_stakeholder_id: Slack user ID of the group animator, or None.
+        additional_stakeholder_ids: ordered Slack user IDs for group additional people.
         group_links_text: raw multiline supporting-link text for the group.
         selections: per-asset selections; must be parallel to assets.
         channel_members: human channel members for people pickers (verbose labels).
@@ -182,8 +186,8 @@ class AssetDraft:
     draft_id: str
     assets: tuple[ImportedAsset, ...]
     group_title: str
-    group_animator_id: str | None
-    group_additional_ids: tuple[str, ...]
+    creative_stakeholder_id: str | None
+    additional_stakeholder_ids: tuple[str, ...]
     group_links_text: str
     selections: tuple[AssetSelection, ...]
     channel_members: tuple[ChannelMemberOption, ...] = ()
@@ -214,15 +218,15 @@ class DecodedAssetState:
     Args:
         entity_id: ShotGrid entity ID inferred from the block ID.
         included: true when the include checkbox was checked.
-        animator_id: selected Slack user ID, or None.
-        additional_ids: selected Slack user IDs for additional people.
+        ic_poc_id: selected Slack user ID, or None.
+        additional_ic_ids: selected Slack user IDs for additional people.
         links_text: raw supporting-link text value.
     """
 
     entity_id: int
     included: bool
-    animator_id: str | None
-    additional_ids: tuple[str, ...]
+    ic_poc_id: str | None
+    additional_ic_ids: tuple[str, ...]
     links_text: str
 
 
@@ -233,16 +237,16 @@ class DecodedAssetPage:
     Args:
         page_index: the page index (0 or 1) this state corresponds to.
         group_title: decoded group title text.
-        group_animator_id: decoded group animator Slack user ID, or None.
-        group_additional_ids: decoded group additional Slack user IDs.
+        creative_stakeholder_id: decoded group animator Slack user ID, or None.
+        additional_stakeholder_ids: decoded group additional Slack user IDs.
         group_links_text: decoded group supporting-link text.
         asset_states: decoded per-asset states in block order.
     """
 
     page_index: int
     group_title: str
-    group_animator_id: str | None
-    group_additional_ids: tuple[str, ...]
+    creative_stakeholder_id: str | None
+    additional_stakeholder_ids: tuple[str, ...]
     group_links_text: str
     asset_states: tuple[DecodedAssetState, ...]
 
@@ -487,20 +491,65 @@ def _plain_text_input(action_id: str, placeholder: str, initial_value: str | Non
     return elem
 
 
-def _form_errors_block() -> dict[str, object]:
-    """Bottom input used only as a sink for modal-wide validation notices."""
-    return _input_block(BID_FORM_ERRORS, "Notice", _plain_text_input(BID_FORM_ERRORS, "Leave blank", None), optional=True)
-
-
 def with_form_error_notice(errors: dict[str, str]) -> dict[str, str]:
-    """Attach a bottom-of-modal notice whenever field errors are returned.
+    """Return field errors for Slack ``response_action=errors``.
 
-    Slack only highlights input blocks via ``response_action=errors``. A trailing
-    notice input keeps failures visible when the offending field is off-screen.
+    Args:
+        errors: block_id to message mapping from validation.
+
+    Returns:
+        dict[str, str]: the same mapping, for Bolt ack payloads.
+    """
+    return errors
+
+
+def constrain_asset_page_errors(errors: dict[str, str], *, page_index: int, entity_ids: tuple[int, ...]) -> dict[str, str]:
+    """Keep Slack modal errors on input blocks that exist on this asset page.
+
+    Slack rejects ``response_action=errors`` (client: trouble connecting) when a
+    key is not an input on the open view. Membership and link failures for
+    assets on another page are moved onto group title.
+
+    Args:
+        errors: block_id to message mapping from confirmation validation.
+        page_index: zero-based page currently open.
+        entity_ids: all draft entity ids in source order.
+
+    Returns:
+        dict[str, str]: errors keyed only by blocks present on this page.
     """
     if not errors:
         return errors
-    return {**errors, BID_FORM_ERRORS: FORM_ERRORS_NOTICE}
+    start = page_index * _PAGE_SIZE
+    page_ids = entity_ids[start : start + _PAGE_SIZE]
+    visible = {BID_GROUP_TITLE, BID_CREATIVE_STAKEHOLDER, BID_ADDITIONAL_STAKEHOLDERS, BID_GROUP_LINKS}
+    for entity_id in page_ids:
+        visible.update({f"asset_{entity_id}_include", f"asset_{entity_id}_ic_poc", f"asset_{entity_id}_additional_ics", f"asset_{entity_id}_links"})
+    constrained: dict[str, str] = {}
+    overflow: list[str] = []
+    for block_id, message in errors.items():
+        if block_id in visible:
+            constrained[block_id] = message
+        else:
+            overflow.append(message)
+    if overflow:
+        extra = overflow[0]
+        existing = constrained.get(BID_GROUP_TITLE)
+        constrained[BID_GROUP_TITLE] = f"{existing} {extra}" if existing else extra
+    return constrained
+
+
+def _creating_threads_label(asset_count: int) -> str:
+    """Return the asset-count intro line for a draft page.
+
+    Args:
+        asset_count: number of assets imported from the ShotGrid page.
+
+    Returns:
+        str: intro copy such as ``Creating threads for 3 assets``.
+    """
+    noun = "asset" if asset_count == 1 else "assets"
+    return f"Creating threads for {asset_count} {noun}"
 
 
 def _checkboxes(action_id: str, included: bool) -> dict[str, object]:
@@ -533,6 +582,18 @@ def _validate_draft_id(draft_id: str) -> None:
         raise ValidationError("draft_id must not be empty")
     if len(draft_id) > _DRAFT_ID_MAX:
         raise ValidationError(f"draft_id length {len(draft_id)} exceeds maximum {_DRAFT_ID_MAX}")
+
+
+def asset_page_count(total: int) -> int:
+    """Return the number of asset-modal pages for a given asset count.
+
+    Args:
+        total: number of assets.
+
+    Returns:
+        int: number of pages (minimum 1).
+    """
+    return _page_count(total)
 
 
 def _page_count(total: int) -> int:
@@ -586,25 +647,25 @@ def _group_blocks(draft: AssetDraft) -> list[dict[str, object]]:
     """
     members = draft.channel_members
     return [
-        _input_block(BID_GROUP_TITLE, "Group title", _plain_text_input(BID_GROUP_TITLE, "SEASON N PROP REQUEST THREADS", draft.group_title or None)),
+        _input_block(BID_GROUP_TITLE, "Group title", _plain_text_input(BID_GROUP_TITLE, _PLACEHOLDER_GROUP_TITLE, draft.group_title or None)),
         _input_block(
-            BID_GROUP_ANIMATOR,
+            BID_CREATIVE_STAKEHOLDER,
             "Creative Stakeholder",
-            _users_select(BID_GROUP_ANIMATOR, "Select a channel member", draft.group_animator_id, members),
+            _users_select(BID_CREATIVE_STAKEHOLDER, _PLACEHOLDER_GROUP_STAKEHOLDER, draft.creative_stakeholder_id, members),
             optional=True,
             hint="Only people already in this channel are listed.",
         ),
         _input_block(
-            BID_GROUP_ADDITIONAL,
+            BID_ADDITIONAL_STAKEHOLDERS,
             "Additional stakeholders",
-            _multi_users_select(BID_GROUP_ADDITIONAL, "Select channel members", draft.group_additional_ids, members),
+            _multi_users_select(BID_ADDITIONAL_STAKEHOLDERS, "Select channel members", draft.additional_stakeholder_ids, members),
             optional=True,
             hint="Only people already in this channel are listed.",
         ),
         _input_block(
             BID_GROUP_LINKS,
             "Group links",
-            _plain_text_input(BID_GROUP_LINKS, "Label: https://...", draft.group_links_text or None, multiline=True),
+            _plain_text_input(BID_GROUP_LINKS, _PLACEHOLDER_GROUP_LINKS, draft.group_links_text or None, multiline=True),
             optional=True,
         ),
     ]
@@ -630,21 +691,24 @@ def _asset_blocks(asset: ImportedAsset, sel: AssetSelection, members: tuple[Chan
         _context_block(ctx_bid, [_mrkdwn(context_text)]),
         _input_block(f"asset_{eid}_include", f"{asset.name} (ID: {eid})", _checkboxes(f"asset_{eid}_include", sel.included), optional=True),
         _input_block(
-            f"asset_{eid}_animator",
-            "Requestor",
-            _users_select(f"asset_{eid}_animator", "Select a channel member", sel.animator_id, members),
+            f"asset_{eid}_ic_poc",
+            "IC POC",
+            _users_select(f"asset_{eid}_ic_poc", _PLACEHOLDER_ASSET_POC, sel.ic_poc_id, members),
             optional=True,
             hint="Only people already in this channel are listed.",
         ),
         _input_block(
-            f"asset_{eid}_additional",
-            "Additional requestors",
-            _multi_users_select(f"asset_{eid}_additional", "Select channel members", sel.additional_ids, members),
+            f"asset_{eid}_additional_ics",
+            "Additional ICs",
+            _multi_users_select(f"asset_{eid}_additional_ics", "Select channel members", sel.additional_ic_ids, members),
             optional=True,
             hint="Only people already in this channel are listed.",
         ),
         _input_block(
-            f"asset_{eid}_links", "Links", _plain_text_input(f"asset_{eid}_links", "Label: https://...", sel.links_text or None, multiline=True), optional=True
+            f"asset_{eid}_links",
+            "Asset Links",
+            _plain_text_input(f"asset_{eid}_links", _PLACEHOLDER_ASSET_LINKS, sel.links_text or None, multiline=True),
+            optional=True,
         ),
     ]
 
@@ -652,6 +716,28 @@ def _asset_blocks(asset: ImportedAsset, sel: AssetSelection, members: tuple[Chan
 # ---------------------------------------------------------------------------
 # public render functions
 # ---------------------------------------------------------------------------
+
+
+def render_working_view(draft_id: str, *, title: str, message: str) -> dict[str, object]:
+    """Render a non-submittable loading modal while a view handler finishes work.
+
+    View submissions also time out at about three seconds. Acking with this
+    view keeps the modal open; the real next screen is a later views.update.
+
+    Args:
+        draft_id: draft identifier stored in private_metadata.
+        title: modal title (truncated to Slack's 24-character limit).
+        message: mrkdwn body shown to the user.
+
+    Returns:
+        dict[str, object]: Slack modal view payload without a submit button.
+
+    Raises:
+        ValidationError: if draft_id exceeds the maximum length.
+    """
+    _validate_draft_id(draft_id)
+    blocks: list[dict[str, object]] = [_section("working_status", _mrkdwn(f"*{message}*"))]
+    return {"type": "modal", "title": _plain(title, _MODAL_TITLE_MAX), "close": _plain("Cancel"), "private_metadata": draft_id, "blocks": blocks}
 
 
 def render_canvas_loading_view(draft_id: str) -> dict[str, object]:
@@ -666,9 +752,7 @@ def render_canvas_loading_view(draft_id: str) -> dict[str, object]:
     Raises:
         ValidationError: if draft_id exceeds the maximum length.
     """
-    _validate_draft_id(draft_id)
-    blocks: list[dict[str, object]] = [_section("preflight_loading", _mrkdwn("*Checking the channel canvas…*\n\nThis only takes a moment."))]
-    return {"type": "modal", "title": _plain("Canvas Check"), "close": _plain("Cancel"), "private_metadata": draft_id, "blocks": blocks}
+    return render_working_view(draft_id, title="Canvas Check", message="Checking the channel canvas…\n\nThis only takes a moment.")
 
 
 def render_canvas_preflight_view(context: CanvasPreflightContext) -> dict[str, object]:
@@ -785,11 +869,7 @@ def render_asset_page(draft: AssetDraft, page_index: int) -> dict[str, object]:
     page_sels = _page_selections(draft.selections, page_index)
 
     total_pages = _page_count(total)
-    page_label = (
-        f"Page {page_index + 1} of {total_pages} \u2014 {_escape(draft.group_title)}" if draft.group_title else f"Page {page_index + 1} of {total_pages}"
-    )
-
-    blocks: list[dict[str, object]] = [_section("page_intro", _mrkdwn(page_label))]
+    blocks: list[dict[str, object]] = [_section("page_intro", _mrkdwn(_creating_threads_label(total)))]
     blocks.extend(_group_blocks(draft))
 
     for asset, sel in zip(page_assets, page_sels, strict=True):
@@ -805,7 +885,6 @@ def render_asset_page(draft: AssetDraft, page_index: int) -> dict[str, object]:
         nav_elements.append(_button("Confirm", AID_NAV_CONFIRM, value=draft.draft_id, style="primary"))
 
     blocks.append(_actions_block("nav_actions", nav_elements))
-    blocks.append(_form_errors_block())
 
     if len(blocks) > _BLOCK_MAX:
         raise ValidationError(f"rendered {len(blocks)} blocks; maximum is {_BLOCK_MAX}")
@@ -842,7 +921,7 @@ def render_confirmation_view(context: ConfirmationContext) -> dict[str, object]:
     _validate_draft_id(context.draft_id)
     blocks: list[dict[str, object]] = [
         _section("conf_channel", _mrkdwn(f"*Target channel:* <#{context.target_channel_id}>")),
-        _input_block(BID_CONFIRM_GROUP_TITLE, "Group title", _plain_text_input(AID_CONFIRM_GROUP_TITLE, "SEASON N PROP REQUEST THREADS", context.group_title)),
+        _input_block(BID_CONFIRM_GROUP_TITLE, "Group title", _plain_text_input(AID_CONFIRM_GROUP_TITLE, _PLACEHOLDER_GROUP_TITLE, context.group_title)),
         _section("conf_counts", _mrkdwn(f"*{context.included_count}* asset(s) included \u2014 *{context.deduped_row_count}* unique deduplicated row(s).")),
     ]
 
@@ -854,7 +933,6 @@ def render_confirmation_view(context: ConfirmationContext) -> dict[str, object]:
         blocks.append(_section(f"conf_warning_{i}", _mrkdwn(f":warning: {_escape(warning)}")))
 
     blocks.append(_section("conf_disclaimer", _mrkdwn("*Note:* Once confirmed, thread posting cannot be cancelled. The process runs as a background job.")))
-    blocks.append(_form_errors_block())
 
     return {
         "type": "modal",
@@ -903,8 +981,8 @@ def decode_asset_page_state(view_state: dict[str, object], page_index: int) -> D
 
     # decode group fields (absent keys default to empty/None)
     group_title = _decode_plain_text(values, BID_GROUP_TITLE)
-    group_animator_id = _decode_user_select(values, BID_GROUP_ANIMATOR)
-    group_additional_ids = _decode_multi_user_select(values, BID_GROUP_ADDITIONAL)
+    creative_stakeholder_id = _decode_user_select(values, BID_CREATIVE_STAKEHOLDER)
+    additional_stakeholder_ids = _decode_multi_user_select(values, BID_ADDITIONAL_STAKEHOLDERS)
     group_links_text = _decode_plain_text(values, BID_GROUP_LINKS)
 
     # collect asset entity IDs from _include block keys, in dict-insertion order
@@ -918,16 +996,18 @@ def decode_asset_page_state(view_state: dict[str, object], page_index: int) -> D
     asset_states: list[DecodedAssetState] = []
     for eid in ordered_ids:
         included = _decode_checkbox(values, f"asset_{eid}_include", eid)
-        animator_id = _decode_user_select(values, f"asset_{eid}_animator")
-        additional_ids = _decode_multi_user_select(values, f"asset_{eid}_additional")
+        ic_poc_id = _decode_user_select(values, f"asset_{eid}_ic_poc")
+        additional_ic_ids = _decode_multi_user_select(values, f"asset_{eid}_additional_ics")
         links_text = _decode_plain_text(values, f"asset_{eid}_links")
-        asset_states.append(DecodedAssetState(entity_id=eid, included=included, animator_id=animator_id, additional_ids=additional_ids, links_text=links_text))
+        asset_states.append(
+            DecodedAssetState(entity_id=eid, included=included, ic_poc_id=ic_poc_id, additional_ic_ids=additional_ic_ids, links_text=links_text)
+        )
 
     return DecodedAssetPage(
         page_index=page_index,
         group_title=group_title,
-        group_animator_id=group_animator_id,
-        group_additional_ids=group_additional_ids,
+        creative_stakeholder_id=creative_stakeholder_id,
+        additional_stakeholder_ids=additional_stakeholder_ids,
         group_links_text=group_links_text,
         asset_states=tuple(asset_states),
     )

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from datetime import datetime, timezone
 from dataclasses import dataclass
 
@@ -10,10 +10,22 @@ from red_team_prop_threader._errors import ValidationError
 
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
     from red_team_prop_threader.domain import SupportingLink
 
 
-__all__ = ("AID_EDIT_ASSET_DETAILS", "AID_EDIT_GROUP_DETAILS", "AssetRootContext", "GroupSummaryContext", "render_asset_root", "render_group_summary")
+__all__ = (
+    "AID_EDIT_ASSET_DETAILS",
+    "AID_EDIT_GROUP_DETAILS",
+    "AssetRootContext",
+    "GroupSummaryContext",
+    "coalesce_ids",
+    "coalesce_str",
+    "migrate_people_snapshot",
+    "render_asset_root",
+    "render_group_summary",
+)
 
 # ---------------------------------------------------------------------------
 # stable action ID constants
@@ -41,8 +53,8 @@ class GroupSummaryContext:
 
     Args:
         group_title: normalized group title string.
-        animator_id: Slack user ID of the group animator (notifying mention), or None/empty when unassigned.
-        additional_ids: Slack user IDs of additional group people (notifying).
+        creative_stakeholder_id: Slack user ID of the Creative Stakeholder (notifying mention), or None/empty when unassigned.
+        additional_stakeholder_ids: Slack user IDs of additional group stakeholders (notifying).
         links: ordered group supporting links.
         included_asset_count: number of assets included in this group.
         processing_status: current processing status string.
@@ -53,8 +65,8 @@ class GroupSummaryContext:
     """
 
     group_title: str
-    animator_id: str | None
-    additional_ids: tuple[str, ...]
+    creative_stakeholder_id: str | None
+    additional_stakeholder_ids: tuple[str, ...]
     links: tuple[SupportingLink, ...]
     included_asset_count: int
     processing_status: str
@@ -74,10 +86,10 @@ class AssetRootContext:
         asset_url: ShotGrid URL for the asset.
         group_title: normalized group title.
         created_ts: unix timestamp of the original thread creation.
-        asset_animator_id: Slack user ID of the asset animator (notifying mention), or empty when unassigned.
-        asset_additional_ids: Slack user IDs of asset additional people (notifying).
-        group_animator_display: display name of the group animator (non-notifying), or empty when unassigned.
-        group_additional_displays: display names of group additional people (non-notifying).
+        ic_poc_id: Slack user ID of the IC POC (notifying mention), or empty when unassigned.
+        additional_ic_ids: Slack user IDs of additional ICs (notifying).
+        creative_stakeholder_display: display name of the Creative Stakeholder (non-notifying), or empty when unassigned.
+        additional_stakeholder_displays: display names of additional stakeholders (non-notifying).
         group_links: group-level supporting links.
         asset_links: asset-level supporting links.
         message_identity: opaque identity value for the edit button payload.
@@ -92,10 +104,10 @@ class AssetRootContext:
     asset_url: str
     group_title: str
     created_ts: int
-    asset_animator_id: str
-    asset_additional_ids: tuple[str, ...]
-    group_animator_display: str
-    group_additional_displays: tuple[str, ...]
+    ic_poc_id: str
+    additional_ic_ids: tuple[str, ...]
+    creative_stakeholder_display: str
+    additional_stakeholder_displays: tuple[str, ...]
     group_links: tuple[SupportingLink, ...]
     asset_links: tuple[SupportingLink, ...]
     message_identity: str
@@ -103,6 +115,60 @@ class AssetRootContext:
     has_prior_thread: bool = False
     last_editor_display: str | None = None
     updated_ts: int | None = None
+
+
+# ---------------------------------------------------------------------------
+# snapshot / job-payload people keys
+# ---------------------------------------------------------------------------
+
+_LEGACY_PEOPLE_KEYS = (
+    ("ic_poc_id", "asset_animator_id"),
+    ("additional_ic_ids", "asset_additional_ids"),
+    ("creative_stakeholder_id", "group_animator_id"),
+    ("additional_stakeholder_ids", "group_additional_ids"),
+    ("creative_stakeholder_display", "group_animator_display"),
+    ("additional_stakeholder_displays", "group_additional_displays"),
+)
+
+
+def coalesce_str(data: Mapping[str, Any], *keys: str) -> str:
+    """Return the first present key as a stripped string.
+
+    A present key wins even when empty, so a cleared POC does not fall back
+    to a legacy animator_* value still stored on the same snapshot.
+    """
+    for key in keys:
+        if key not in data:
+            continue
+        return str(data.get(key) or "").strip()
+    return ""
+
+
+def coalesce_ids(data: Mapping[str, Any], *keys: str) -> tuple[str, ...]:
+    """Return the first present key as a tuple of stripped ids.
+
+    A present key wins even when empty.
+    """
+    for key in keys:
+        if key not in data:
+            continue
+        raw = data.get(key) or ()
+        if isinstance(raw, str):
+            return (raw.strip(),) if raw.strip() else ()
+        return tuple(str(item) for item in raw if str(item).strip())
+    return ()
+
+
+def migrate_people_snapshot(snapshot: dict[str, Any]) -> None:
+    """Copy legacy animator_* keys into new names, then drop the old keys.
+
+    Presence of a new key (even empty) wins. Used on write so the next Edit
+    POCs save stops carrying animator_* without rewriting Slack history first.
+    """
+    for new_key, old_key in _LEGACY_PEOPLE_KEYS:
+        if new_key not in snapshot and old_key in snapshot:
+            snapshot[new_key] = snapshot[old_key]
+        snapshot.pop(old_key, None)
 
 
 # ---------------------------------------------------------------------------
@@ -292,14 +358,14 @@ def render_group_summary(context: GroupSummaryContext) -> dict[str, object]:
     # Slack does not insert section padding between them.
     header_lines: list[str] = [f"*{escaped_title}*"]
 
-    animator_id = (context.animator_id or "").strip()
+    creative_stakeholder_id = (context.creative_stakeholder_id or "").strip()
     stakeholder_parts: list[str] = []
-    if animator_id:
-        stakeholder_parts.append(f"*Creative Stakeholder:* {_mention(animator_id)}")
-    if context.additional_ids:
-        additional_str = " ".join(_mention(uid) for uid in context.additional_ids if uid)
+    if creative_stakeholder_id:
+        stakeholder_parts.append(f"*Creative Stakeholder:* {_mention(creative_stakeholder_id)}")
+    if context.additional_stakeholder_ids:
+        additional_str = " ".join(_mention(uid) for uid in context.additional_stakeholder_ids if uid)
         if additional_str:
-            stakeholder_parts.append(f"*Additional:* {additional_str}")
+            stakeholder_parts.append(f"*Additional stakeholders:* {additional_str}")
     if not stakeholder_parts:
         header_lines.append("*Creative Stakeholder:* unassigned")
     else:
@@ -332,7 +398,7 @@ def render_group_summary(context: GroupSummaryContext) -> dict[str, object]:
 def render_asset_root(context: AssetRootContext) -> dict[str, object]:
     """Render a deterministic asset root message payload.
 
-    Asset requestors are rendered as notifying Slack mentions. Group people are
+    Asset IC POCs are rendered as notifying Slack mentions. Group people are
     rendered as plain escaped display names (never as @-mentions). Deterministic
     block order ensures reproducible message updates.
 
@@ -346,7 +412,7 @@ def render_asset_root(context: AssetRootContext) -> dict[str, object]:
     fallback = f":threadparrot: Asset: {context.asset_name} \u2014 {context.group_title} :threadparrot:"
     blocks: list[dict[str, object]] = []
 
-    # Asset / Group / Requestor / Group POCs share one section so Slack does not
+    # asset / group / ic poc / additional ics / group pocs share one section so slack does not
     # insert section padding between them (reads as four tight lines).
     asset_link = f":shotgrid: <{context.asset_url}|{escaped_name}>"
     asset_line = f":threadparrot: *Asset:* {asset_link} (ShotGrid ID: {context.asset_entity_id})"
@@ -354,20 +420,20 @@ def render_asset_root(context: AssetRootContext) -> dict[str, object]:
         asset_line += " (latest thread)"
     asset_line += " :threadparrot:"
 
-    asset_animator_id = (context.asset_animator_id or "").strip()
+    ic_poc_id = (context.ic_poc_id or "").strip()
     requestor_parts: list[str] = []
-    if asset_animator_id:
-        requestor_parts.append(f"*Requestor:* {_mention(asset_animator_id)}")
-    if context.asset_additional_ids:
-        add_str = " ".join(_mention(uid) for uid in context.asset_additional_ids if uid)
+    if ic_poc_id:
+        requestor_parts.append(f"*IC POC:* {_mention(ic_poc_id)}")
+    if context.additional_ic_ids:
+        add_str = " ".join(_mention(uid) for uid in context.additional_ic_ids if uid)
         if add_str:
-            requestor_parts.append(f"*Additional:* {add_str}")
-    requestor_line = "*Requestor:* unassigned" if not requestor_parts else "  ".join(requestor_parts)
+            requestor_parts.append(f"*Additional ICs:* {add_str}")
+    requestor_line = "*IC POC:* unassigned" if not requestor_parts else "  ".join(requestor_parts)
 
     pocs: list[str] = []
-    if (context.group_animator_display or "").strip():
-        pocs.append(_escape(context.group_animator_display.strip()))
-    pocs.extend(_escape(name) for name in context.group_additional_displays if name.strip())
+    if (context.creative_stakeholder_display or "").strip():
+        pocs.append(_escape(context.creative_stakeholder_display.strip()))
+    pocs.extend(_escape(name) for name in context.additional_stakeholder_displays if name.strip())
     pocs_str = ", ".join(pocs) if pocs else "unassigned"
 
     header_lines = (asset_line, f"*Group:* {_escape(context.group_title)}", requestor_line, f"*Group POCs:* {pocs_str}")

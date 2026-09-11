@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from red_team_prop_threader.canvas import IndexedAsset, CanvasService, GroupIndexRequest
 from red_team_prop_threader.domain import OperationKind, SupportingLink
 from red_team_prop_threader._errors import ExternalServiceError, PermissionDeniedError, RetryableExternalServiceError
-from red_team_prop_threader.messages import AssetRootContext, GroupSummaryContext, render_asset_root, render_group_summary
+from red_team_prop_threader.messages import AssetRootContext, GroupSummaryContext, coalesce_ids, coalesce_str, render_asset_root, render_group_summary
 from red_team_prop_threader.repositories import BatchStatus, MessageKind, NewMessageInput, OperationStatus
 
 
@@ -323,11 +323,13 @@ class BatchExecutor:
         try:
             result = self._dispatch(batch, operation, payload)
         except RetryableExternalServiceError as exc:
+            _logger.warning("batch %s operation %s retryable failure: %s", batch.id, operation.kind, exc)
             self._repos.operations.transition(
                 operation.id, OperationStatus.RUNNING, OperationStatus.FAILED, attempts=operation.attempts + 1, safe_error=str(exc), now=self._clock.now()
             )
             return self._repos.operations.get(operation.id)
         except (PermissionDeniedError, ExternalServiceError, ValueError, LookupError) as exc:
+            _logger.warning("batch %s operation %s failed: %s", batch.id, operation.kind, exc)
             self._repos.operations.transition(
                 operation.id, OperationStatus.RUNNING, OperationStatus.FAILED, attempts=operation.attempts + 1, safe_error=str(exc), now=self._clock.now()
             )
@@ -357,14 +359,14 @@ class BatchExecutor:
     def _post_summary(self, batch: BatchRecord, payload: dict[str, Any]) -> dict[str, Any]:
         """Post the group summary message and record it as latest."""
         assets = list(payload.get("assets") or [])
-        group_animator_id = self._group_animator_id(payload)
-        group_additional_ids = tuple(str(item) for item in payload.get("group_additional_ids") or () if str(item).strip())
-        group_animator_display = self._display_name(group_animator_id or "")
-        group_additional_displays = [self._display_name(str(item)) for item in group_additional_ids]
+        creative_stakeholder_id = self._creative_stakeholder_id(payload)
+        additional_stakeholder_ids = self._additional_stakeholder_ids(payload)
+        creative_stakeholder_display = self._display_name(creative_stakeholder_id or "")
+        additional_stakeholder_displays = [self._display_name(str(item)) for item in additional_stakeholder_ids]
         context = GroupSummaryContext(
             group_title=str(payload["group_title"]),
-            animator_id=group_animator_id,
-            additional_ids=group_additional_ids,
+            creative_stakeholder_id=creative_stakeholder_id,
+            additional_stakeholder_ids=additional_stakeholder_ids,
             links=_links_from_payload(payload.get("group_links")),
             included_asset_count=len(assets),
             processing_status="Creating threads…",
@@ -392,11 +394,11 @@ class BatchExecutor:
                         "kind": "group_summary",
                         "canvas_id": payload.get("canvas_id"),
                         "group_title": payload["group_title"],
-                        "group_animator_id": group_animator_id or "",
-                        "group_additional_ids": list(group_additional_ids),
+                        "creative_stakeholder_id": creative_stakeholder_id or "",
+                        "additional_stakeholder_ids": list(additional_stakeholder_ids),
                         "group_links": list(payload.get("group_links") or ()),
-                        "group_animator_display": group_animator_display,
-                        "group_additional_displays": group_additional_displays,
+                        "creative_stakeholder_display": creative_stakeholder_display,
+                        "additional_stakeholder_displays": additional_stakeholder_displays,
                         "included_asset_count": len(assets),
                         "processing_status": "Creating threads…",
                         "message_identity": batch.id,
@@ -413,12 +415,12 @@ class BatchExecutor:
         prior = self._repos.history.latest_asset_root(batch.workspace_id, batch.channel_id, operation.asset_entity_id)
         now = self._clock.now()
         created_ts = int(now.timestamp())
-        group_animator_id = self._group_animator_id(payload)
-        group_additional_ids = tuple(str(item) for item in payload.get("group_additional_ids") or () if str(item).strip())
-        group_animator_display = self._display_name(group_animator_id or "")
-        group_additional_displays = tuple(self._display_name(str(item)) for item in group_additional_ids)
-        asset_animator_id = self._asset_animator_id(asset)
-        asset_additional_ids = tuple(str(item) for item in asset.get("additional_ids") or () if str(item).strip())
+        creative_stakeholder_id = self._creative_stakeholder_id(payload)
+        additional_stakeholder_ids = self._additional_stakeholder_ids(payload)
+        creative_stakeholder_display = self._display_name(creative_stakeholder_id or "")
+        additional_stakeholder_displays = tuple(self._display_name(str(item)) for item in additional_stakeholder_ids)
+        ic_poc_id = self._ic_poc_id(asset)
+        additional_ic_ids = self._additional_ic_ids(asset)
         has_prior_thread = prior is not None
         context = AssetRootContext(
             asset_entity_id=operation.asset_entity_id,
@@ -426,10 +428,10 @@ class BatchExecutor:
             asset_url=str(asset["url"]),
             group_title=str(payload["group_title"]),
             created_ts=created_ts,
-            asset_animator_id=asset_animator_id,
-            asset_additional_ids=asset_additional_ids,
-            group_animator_display=group_animator_display,
-            group_additional_displays=group_additional_displays,
+            ic_poc_id=ic_poc_id,
+            additional_ic_ids=additional_ic_ids,
+            creative_stakeholder_display=creative_stakeholder_display,
+            additional_stakeholder_displays=additional_stakeholder_displays,
             group_links=_links_from_payload(payload.get("group_links")),
             asset_links=_links_from_payload(asset.get("links")),
             message_identity=f"{batch.id}:{operation.asset_entity_id}",
@@ -458,14 +460,14 @@ class BatchExecutor:
                         "asset_url": asset["url"],
                         "group_title": payload["group_title"],
                         "created_ts": created_ts,
-                        "asset_animator_id": asset_animator_id,
-                        "asset_additional_ids": list(asset_additional_ids),
+                        "ic_poc_id": ic_poc_id,
+                        "additional_ic_ids": list(additional_ic_ids),
                         "asset_links": list(asset.get("links") or ()),
-                        "group_animator_id": group_animator_id or "",
-                        "group_additional_ids": list(group_additional_ids),
+                        "creative_stakeholder_id": creative_stakeholder_id or "",
+                        "additional_stakeholder_ids": list(additional_stakeholder_ids),
                         "group_links": list(payload.get("group_links") or ()),
-                        "group_animator_display": group_animator_display,
-                        "group_additional_displays": list(group_additional_displays),
+                        "creative_stakeholder_display": creative_stakeholder_display,
+                        "additional_stakeholder_displays": list(additional_stakeholder_displays),
                         "message_identity": f"{batch.id}:{operation.asset_entity_id}",
                         "has_prior_thread": has_prior_thread,
                     }
@@ -490,13 +492,13 @@ class BatchExecutor:
         """
         self._require_succeeded_asset_op(batch.id, OperationKind.POST_ASSET, operation.asset_entity_id)
         indexed_assets = self._indexed_assets_for_group(batch, payload)
-        group_animator_id = self._group_animator_id(payload)
+        creative_stakeholder_id = self._creative_stakeholder_id(payload)
         request = GroupIndexRequest(
             channel_id=batch.channel_id,
             canvas_id=str(payload["canvas_id"]),
             group_title=str(payload["group_title"]),
-            animator_display=self._display_name(group_animator_id or ""),
-            additional_displays=tuple(self._display_name(str(item)) for item in payload.get("group_additional_ids") or () if str(item).strip()),
+            creative_stakeholder_display=self._display_name(creative_stakeholder_id or ""),
+            additional_stakeholder_displays=tuple(self._display_name(str(item)) for item in self._additional_stakeholder_ids(payload)),
             links=_links_from_payload(payload.get("group_links")),
             assets=indexed_assets,
         )
@@ -513,14 +515,14 @@ class BatchExecutor:
             configured_canvas = str(payload.get("primary_asset_index_canvas_id") or "").strip()
             canvas_id = configured_canvas or self._canvas.ensure_primary_canvas(primary_channel)
             indexed_assets = self._indexed_assets_for_group(batch, payload)
-            group_animator_id = self._group_animator_id(payload)
+            creative_stakeholder_id = self._creative_stakeholder_id(payload)
             display = str(payload.get("source_channel_display") or batch.channel_id)
             request = GroupIndexRequest(
                 channel_id=batch.channel_id,
                 canvas_id=canvas_id,
                 group_title=str(payload["group_title"]),
-                animator_display=self._display_name(group_animator_id or ""),
-                additional_displays=tuple(self._display_name(str(item)) for item in payload.get("group_additional_ids") or () if str(item).strip()),
+                creative_stakeholder_display=self._display_name(creative_stakeholder_id or ""),
+                additional_stakeholder_displays=tuple(self._display_name(str(item)) for item in self._additional_stakeholder_ids(payload)),
                 links=_links_from_payload(payload.get("group_links")),
                 assets=indexed_assets,
                 for_primary=True,
@@ -540,8 +542,8 @@ class BatchExecutor:
             return {"retired": False}
         asset = _asset_from_payload(payload, operation.asset_entity_id)
         created_ts = int((post_op.result or {}).get("created_ts") or self._clock.now().timestamp())
-        group_animator_id = self._group_animator_id(payload)
-        group_additional_ids = tuple(str(item) for item in payload.get("group_additional_ids") or () if str(item).strip())
+        creative_stakeholder_id = self._creative_stakeholder_id(payload)
+        additional_stakeholder_ids = self._additional_stakeholder_ids(payload)
         # re-render prior root without Latest using stored identity conventions
         context = AssetRootContext(
             asset_entity_id=operation.asset_entity_id,
@@ -549,10 +551,10 @@ class BatchExecutor:
             asset_url=str(asset["url"]),
             group_title=str(payload["group_title"]),
             created_ts=created_ts,
-            asset_animator_id=self._asset_animator_id(asset),
-            asset_additional_ids=tuple(str(item) for item in asset.get("additional_ids") or () if str(item).strip()),
-            group_animator_display=self._display_name(group_animator_id or ""),
-            group_additional_displays=tuple(self._display_name(str(item)) for item in group_additional_ids),
+            ic_poc_id=self._ic_poc_id(asset),
+            additional_ic_ids=self._additional_ic_ids(asset),
+            creative_stakeholder_display=self._display_name(creative_stakeholder_id or ""),
+            additional_stakeholder_displays=tuple(self._display_name(str(item)) for item in additional_stakeholder_ids),
             group_links=_links_from_payload(payload.get("group_links")),
             asset_links=_links_from_payload(asset.get("links")),
             message_identity=f"{batch.id}:{operation.asset_entity_id}:prior",
@@ -572,11 +574,11 @@ class BatchExecutor:
         completed = sum(1 for op in asset_ops if op.status is OperationStatus.SUCCEEDED)
         failed = sum(1 for op in asset_ops if op.status is OperationStatus.FAILED)
         assets = list(payload.get("assets") or [])
-        group_animator_id = self._group_animator_id(payload)
+        creative_stakeholder_id = self._creative_stakeholder_id(payload)
         context = GroupSummaryContext(
             group_title=str(payload["group_title"]),
-            animator_id=group_animator_id,
-            additional_ids=tuple(str(item) for item in payload.get("group_additional_ids") or () if str(item).strip()),
+            creative_stakeholder_id=creative_stakeholder_id,
+            additional_stakeholder_ids=self._additional_stakeholder_ids(payload),
             links=_links_from_payload(payload.get("group_links")),
             included_asset_count=len(assets),
             processing_status="Complete" if failed == 0 else "Complete with failures",
@@ -670,6 +672,7 @@ class BatchExecutor:
             else:
                 self._slack.update_message(str(progress["channel_id"]), str(progress["ts"]), text=text)
         except ExternalServiceError:
+            _logger.warning("progress dm failed for batch %s", batch.id)
             return
         payload["progress"] = progress
         self._repos.batches.update_payload(batch.id, payload)
@@ -698,13 +701,21 @@ class BatchExecutor:
         text = str(value or "").strip()
         return text or None
 
-    def _group_animator_id(self, payload: dict[str, Any]) -> str | None:
-        """Read optional group animator id from a batch payload."""
-        return self._optional_user_id(payload.get("group_animator_id"))
+    def _creative_stakeholder_id(self, payload: dict[str, Any]) -> str | None:
+        """Read optional Creative Stakeholder id from a batch payload."""
+        return self._optional_user_id(coalesce_str(payload, "creative_stakeholder_id", "group_animator_id"))
 
-    def _asset_animator_id(self, asset: dict[str, Any]) -> str:
-        """Read optional asset animator id (empty string when unassigned)."""
-        return str(asset.get("animator_id") or "").strip()
+    def _additional_stakeholder_ids(self, payload: dict[str, Any]) -> tuple[str, ...]:
+        """Read additional stakeholder ids, falling back to in-flight animator keys."""
+        return coalesce_ids(payload, "additional_stakeholder_ids", "group_additional_ids")
+
+    def _ic_poc_id(self, asset: dict[str, Any]) -> str:
+        """Read optional IC POC id (empty string when unassigned)."""
+        return coalesce_str(asset, "ic_poc_id", "animator_id")
+
+    def _additional_ic_ids(self, asset: dict[str, Any]) -> tuple[str, ...]:
+        """Read additional IC ids, falling back to in-flight animator keys."""
+        return coalesce_ids(asset, "additional_ic_ids", "additional_ids")
 
 
 def _blocks(rendered: dict[str, object]) -> list[dict[str, Any]]:

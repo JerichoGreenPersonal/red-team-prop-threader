@@ -15,10 +15,12 @@ from red_team_prop_threader.views import (
     ChannelMemberOption,
     ConfirmationContext,
     CanvasPreflightContext,
+    asset_page_count,
     render_asset_page,
     render_import_view,
     decode_asset_page_state,
     render_confirmation_view,
+    render_canvas_loading_view,
     render_canvas_preflight_view,
 )
 from red_team_prop_threader.canvas import CANVAS_TITLE, PreflightState
@@ -111,12 +113,12 @@ class DraftSession:
     assets: tuple[ImportedAsset, ...]
     duplicate_count: int
     group_title: str
-    group_animator_id: str | None
-    group_additional_ids: tuple[str, ...]
+    creative_stakeholder_id: str | None
+    additional_stakeholder_ids: tuple[str, ...]
     group_links_text: str
     included_entity_ids: tuple[int, ...]
-    asset_animators: dict[int, str]
-    asset_additional: dict[int, tuple[str, ...]]
+    ic_poc_ids: dict[int, str]
+    asset_additional_ics: dict[int, tuple[str, ...]]
     asset_links_text: dict[int, str]
     imported_at: datetime
     canvas_id: str | None
@@ -125,6 +127,8 @@ class DraftSession:
     view_hash: str | None = None
     preflight_state: str | None = None
     command_url: str = ""
+    cached_member_ids: tuple[str, ...] | None = None
+    cached_member_options: tuple[ChannelMemberOption, ...] | None = None
 
 
 class DraftBook:
@@ -217,17 +221,18 @@ class Workflow:
         self.drafts = drafts or DraftBook()
 
     def handle_command(self, command: CommandRequest) -> None:
-        """Run canvas preflight, then open the final modal once.
+        """Open a loading modal immediately, then replace it after preflight.
 
-        Uses a single ``views.open`` (no follow-up ``views.update``) so the
-        Slack client never races a loading modal into the import screen.
-        Requires the Bolt listener to finish before acknowledging the slash
-        command (``process_before_response=True``).
+        Slack trigger IDs expire in about three seconds. Canvas lookup and
+        optional ShotGrid export can exceed that, which yields
+        ``expired_trigger_id`` and Slackbot's "app did not respond". A loading
+        ``views.open`` spends the trigger immediately; the real screen is a
+        ``views.update``.
 
         When the slash command includes a ShotGrid page URL and the canvas is
-        already ready, ShotGrid export runs immediately and Assets p.1 opens
-        (skipping the import confirmation modal). Otherwise export stays
-        deferred until import submission.
+        already ready, ShotGrid export runs after the loading modal and Assets
+        p.1 replaces it. Otherwise export stays deferred until import
+        submission.
 
         Args:
             command: slash-command request payload.
@@ -243,12 +248,12 @@ class Workflow:
             assets=(),
             duplicate_count=0,
             group_title="",
-            group_animator_id=None,
-            group_additional_ids=(),
+            creative_stakeholder_id=None,
+            additional_stakeholder_ids=(),
             group_links_text="",
             included_entity_ids=(),
-            asset_animators={},
-            asset_additional={},
+            ic_poc_ids={},
+            asset_additional_ics={},
             asset_links_text={},
             imported_at=self.clock.now(),
             canvas_id=None,
@@ -256,11 +261,14 @@ class Workflow:
         )
         self.drafts.put(draft)
 
+        loading = render_canvas_loading_view(draft_id)
+        opened = self.slack.open_view(command.trigger_id, loading)
+        self._capture_view_ids(draft, opened)
+
         try:
             result = self.canvas.preflight(command.channel_id)
         except (PermissionDeniedError, ExternalServiceError) as exc:
-            opened = self.slack.open_view(command.trigger_id, _blocked_view(draft_id, str(exc)))
-            self._capture_view_ids(draft, opened)
+            self._update_draft_view(draft, _blocked_view(draft_id, str(exc)))
             return
 
         draft.preflight_state = result.state.value
@@ -268,19 +276,16 @@ class Workflow:
 
         if result.state is PreflightState.BLOCKED:
             detail = result.detail or "canvas access is blocked"
-            opened = self.slack.open_view(command.trigger_id, _blocked_view(draft_id, detail))
-            self._capture_view_ids(draft, opened)
+            self._update_draft_view(draft, _blocked_view(draft_id, detail))
             return
 
         if result.state is PreflightState.READY:
-            opened = self.slack.open_view(command.trigger_id, self._import_or_asset_view(draft))
-            self._capture_view_ids(draft, opened)
+            self._update_draft_view(draft, self._import_or_asset_view(draft))
             return
 
         canvas_name = result.current_title or CANVAS_TITLE
         preflight_view = render_canvas_preflight_view(CanvasPreflightContext(draft_id=draft_id, canvas_name=canvas_name, channel_id=command.channel_id))
-        opened = self.slack.open_view(command.trigger_id, {**preflight_view, "callback_id": _CALLBACK_PREFLIGHT})
-        self._capture_view_ids(draft, opened)
+        self._update_draft_view(draft, {**preflight_view, "callback_id": _CALLBACK_PREFLIGHT})
 
     def confirm_canvas_create(self, draft_id: str) -> dict[str, Any]:
         """Create a missing channel canvas after user confirmation.
@@ -356,8 +361,8 @@ class Workflow:
         draft.duplicate_count = imported.duplicate_count
         draft.group_title = title
         draft.included_entity_ids = tuple(asset.entity_id for asset in imported.assets)
-        draft.asset_animators = {}
-        draft.asset_additional = {}
+        draft.ic_poc_ids = {}
+        draft.asset_additional_ics = {}
         draft.asset_links_text = {asset.entity_id: "" for asset in imported.assets}
         draft.imported_at = self.clock.now()
         draft.page_index = 0
@@ -384,8 +389,8 @@ class Workflow:
         draft = self._require_draft(draft_id)
         decoded = decode_asset_page_state(view_state, page_index)
         draft.group_title = decoded.group_title
-        draft.group_animator_id = decoded.group_animator_id
-        draft.group_additional_ids = decoded.group_additional_ids
+        draft.creative_stakeholder_id = decoded.creative_stakeholder_id
+        draft.additional_stakeholder_ids = decoded.additional_stakeholder_ids
         draft.group_links_text = decoded.group_links_text
 
         included = list(draft.included_entity_ids)
@@ -395,12 +400,12 @@ class Workflow:
                     included.append(state.entity_id)
             elif state.entity_id in included:
                 included = [entity_id for entity_id in included if entity_id != state.entity_id]
-            if state.animator_id:
-                draft.asset_animators[state.entity_id] = state.animator_id
+            if state.ic_poc_id:
+                draft.ic_poc_ids[state.entity_id] = state.ic_poc_id
             else:
                 # Clear selection must remove a previously saved animator.
-                draft.asset_animators.pop(state.entity_id, None)
-            draft.asset_additional[state.entity_id] = state.additional_ids
+                draft.ic_poc_ids.pop(state.entity_id, None)
+            draft.asset_additional_ics[state.entity_id] = state.additional_ic_ids
             draft.asset_links_text[state.entity_id] = state.links_text
         draft.included_entity_ids = tuple(included)
         # recompute inferred title after exclusions when still season-shaped
@@ -423,6 +428,10 @@ class Workflow:
             dict[str, Any]: asset page modal payload.
         """
         draft = self._require_draft(draft_id)
+        pages = asset_page_count(len(draft.assets))
+        if page_index < 0 or page_index >= pages:
+            raise ValidationError(f"page_index {page_index} is out of range for {len(draft.assets)} assets ({pages} page(s))")
+        draft.page_index = page_index
         view = render_asset_page(self._to_asset_draft(draft), page_index)
         return {**view, "callback_id": _CALLBACK_ASSET}
 
@@ -518,8 +527,8 @@ class Workflow:
                 "entity_id": asset.entity_id,
                 "name": asset.name,
                 "url": asset.url,
-                "animator_id": draft.asset_animators.get(asset.entity_id) or "",
-                "additional_ids": list(draft.asset_additional.get(asset.entity_id, ())),
+                "ic_poc_id": draft.ic_poc_ids.get(asset.entity_id) or "",
+                "additional_ic_ids": list(draft.asset_additional_ics.get(asset.entity_id, ())),
                 "links": [{"label": link.label, "url": link.url} for link in asset_links],
             })
         return {
@@ -527,8 +536,8 @@ class Workflow:
             "primary_asset_index_channel_id": self._primary_asset_index_channel_id,
             "primary_asset_index_canvas_id": self._primary_asset_index_canvas_id or "",
             "group_title": title,
-            "group_animator_id": draft.group_animator_id or "",
-            "group_additional_ids": list(draft.group_additional_ids),
+            "creative_stakeholder_id": draft.creative_stakeholder_id or "",
+            "additional_stakeholder_ids": list(draft.additional_stakeholder_ids),
             "group_links": [{"label": link.label, "url": link.url} for link in group_links],
             "lease_token": lease_token,
             "assets": assets,
@@ -544,7 +553,7 @@ class Workflow:
         errors = self._confirm_field_errors(draft)
         if errors:
             # Prefer a people-field message when membership failed; otherwise first error.
-            for key in ("group_animator", "group_additional", "group_title"):
+            for key in ("creative_stakeholder", "additional_stakeholders", "group_title"):
                 if key in errors:
                     raise ValidationError(errors[key])
             raise ValidationError(next(iter(errors.values())))
@@ -563,7 +572,7 @@ class Workflow:
         if not title:
             errors["group_title"] = "group title is required"
 
-        members = set(self.slack.get_conversation_members(draft.channel_id))
+        members = set(self._conversation_member_ids(draft))
 
         def _note_missing(user_id: str | None, block_id: str) -> None:
             if not user_id or user_id in members:
@@ -571,26 +580,30 @@ class Workflow:
             label = self._display_name(user_id)
             errors.setdefault(block_id, f"{label} must be a member of this channel (invite them or pick someone already in the channel)")
 
-        _note_missing(draft.group_animator_id, "group_animator")
-        for user_id in draft.group_additional_ids:
-            _note_missing(user_id, "group_additional")
+        _note_missing(draft.creative_stakeholder_id, "creative_stakeholder")
+        for user_id in draft.additional_stakeholder_ids:
+            _note_missing(user_id, "additional_stakeholders")
 
         for entity_id in draft.included_entity_ids:
-            animator = draft.asset_animators.get(entity_id)
+            animator = draft.ic_poc_ids.get(entity_id)
             if animator:
-                _note_missing(animator, f"asset_{entity_id}_animator")
-            for user_id in draft.asset_additional.get(entity_id, ()):
-                _note_missing(user_id, f"asset_{entity_id}_additional")
+                _note_missing(animator, f"asset_{entity_id}_ic_poc")
+            for user_id in draft.asset_additional_ics.get(entity_id, ()):
+                _note_missing(user_id, f"asset_{entity_id}_additional_ics")
 
         try:
             if draft.group_links_text.strip():
                 parse_supporting_links(draft.group_links_text)
-            for entity_id in draft.included_entity_ids:
-                links_text = draft.asset_links_text.get(entity_id, "")
-                if links_text.strip():
-                    parse_supporting_links(links_text)
         except ValidationError as exc:
             errors.setdefault("group_links", str(exc))
+        for entity_id in draft.included_entity_ids:
+            links_text = draft.asset_links_text.get(entity_id, "")
+            if not links_text.strip():
+                continue
+            try:
+                parse_supporting_links(links_text)
+            except ValidationError as exc:
+                errors.setdefault(f"asset_{entity_id}_links", str(exc))
 
         return errors
 
@@ -601,8 +614,8 @@ class Workflow:
             AssetSelection(
                 entity_id=asset.entity_id,
                 included=asset.entity_id in included,
-                animator_id=draft.asset_animators.get(asset.entity_id),
-                additional_ids=draft.asset_additional.get(asset.entity_id, ()),
+                ic_poc_id=draft.ic_poc_ids.get(asset.entity_id),
+                additional_ic_ids=draft.asset_additional_ics.get(asset.entity_id, ()),
                 links_text=draft.asset_links_text.get(asset.entity_id, ""),
             )
             for asset in draft.assets
@@ -611,17 +624,46 @@ class Workflow:
             draft_id=draft.draft_id,
             assets=draft.assets,
             group_title=draft.group_title,
-            group_animator_id=draft.group_animator_id,
-            group_additional_ids=draft.group_additional_ids,
+            creative_stakeholder_id=draft.creative_stakeholder_id,
+            additional_stakeholder_ids=draft.additional_stakeholder_ids,
             group_links_text=draft.group_links_text,
             selections=selections,
-            channel_members=self._channel_member_options(draft.channel_id),
+            channel_members=self._channel_member_options(draft),
         )
 
-    def _channel_member_options(self, channel_id: str) -> tuple[ChannelMemberOption, ...]:
-        """Build verbose channel-member picker options (humans only, max 100)."""
+    def _conversation_member_ids(self, draft: DraftSession) -> tuple[str, ...]:
+        """Return channel member ids, fetching once per draft.
+
+        Respawn-hosted and Slack Connect channels can make conversations.members
+        slow. Confirm and last-page submit must not repeat that round-trip.
+
+        Args:
+            draft: draft whose channel members should be listed.
+
+        Returns:
+            tuple[str, ...]: member user ids for the draft channel.
+
+        Raises:
+            ExternalServiceError: if Slack member listing fails.
+        """
+        if draft.cached_member_ids is None:
+            draft.cached_member_ids = self.slack.get_conversation_members(draft.channel_id)
+            self.drafts.put(draft)
+        return draft.cached_member_ids
+
+    def _channel_member_options(self, draft: DraftSession) -> tuple[ChannelMemberOption, ...]:
+        """Build verbose channel-member picker options (humans only, max 100).
+
+        Args:
+            draft: draft whose channel members should populate pickers.
+
+        Returns:
+            tuple[ChannelMemberOption, ...]: human members with verbose labels.
+        """
+        if draft.cached_member_options is not None:
+            return draft.cached_member_options
         options: list[ChannelMemberOption] = []
-        for user_id in self.slack.get_conversation_members(channel_id):
+        for user_id in self._conversation_member_ids(draft):
             if len(options) >= 100:
                 break
             label = self._verbose_member_label(user_id)
@@ -629,7 +671,9 @@ class Workflow:
                 continue
             options.append(ChannelMemberOption(user_id=user_id, label=label))
         options.sort(key=lambda item: item.label.casefold())
-        return tuple(options)
+        draft.cached_member_options = tuple(options)
+        self.drafts.put(draft)
+        return draft.cached_member_options
 
     def _verbose_member_label(self, user_id: str) -> str | None:
         """Return a verbose picker label, or None for bots/apps to exclude."""

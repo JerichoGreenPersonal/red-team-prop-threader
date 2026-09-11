@@ -42,10 +42,10 @@ https://respawn.shotgunstudio.com/page/<page-id>
 | --- | --- | --- |
 | **Group title** | Create modal | Heading for this batch (for example a season or package name) |
 | **Creative Stakeholder** | Group fields / group summary | Primary group-level contact (notifies in the group summary) |
-| **Additional stakeholders** | Group fields | Extra group-level contacts |
+| **Additional stakeholders** | Group fields / group summary | Extra group-level contacts (notifies in the group summary) |
 | **Group links** | Group fields / group summary | Links that apply to the whole batch |
-| **Requestor** | Per-asset fields / asset thread | Primary person for that asset (notifies on the asset root) |
-| **Additional requestors** | Per-asset fields | Extra people for that asset |
+| **IC POC** | Per-asset fields / asset thread | Primary person for that asset (notifies on the asset root). Empty posts as `IC POC: unassigned`. |
+| **Additional ICs** | Per-asset fields / asset thread | Extra people for that asset (notifies on the asset root) |
 | **Links** | Per-asset fields / asset thread | Links that apply to that asset only |
 | **Group POCs** | Shown on asset threads | Plain-text names of the group Creative Stakeholder and additional stakeholders (no @-notify) |
 | **Latest** | Asset roots and canvas | The current active thread for an asset when the same asset is posted again later |
@@ -98,8 +98,8 @@ If you did not pass a URL, paste the ShotGrid page URL and continue. The bot exp
 **Each asset**
 
 - Include or exclude the asset (at least one must stay included)
-- Requestor (optional)
-- Additional requestors (optional)
+- IC POC (optional)
+- Additional ICs (optional)
 - Links (optional; asset-only)
 
 Use **Next** / **Back** on multi-page imports. Your edits are kept as you page.
@@ -122,7 +122,7 @@ After confirm:
 ### Group summary
 
 - Group title
-- Creative Stakeholder and Additional (Slack mentions when set)
+- Creative Stakeholder and Additional stakeholders (Slack mentions when set)
 - Group Links (when set)
 - Included asset count
 - Completed / failed counts when the batch finishes
@@ -135,7 +135,7 @@ Four tight header lines:
 
 1. Asset (ShotGrid link and ID; `(latest thread)` when a prior thread exists)
 2. Group
-3. Requestor (and Additional when set)
+3. IC POC (and Additional ICs when set)
 4. Group POCs
 
 Then, only if you entered asset-level links: **Links**.
@@ -168,8 +168,8 @@ Any channel member (from the EA workspace) can edit **Latest** messages only.
 
 | Button | Opens | Typical changes |
 | --- | --- | --- |
-| **Edit Group Details** | Group edit modal | Creative Stakeholder, additional stakeholders, group links |
-| **Edit POCs** | Asset edit modal | Requestor, additional requestors, asset links |
+| **Edit Group Details** | Group edit modal | Creative Stakeholder, Additional stakeholders, group links |
+| **Edit POCs** | Asset edit modal | IC POC, Additional ICs, asset links |
 
 Edits update the latest messages and the canvas group section **without** sending new @ notifications.
 

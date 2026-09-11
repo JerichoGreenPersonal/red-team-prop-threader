@@ -99,8 +99,8 @@ def sample_new_group(**kwargs: object) -> GroupIndexRequest:
         channel_id="C0B4GJSA1G8",
         canvas_id="Fcanvas",
         group_title="SEASON 31 PROP REQUEST THREADS",
-        animator_display="Ada Animator",
-        additional_displays=(),
+        creative_stakeholder_display="Ada Animator",
+        additional_stakeholder_displays=(),
         links=(SupportingLink("Brief", "https://example.com/brief"),),
         assets=(
             IndexedAsset(
@@ -328,7 +328,7 @@ def test_group_markdown_unassigned_when_no_people() -> None:
     """Canvas group markdown uses Creative Stakeholder: unassigned when staffing is empty."""
     from red_team_prop_threader.canvas import render_group_markdown
 
-    md = render_group_markdown(sample_new_group(animator_display="", additional_displays=()))
+    md = render_group_markdown(sample_new_group(creative_stakeholder_display="", additional_stakeholder_displays=()))
     assert "**Creative Stakeholder:** unassigned" in md
     assert "Ada Animator" not in md
 

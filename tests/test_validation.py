@@ -289,7 +289,11 @@ def test_infer_group_title_multiple_seasons_in_one_name() -> None:
     assert infer_group_title(assets) == ""
 
 
-def test_infer_group_title_single_asset() -> None:
+def test_infer_group_title_dotted_season_patch() -> None:
+    """S31.1 tokens are distinct from S31 and from S31.2."""
+    assert infer_group_title(["S31.1_prop_a", "S31.1_prop_b"]) == "SEASON 31.1 PROP REQUEST THREADS:"
+    assert infer_group_title(["S31.1_prop_a", "S31.2_prop_b"]) == ""
+    assert infer_group_title(["S31.1_prop_a", "S31_prop_b"]) == ""
     """Single asset with one season token returns the canonical title."""
     assert infer_group_title(["S10_hero_prop"]) == "SEASON 10 PROP REQUEST THREADS:"
 
@@ -314,28 +318,28 @@ def test_infer_group_title_accepts_underscore_boundaries(name: str) -> None:
 def test_dedupe_people_asset_role_takes_precedence() -> None:
     """Person in asset selection is removed from group selection."""
     group_sel = PersonSelection(people=(PersonEntry("U001", PersonRole.ADDITIONAL),))
-    asset_sel = PersonSelection(people=(PersonEntry("U001", PersonRole.ANIMATOR),))
+    asset_sel = PersonSelection(people=(PersonEntry("U001", PersonRole.PRIMARY),))
     result = dedupe_people(group_sel, asset_sel)
-    assert result.asset.people == (PersonEntry("U001", PersonRole.ANIMATOR),)
+    assert result.asset.people == (PersonEntry("U001", PersonRole.PRIMARY),)
     assert all(p.slack_user_id != "U001" for p in result.group.people)
 
 
 def test_dedupe_people_animator_precedence_within_group() -> None:
     """Within group, ANIMATOR wins over ADDITIONAL for the same user."""
-    group_sel = PersonSelection(people=(PersonEntry("U001", PersonRole.ADDITIONAL), PersonEntry("U001", PersonRole.ANIMATOR)))
+    group_sel = PersonSelection(people=(PersonEntry("U001", PersonRole.ADDITIONAL), PersonEntry("U001", PersonRole.PRIMARY)))
     result = dedupe_people(group_sel, PersonSelection(people=()))
     u001_entries = [p for p in result.group.people if p.slack_user_id == "U001"]
     assert len(u001_entries) == 1
-    assert u001_entries[0].role == PersonRole.ANIMATOR
+    assert u001_entries[0].role == PersonRole.PRIMARY
 
 
 def test_dedupe_people_animator_precedence_within_asset() -> None:
     """Within asset, ANIMATOR wins over ADDITIONAL for the same user."""
-    asset_sel = PersonSelection(people=(PersonEntry("U001", PersonRole.ADDITIONAL), PersonEntry("U001", PersonRole.ANIMATOR)))
+    asset_sel = PersonSelection(people=(PersonEntry("U001", PersonRole.ADDITIONAL), PersonEntry("U001", PersonRole.PRIMARY)))
     result = dedupe_people(PersonSelection(people=()), asset_sel)
     u001_entries = [p for p in result.asset.people if p.slack_user_id == "U001"]
     assert len(u001_entries) == 1
-    assert u001_entries[0].role == PersonRole.ANIMATOR
+    assert u001_entries[0].role == PersonRole.PRIMARY
 
 
 def test_dedupe_people_stable_order_additional() -> None:
@@ -364,7 +368,7 @@ def test_dedupe_people_result_is_frozen() -> None:
 def test_dedupe_people_no_overlap() -> None:
     """Non-overlapping group and asset people are all preserved."""
     group_sel = PersonSelection(people=(PersonEntry("U001", PersonRole.ADDITIONAL),))
-    asset_sel = PersonSelection(people=(PersonEntry("U002", PersonRole.ANIMATOR),))
+    asset_sel = PersonSelection(people=(PersonEntry("U002", PersonRole.PRIMARY),))
     result = dedupe_people(group_sel, asset_sel)
     assert len(result.group.people) == 1
     assert len(result.asset.people) == 1
@@ -432,14 +436,14 @@ def test_operation_kind_values() -> None:
 
 
 def test_person_role_values() -> None:
-    """PersonRole has animator and additional values."""
-    assert PersonRole.ANIMATOR == "animator"
+    """PersonRole has primary and additional values."""
+    assert PersonRole.PRIMARY == "primary"
     assert PersonRole.ADDITIONAL == "additional"
 
 
 def test_person_entry_frozen() -> None:
     """PersonEntry is immutable."""
-    entry = PersonEntry("U001", PersonRole.ANIMATOR)
+    entry = PersonEntry("U001", PersonRole.PRIMARY)
     with pytest.raises((AttributeError, TypeError)):
         entry.slack_user_id = "U002"  # type: ignore[misc]
 
@@ -448,4 +452,4 @@ def test_person_selection_frozen() -> None:
     """PersonSelection is immutable."""
     sel = PersonSelection(people=())
     with pytest.raises((AttributeError, TypeError)):
-        sel.people = (PersonEntry("U001", PersonRole.ANIMATOR),)  # type: ignore[misc]
+        sel.people = (PersonEntry("U001", PersonRole.PRIMARY),)  # type: ignore[misc]

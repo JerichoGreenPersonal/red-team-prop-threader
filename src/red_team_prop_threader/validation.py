@@ -21,8 +21,8 @@ __all__ = ("dedupe_links", "dedupe_people", "infer_group_title", "normalize_grou
 # matches "Label: URL" where label is nonempty and URL is non-whitespace
 _LINK_LINE_RE = re.compile(r"^(?P<label>.+?):\s+(?P<url>\S+)\s*$")
 
-# matches S<digits> with non-alphanumeric boundaries; underscores are separators
-_SEASON_RE = re.compile(r"(?<![A-Z0-9])S(\d+)(?![A-Z0-9])", re.IGNORECASE)
+# matches S<digits> or S<digits>.<digits> with non-alphanumeric boundaries
+_SEASON_RE = re.compile(r"(?<![A-Z0-9])S(\d+(?:\.\d+)?)(?![A-Z0-9])", re.IGNORECASE)
 
 
 # ---------------------------------------------------------------------------
@@ -167,7 +167,7 @@ def dedupe_people(group_selection: PersonSelection, asset_selection: PersonSelec
     Precedence rules:
 
     - Asset-specific entries take precedence over group entries for the same user.
-    - Within a single selection, :attr:`PersonRole.ANIMATOR` takes precedence
+    - Within a single selection, :attr:`PersonRole.PRIMARY` takes precedence
       over :attr:`PersonRole.ADDITIONAL` for the same user.
     - Stable input order is preserved for additional-people entries.
 
@@ -188,7 +188,7 @@ def dedupe_people(group_selection: PersonSelection, asset_selection: PersonSelec
 def _dedup_selection(selection: PersonSelection) -> PersonSelection:
     """Deduplicate entries within a single PersonSelection.
 
-    ANIMATOR takes precedence over ADDITIONAL for the same Slack user ID.
+    PRIMARY takes precedence over ADDITIONAL for the same Slack user ID.
     Stable order is preserved using first-seen position.
 
     Args:
@@ -199,7 +199,7 @@ def _dedup_selection(selection: PersonSelection) -> PersonSelection:
     """
     seen: dict[str, PersonEntry] = {}
     for entry in selection.people:
-        if entry.slack_user_id not in seen or (entry.role == PersonRole.ANIMATOR and seen[entry.slack_user_id].role == PersonRole.ADDITIONAL):
+        if entry.slack_user_id not in seen or (entry.role == PersonRole.PRIMARY and seen[entry.slack_user_id].role == PersonRole.ADDITIONAL):
             seen[entry.slack_user_id] = entry
     return PersonSelection(tuple(seen.values()))
 
@@ -231,9 +231,9 @@ def normalize_group_title(value: str) -> str:
 def infer_group_title(assets: Iterable[str]) -> str:
     """Infer a canonical group title from asset names by finding a common season token.
 
-    Finds ``S<number>`` tokens (case-insensitive) in each asset name.  Returns
-    the canonical title only when every asset contains exactly one unique season
-    number and all share the same number.
+    Finds ``S<number>`` or ``S<number>.<number>`` tokens (case-insensitive) in
+    each asset name.  Returns the canonical title only when every asset
+    contains exactly one unique season token and all share the same token.
 
     Args:
         assets: iterable of asset name strings.

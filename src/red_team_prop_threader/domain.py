@@ -49,7 +49,7 @@ class OperationKind(StrEnum):
 class PersonRole(StrEnum):
     """role a person holds within a prop-request selection."""
 
-    ANIMATOR = "animator"
+    PRIMARY = "primary"
     ADDITIONAL = "additional"
 
 

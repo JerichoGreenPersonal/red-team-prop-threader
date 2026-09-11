@@ -14,8 +14,11 @@ from red_team_prop_threader.messages import (
     AID_EDIT_GROUP_DETAILS,
     AssetRootContext,
     GroupSummaryContext,
+    coalesce_ids,
+    coalesce_str,
     render_asset_root,
     render_group_summary,
+    migrate_people_snapshot,
 )
 from red_team_prop_threader.validation import parse_supporting_links, validate_channel_members
 from red_team_prop_threader.repositories import MessageKind
@@ -44,9 +47,11 @@ __all__ = (
 CALLBACK_ASSET_EDIT = "asset_edit_submit"
 CALLBACK_GROUP_EDIT = "group_edit_submit"
 
-_BID_ANIMATOR = "edit_animator"
+_BID_PRIMARY = "edit_primary"
 _BID_ADDITIONAL = "edit_additional"
 _BID_LINKS = "edit_links"
+_UNASSIGNED_VALUE = "__none__"
+_UNASSIGNED_LABEL = "Unassigned"
 
 
 class Clock(Protocol):
@@ -102,8 +107,8 @@ class GroupEditRequest:
     channel_id: str
     user_id: str
     message_ts: str
-    animator_id: str
-    additional_ids: tuple[str, ...]
+    creative_stakeholder_id: str
+    additional_stakeholder_ids: tuple[str, ...]
     links_text: str
 
 
@@ -115,8 +120,8 @@ class AssetEditRequest:
     channel_id: str
     user_id: str
     message_ts: str
-    animator_id: str
-    additional_ids: tuple[str, ...]
+    ic_poc_id: str
+    additional_ic_ids: tuple[str, ...]
     links_text: str
 
 
@@ -185,12 +190,13 @@ class EditService:
         message = self._require_latest_message(request.workspace_id, request.channel_id, request.message_ts, MessageKind.ASSET_ROOT)
         self._require_channel_member(request.channel_id, request.user_id)
         links = parse_supporting_links(request.links_text) if request.links_text.strip() else ()
-        people = {uid for uid in (request.animator_id, *request.additional_ids) if uid.strip()}
+        people = {uid for uid in (request.ic_poc_id, *request.additional_ic_ids) if uid.strip()}
         self._require_selected_members(request.channel_id, people)
         snapshot = _edit_snapshot(message)
-        snapshot["asset_animator_id"] = request.animator_id.strip()
-        snapshot["asset_additional_ids"] = [uid for uid in request.additional_ids if uid.strip()]
+        snapshot["ic_poc_id"] = request.ic_poc_id.strip()
+        snapshot["additional_ic_ids"] = [uid for uid in request.additional_ic_ids if uid.strip()]
         snapshot["asset_links"] = [{"label": link.label, "url": link.url} for link in links]
+        migrate_people_snapshot(snapshot)
         now = self._clock.now()
         editor_display = self._display_name(request.user_id)
         context = _asset_context_from_snapshot(snapshot, message, editor_display=editor_display, updated_ts=int(now.timestamp()))
@@ -213,20 +219,21 @@ class EditService:
         summary = self._require_latest_message(request.workspace_id, request.channel_id, request.message_ts, MessageKind.GROUP_SUMMARY)
         self._require_channel_member(request.channel_id, request.user_id)
         links = parse_supporting_links(request.links_text) if request.links_text.strip() else ()
-        people = {uid for uid in (request.animator_id, *request.additional_ids) if uid.strip()}
+        people = {uid for uid in (request.creative_stakeholder_id, *request.additional_stakeholder_ids) if uid.strip()}
         self._require_selected_members(request.channel_id, people)
         now = self._clock.now()
         editor_display = self._display_name(request.user_id)
         updated_ts = int(now.timestamp())
 
         summary_snapshot = _edit_snapshot(summary)
-        summary_snapshot["group_animator_id"] = request.animator_id.strip()
-        summary_snapshot["group_additional_ids"] = [uid for uid in request.additional_ids if uid.strip()]
+        summary_snapshot["creative_stakeholder_id"] = request.creative_stakeholder_id.strip()
+        summary_snapshot["additional_stakeholder_ids"] = [uid for uid in request.additional_stakeholder_ids if uid.strip()]
         summary_snapshot["group_links"] = [{"label": link.label, "url": link.url} for link in links]
-        animator_id = str(summary_snapshot["group_animator_id"])
-        additional_ids = tuple(str(item) for item in summary_snapshot["group_additional_ids"])
-        summary_snapshot["group_animator_display"] = self._display_name(animator_id) if animator_id else ""
-        summary_snapshot["group_additional_displays"] = [self._display_name(user_id) for user_id in additional_ids]
+        creative_stakeholder_id = str(summary_snapshot["creative_stakeholder_id"])
+        additional_stakeholder_ids = tuple(str(item) for item in summary_snapshot["additional_stakeholder_ids"])
+        summary_snapshot["creative_stakeholder_display"] = self._display_name(creative_stakeholder_id) if creative_stakeholder_id else ""
+        summary_snapshot["additional_stakeholder_displays"] = [self._display_name(user_id) for user_id in additional_stakeholder_ids]
+        migrate_people_snapshot(summary_snapshot)
 
         summary_context = _summary_context_from_snapshot(summary_snapshot, summary)
         rendered_summary = render_group_summary(summary_context)
@@ -238,11 +245,12 @@ class EditService:
         roots = self._repos.history.list_latest_asset_roots_for_group(summary.group_id)
         for root in roots:
             root_snapshot = _edit_snapshot(root)
-            root_snapshot["group_animator_id"] = animator_id
-            root_snapshot["group_additional_ids"] = list(additional_ids)
+            root_snapshot["creative_stakeholder_id"] = creative_stakeholder_id
+            root_snapshot["additional_stakeholder_ids"] = list(additional_stakeholder_ids)
             root_snapshot["group_links"] = list(summary_snapshot["group_links"])
-            root_snapshot["group_animator_display"] = summary_snapshot["group_animator_display"]
-            root_snapshot["group_additional_displays"] = list(summary_snapshot["group_additional_displays"])
+            root_snapshot["creative_stakeholder_display"] = summary_snapshot["creative_stakeholder_display"]
+            root_snapshot["additional_stakeholder_displays"] = list(summary_snapshot["additional_stakeholder_displays"])
+            migrate_people_snapshot(root_snapshot)
             context = _asset_context_from_snapshot(root_snapshot, root, editor_display=editor_display, updated_ts=updated_ts)
             rendered = render_asset_root(context)
             self._slack.update_message(root.channel_id, root.slack_ts, text=str(rendered["text"]), blocks=_blocks(rendered))
@@ -257,8 +265,8 @@ class EditService:
                     channel_id=summary.channel_id,
                     canvas_id=canvas_id,
                     group_title=str(summary_snapshot["group_title"]),
-                    animator_display=str(summary_snapshot["group_animator_display"]),
-                    additional_displays=tuple(str(item) for item in summary_snapshot.get("group_additional_displays") or ()),
+                    creative_stakeholder_display=str(summary_snapshot["creative_stakeholder_display"]),
+                    additional_stakeholder_displays=tuple(str(item) for item in summary_snapshot.get("additional_stakeholder_displays") or ()),
                     links=tuple(SupportingLink(str(item["label"]), str(item["url"])) for item in summary_snapshot.get("group_links") or ()),
                     assets=self._indexed_assets(roots),
                 )
@@ -273,8 +281,8 @@ class EditService:
                         channel_id=summary.channel_id,
                         canvas_id=primary_canvas_id,
                         group_title=str(summary_snapshot["group_title"]),
-                        animator_display=str(summary_snapshot["group_animator_display"]),
-                        additional_displays=tuple(str(item) for item in summary_snapshot.get("group_additional_displays") or ()),
+                        creative_stakeholder_display=str(summary_snapshot["creative_stakeholder_display"]),
+                        additional_stakeholder_displays=tuple(str(item) for item in summary_snapshot.get("additional_stakeholder_displays") or ()),
                         links=tuple(SupportingLink(str(item["label"]), str(item["url"])) for item in summary_snapshot.get("group_links") or ()),
                         assets=self._indexed_assets(roots),
                         for_primary=True,
@@ -285,8 +293,11 @@ class EditService:
                 logging.getLogger(__name__).warning("primary asset index update failed", exc_info=True)
 
     def _open_editor(self, ref: MessageRef, *, expected_kind: MessageKind, callback_id: str, title: str) -> EditOpenResult:
-        """Shared open path for asset/group editors."""
-        self._require_channel_member(ref.channel_id, ref.user_id)
+        """Shared open path for asset/group editors.
+
+        Database lookup runs before Slack member hydration so a historical click
+        or missing row does not spend the views.open trigger_id on users.info.
+        """
         message = self._repos.history.get_by_channel_ts(workspace_id=ref.workspace_id, channel_id=ref.channel_id, slack_ts=ref.message_ts)
         if message is None:
             raise LookupError("tracked message not found")
@@ -300,8 +311,11 @@ class EditService:
                 text = f"{text}\n<{permalink}|Open latest>"
             return EditOpenResult(refused=True, latest_permalink=permalink, ephemeral_text=text)
 
+        member_ids = self._slack.get_conversation_members(message.channel_id)
+        if ref.user_id not in set(member_ids):
+            raise ValidationError("only channel members may edit prop threads")
         snapshot = _edit_snapshot(message)
-        members = self._channel_member_options(message.channel_id)
+        members = self._channel_member_options(message.channel_id, member_ids=member_ids)
         view = _render_edit_view(
             callback_id=callback_id,
             title=title,
@@ -356,10 +370,20 @@ class EditService:
                 return value.strip()
         return user_id
 
-    def _channel_member_options(self, channel_id: str) -> tuple[tuple[str, str], ...]:
-        """Return (user_id, verbose_label) pairs for human channel members."""
+    def _channel_member_options(self, channel_id: str, member_ids: tuple[str, ...] | None = None) -> tuple[tuple[str, str], ...]:
+        """Return (user_id, verbose_label) pairs for human channel members.
+
+        Args:
+            channel_id: slack channel id.
+            member_ids: optional prefetched member ids so open-editor does not
+                call conversations.members twice.
+
+        Returns:
+            tuple[tuple[str, str], ...]: user id and verbose label pairs.
+        """
         options: list[tuple[str, str]] = []
-        for user_id in self._slack.get_conversation_members(channel_id):
+        ids = member_ids if member_ids is not None else self._slack.get_conversation_members(channel_id)
+        for user_id in ids:
             if len(options) >= 100:
                 break
             label = self._verbose_member_label(user_id)
@@ -431,10 +455,10 @@ def _asset_context_from_snapshot(snapshot: dict[str, Any], message: MessageRecor
         asset_url=str(snapshot["asset_url"]),
         group_title=str(snapshot["group_title"]),
         created_ts=int(snapshot["created_ts"]),
-        asset_animator_id=str(snapshot["asset_animator_id"]),
-        asset_additional_ids=tuple(str(item) for item in snapshot.get("asset_additional_ids") or ()),
-        group_animator_display=str(snapshot.get("group_animator_display") or ""),
-        group_additional_displays=tuple(str(item) for item in snapshot.get("group_additional_displays") or ()),
+        ic_poc_id=coalesce_str(snapshot, "ic_poc_id", "asset_animator_id"),
+        additional_ic_ids=coalesce_ids(snapshot, "additional_ic_ids", "asset_additional_ids"),
+        creative_stakeholder_display=coalesce_str(snapshot, "creative_stakeholder_display", "group_animator_display"),
+        additional_stakeholder_displays=coalesce_ids(snapshot, "additional_stakeholder_displays", "group_additional_displays"),
         group_links=tuple(SupportingLink(str(item["label"]), str(item["url"])) for item in snapshot.get("group_links") or ()),
         asset_links=tuple(SupportingLink(str(item["label"]), str(item["url"])) for item in snapshot.get("asset_links") or ()),
         message_identity=str(snapshot.get("message_identity") or message.id),
@@ -449,8 +473,8 @@ def _summary_context_from_snapshot(snapshot: dict[str, Any], message: MessageRec
     """Build a group summary render context from a snapshot."""
     return GroupSummaryContext(
         group_title=str(snapshot["group_title"]),
-        animator_id=str(snapshot["group_animator_id"]),
-        additional_ids=tuple(str(item) for item in snapshot.get("group_additional_ids") or ()),
+        creative_stakeholder_id=coalesce_str(snapshot, "creative_stakeholder_id", "group_animator_id"),
+        additional_stakeholder_ids=coalesce_ids(snapshot, "additional_stakeholder_ids", "group_additional_ids"),
         links=tuple(SupportingLink(str(item["label"]), str(item["url"])) for item in snapshot.get("group_links") or ()),
         included_asset_count=int(snapshot.get("included_asset_count") or 0),
         processing_status=str(snapshot.get("processing_status") or "Complete"),
@@ -466,19 +490,20 @@ def _render_edit_view(
 ) -> dict[str, Any]:
     """Render a people/links edit modal limited to channel members."""
     if is_asset:
-        animator = str(snapshot.get("asset_animator_id") or "").strip()
-        additional = tuple(str(item) for item in snapshot.get("asset_additional_ids") or () if str(item).strip())
+        animator = coalesce_str(snapshot, "ic_poc_id", "asset_animator_id")
+        additional = coalesce_ids(snapshot, "additional_ic_ids", "asset_additional_ids")
         links = _links_text(snapshot.get("asset_links"))
     else:
-        animator = str(snapshot.get("group_animator_id") or "").strip()
-        additional = tuple(str(item) for item in snapshot.get("group_additional_ids") or () if str(item).strip())
+        animator = coalesce_str(snapshot, "creative_stakeholder_id", "group_animator_id")
+        additional = coalesce_ids(snapshot, "additional_stakeholder_ids", "group_additional_ids")
         links = _links_text(snapshot.get("group_links"))
-    options = _member_option_objects(members)
+    member_opts = _member_option_objects(members)[:99]
+    additional_opts = member_opts or [_unassigned_option()]
     animator_element: dict[str, Any] = {
         "type": "static_select",
-        "action_id": _BID_ANIMATOR,
-        "placeholder": {"type": "plain_text", "text": "Select a channel member"},
-        "options": options,
+        "action_id": _BID_PRIMARY,
+        "placeholder": {"type": "plain_text", "text": "Select an AD or Feature Owner" if not is_asset else "Animator or Concept Artist"},
+        "options": [_unassigned_option(), *member_opts],
     }
     initial_animator = _member_option_object(members, animator)
     if initial_animator is not None:
@@ -487,7 +512,7 @@ def _render_edit_view(
         "type": "multi_static_select",
         "action_id": _BID_ADDITIONAL,
         "placeholder": {"type": "plain_text", "text": "Select channel members"},
-        "options": options,
+        "options": additional_opts,
     }
     initial_additional = [option for user_id in additional if (option := _member_option_object(members, user_id)) is not None]
     if initial_additional:
@@ -502,9 +527,9 @@ def _render_edit_view(
         "blocks": [
             {
                 "type": "input",
-                "block_id": _BID_ANIMATOR,
+                "block_id": _BID_PRIMARY,
                 "optional": True,
-                "label": {"type": "plain_text", "text": "Requestor" if is_asset else "Creative Stakeholder"},
+                "label": {"type": "plain_text", "text": "IC POC" if is_asset else "Creative Stakeholder"},
                 "hint": {"type": "plain_text", "text": "Only people already in this channel are listed."},
                 "element": animator_element,
             },
@@ -512,7 +537,7 @@ def _render_edit_view(
                 "type": "input",
                 "block_id": _BID_ADDITIONAL,
                 "optional": True,
-                "label": {"type": "plain_text", "text": "Additional requestors" if is_asset else "Additional stakeholders"},
+                "label": {"type": "plain_text", "text": "Additional ICs" if is_asset else "Additional stakeholders"},
                 "hint": {"type": "plain_text", "text": "Only people already in this channel are listed."},
                 "element": additional_element,
             },
@@ -520,17 +545,31 @@ def _render_edit_view(
                 "type": "input",
                 "block_id": _BID_LINKS,
                 "optional": True,
-                "label": {"type": "plain_text", "text": "Links" if is_asset else "Group links"},
-                "element": _links_input_element(links),
+                "label": {"type": "plain_text", "text": "Asset Links" if is_asset else "Group links"},
+                "element": _links_input_element(
+                    links,
+                    "Ex: Area in Miro, SyncSketch, Reverence Folder, etc (Format: Label: https://...)"
+                    if is_asset
+                    else "Ex: Map Miro, Season Deck, etc (Format: Label: https://...)",
+                ),
             },
         ],
     }
 
 
+def _unassigned_option() -> dict[str, Any]:
+    """Return the explicit clear option for single-person pickers.
+
+    Slack static_select cannot deselect an initial_option. An Unassigned value
+    is the only way to remove a POC after it was saved.
+    """
+    return {"text": {"type": "plain_text", "text": _UNASSIGNED_LABEL}, "value": _UNASSIGNED_VALUE}
+
+
 def _member_option_objects(members: tuple[tuple[str, str], ...]) -> list[dict[str, Any]]:
     """Build Slack option objects for edit-modal people pickers."""
     if not members:
-        return [{"text": {"type": "plain_text", "text": "No channel members available"}, "value": "__none__"}]
+        return []
     return [{"text": {"type": "plain_text", "text": label[:75]}, "value": user_id} for user_id, label in members[:100]]
 
 
@@ -544,13 +583,21 @@ def _member_option_object(members: tuple[tuple[str, str], ...], user_id: str) ->
     return None
 
 
-def _links_input_element(links: str) -> dict[str, Any]:
-    """Build the supporting-links plain_text_input, omitting empty initial_value."""
+def _links_input_element(links: str, placeholder: str) -> dict[str, Any]:
+    """Build the supporting-links plain_text_input, omitting empty initial_value.
+
+    Args:
+        links: multiline ``Label: URL`` text to prefill, or empty.
+        placeholder: placeholder shown when the field is empty.
+
+    Returns:
+        dict[str, Any]: Slack plain_text_input element.
+    """
     element: dict[str, Any] = {
         "type": "plain_text_input",
         "action_id": _BID_LINKS,
         "multiline": True,
-        "placeholder": {"type": "plain_text", "text": "Label: https://..."},
+        "placeholder": {"type": "plain_text", "text": placeholder},
     }
     if links:
         element["initial_value"] = links
@@ -587,7 +634,7 @@ def decode_edit_submission(view: dict[str, Any]) -> tuple[str, str, str, tuple[s
         view: slack modal view payload.
 
     Returns:
-        tuple: channel_id, message_ts, animator_id, additional_ids, links_text.
+        tuple: channel_id, message_ts, primary_id, additional_ids, links_text.
     """
     meta = str(view.get("private_metadata") or "")
     if "|" in meta:
@@ -596,8 +643,8 @@ def decode_edit_submission(view: dict[str, Any]) -> tuple[str, str, str, tuple[s
         channel_id, message_ts = "", meta
     state = view.get("state") if isinstance(view.get("state"), dict) else {}
     values = state.get("values") if isinstance(state, dict) and isinstance(state.get("values"), dict) else {}
-    animator_block = values.get(_BID_ANIMATOR) if isinstance(values, dict) else {}
-    animator_field = animator_block.get(_BID_ANIMATOR) if isinstance(animator_block, dict) else {}
+    animator_block = values.get(_BID_PRIMARY) if isinstance(values, dict) else {}
+    animator_field = animator_block.get(_BID_PRIMARY) if isinstance(animator_block, dict) else {}
     animator_id = ""
     if isinstance(animator_field, dict):
         selected_option = animator_field.get("selected_option")
@@ -605,7 +652,7 @@ def decode_edit_submission(view: dict[str, Any]) -> tuple[str, str, str, tuple[s
             animator_id = str(selected_option.get("value") or "").strip()
         else:
             animator_id = str(animator_field.get("selected_user") or "").strip()
-    if animator_id == "__none__":
+    if animator_id == _UNASSIGNED_VALUE:
         animator_id = ""
     additional_block = values.get(_BID_ADDITIONAL) if isinstance(values, dict) else {}
     additional_field = additional_block.get(_BID_ADDITIONAL) if isinstance(additional_block, dict) else {}
@@ -616,7 +663,7 @@ def decode_edit_submission(view: dict[str, Any]) -> tuple[str, str, str, tuple[s
             additional_ids = tuple(
                 str(option.get("value") or "").strip()
                 for option in selected_options
-                if isinstance(option, dict) and str(option.get("value") or "").strip() and str(option.get("value") or "").strip() != "__none__"
+                if isinstance(option, dict) and str(option.get("value") or "").strip() and str(option.get("value") or "").strip() != _UNASSIGNED_VALUE
             )
         else:
             selected = additional_field.get("selected_users")
@@ -630,9 +677,9 @@ def decode_edit_submission(view: dict[str, Any]) -> tuple[str, str, str, tuple[s
 def edit_validation_errors(exc: ValidationError) -> dict[str, str]:
     """Map an edit ValidationError onto the correct modal block_id.
 
-    Link parse failures must surface on Supporting Links — not Animator.
+    Link parse failures must surface on Supporting Links — not the primary people field.
     """
     message = str(exc)
     if message.startswith("line ") or "Supporting links require a label" in message or message.startswith("URL ") or " URL " in message:
         return {_BID_LINKS: message}
-    return {_BID_ANIMATOR: message}
+    return {_BID_PRIMARY: message}

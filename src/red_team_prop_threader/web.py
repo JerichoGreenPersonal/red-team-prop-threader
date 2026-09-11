@@ -121,8 +121,8 @@ def create_app(settings: Settings | None = None, *, engine: Engine | None = None
     """
     cfg = settings or Settings.from_env()
     db_engine = engine or build_engine(cfg.database_url)
-    # Socket Mode: finish listeners (including views.open) before acknowledging.
-    bolt_app = create_bolt_app(bot_token=cfg.slack_bot_token, signing_secret=cfg.slack_signing_secret, process_before_response=True)
+    # Socket Mode: ack slash commands immediately; listeners continue after ack.
+    bolt_app = create_bolt_app(bot_token=cfg.slack_bot_token, signing_secret=cfg.slack_signing_secret, process_before_response=False)
     clock = UtcClock()
     slack = SlackGateway.from_settings(cfg)
     shotgrid = ShotGridGateway.from_settings(cfg)

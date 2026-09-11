@@ -20,6 +20,7 @@ __all__ = ("SlackGateway",)
 _LOG = logging.getLogger(__name__)
 
 _PERMISSION_ERRORS = frozenset({
+    "team_access_not_granted",
     "not_in_channel",
     "missing_scope",
     "not_allowed_token_type",
@@ -116,6 +117,65 @@ class SlackGateway:
                 break
             cursor = str(next_cursor)
         return tuple(members)
+
+    def list_joined_channels(self) -> tuple[str, ...]:
+        """List public and private channel ids the bot is a member of.
+
+        Returns:
+            tuple[str, ...]: channel ids in api order, excluding archived conversations.
+
+        Raises:
+            ExternalServiceError: on Slack API failure.
+        """
+        ids: list[str] = []
+        cursor: str | None = None
+        while True:
+            kwargs: dict[str, Any] = {"types": "public_channel,private_channel", "exclude_archived": True, "limit": 200}
+            if cursor:
+                kwargs["cursor"] = cursor
+            response = self._call("users_conversations", **kwargs)
+            page = response.get("channels") or []
+            if not isinstance(page, list):
+                raise ExternalServiceError("users.conversations returned invalid channels")
+            for item in page:
+                if isinstance(item, dict) and item.get("id"):
+                    ids.append(str(item["id"]))
+            metadata = response.get("response_metadata") or {}
+            next_cursor = metadata.get("next_cursor") if isinstance(metadata, dict) else None
+            if not next_cursor:
+                break
+            cursor = str(next_cursor)
+        return tuple(ids)
+
+    def get_conversation_history(self, channel_id: str) -> tuple[dict[str, Any], ...]:
+        """List channel messages via conversations.history with cursor pagination.
+
+        Args:
+            channel_id: slack channel id.
+
+        Returns:
+            tuple[dict[str, Any], ...]: message objects in api page order.
+
+        Raises:
+            ExternalServiceError: on Slack API failure.
+        """
+        messages: list[dict[str, Any]] = []
+        cursor: str | None = None
+        while True:
+            kwargs: dict[str, Any] = {"channel": channel_id, "limit": 200}
+            if cursor:
+                kwargs["cursor"] = cursor
+            response = self._call("conversations_history", **kwargs)
+            page = response.get("messages") or []
+            if not isinstance(page, list):
+                raise ExternalServiceError("conversations.history returned invalid messages")
+            messages.extend(item for item in page if isinstance(item, dict))
+            metadata = response.get("response_metadata") or {}
+            next_cursor = metadata.get("next_cursor") if isinstance(metadata, dict) else None
+            if not next_cursor:
+                break
+            cursor = str(next_cursor)
+        return tuple(messages)
 
     def get_file_info(self, file_id: str) -> dict[str, Any]:
         """Fetch files.info for a canvas/file id.
