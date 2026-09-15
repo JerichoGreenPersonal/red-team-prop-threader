@@ -10,7 +10,7 @@ from dataclasses import dataclass
 
 from red_team_prop_threader.spokes import occupied_asset_ids, upsert_season_spoke
 from red_team_prop_threader._errors import NotFoundError, ExternalServiceError, RetryableExternalServiceError
-from red_team_prop_threader.cl_jobs import sent_has, parse_job, list_inbox, stamp_sent, move_to_done, write_failed, resolve_channel
+from red_team_prop_threader.cl_jobs import sent_has, list_inbox, move_to_done, parse_cl_job, write_failed, stamp_sent_cls, resolve_channel
 from red_team_prop_threader.validation import normalize_group_title, validate_channel_members
 
 
@@ -455,7 +455,7 @@ def process_job(
 
         # 6. stamp_sent
         if job.cls:
-            stamp_sent(season_root, job.asset_id, job.cls)
+            stamp_sent_cls(season_root, job.asset_id, job.cls)
         move_to_done(season_root, job_path)
 
     except Exception as e:
@@ -478,7 +478,7 @@ def process_cl_jobs(share_root: Path | str, slack: SlackGateway, *, engine: Engi
         pass
 
     for job_path in list_inbox(root):
-        job = parse_job(job_path)
+        job = parse_cl_job(job_path)
         if job is None:
             continue
         process_job(job_path, job, slack=slack, season_root=root, engine=engine, shotgrid=shotgrid, workspace_id=workspace_id)

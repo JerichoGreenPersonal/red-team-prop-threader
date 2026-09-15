@@ -52,6 +52,7 @@ def test_run_forever_once_with_work() -> None:
         patch("red_team_prop_threader.worker.BatchExecutor", return_value=executor),
         patch("red_team_prop_threader.worker.Repositories.from_session"),
         patch("red_team_prop_threader.worker.ChannelLeaseRepository"),
+        patch("red_team_prop_threader.worker.drain_thread_message_inbox"),
     ):
         session_scope.return_value.__enter__.return_value = MagicMock()
         session_scope.return_value.__exit__.return_value = None
@@ -75,6 +76,7 @@ def test_run_forever_once_without_work_does_not_sleep_when_once() -> None:
         patch("red_team_prop_threader.worker.Repositories.from_session"),
         patch("red_team_prop_threader.worker.ChannelLeaseRepository"),
         patch("red_team_prop_threader.worker.time.sleep") as sleep,
+        patch("red_team_prop_threader.worker.drain_thread_message_inbox"),
     ):
         session_scope.return_value.__enter__.return_value = MagicMock()
         session_scope.return_value.__exit__.return_value = None

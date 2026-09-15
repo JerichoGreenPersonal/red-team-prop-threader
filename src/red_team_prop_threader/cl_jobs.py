@@ -1,3 +1,5 @@
+"""inbox job files under ReviewPrep slack_jobs/."""
+
 from __future__ import annotations
 
 import json
@@ -17,7 +19,44 @@ if TYPE_CHECKING:
     from red_team_prop_threader.slack_gateway import SlackGateway
 
 
+__all__ = (
+    "SlackClJob",
+    "ThreadMessageJob",
+    "list_inbox",
+    "move_to_done",
+    "parse_cl_job",
+    "parse_job",
+    "resolve_channel",
+    "sent_has",
+    "stamp_sent",
+    "stamp_sent_cls",
+    "write_failed",
+)
+
 _LOG = logging.getLogger(__name__)
+
+_THREAD_MESSAGE_KIND = "thread_message"
+
+
+@dataclass(frozen=True, slots=True)
+class ThreadMessageJob:
+    """ReviewPrep thread_message inbox job.
+
+    Attributes:
+        job_id: ReviewPrep job id.
+        asset_id: ShotGrid asset entity id.
+        body: reply text; may be empty when images are present.
+        image_filenames: image copies in the same folder as the JSON.
+        spoke_channel_id: existing spoke channel id.
+        spoke_thread_ts: existing spoke thread timestamp.
+    """
+
+    job_id: str
+    asset_id: int
+    body: str
+    image_filenames: tuple[str, ...]
+    spoke_channel_id: str
+    spoke_thread_ts: str
 
 
 @dataclass(frozen=True)
@@ -42,8 +81,57 @@ class SlackClJob:
     spoke_thread_ts: str | None = None
 
 
-def parse_job(path: Path) -> SlackClJob | None:
-    """Parse a job JSON file into a SlackClJob object."""
+def parse_job(path: Path) -> ThreadMessageJob | None:
+    """Parse a thread_message inbox JSON file.
+
+    Args:
+        path: path to a job JSON file.
+
+    Returns:
+        ThreadMessageJob | None: parsed job, or None when kind is missing or not thread_message.
+    """
+    if not path.is_file():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return None
+    if not isinstance(data, dict) or data.get("kind") != _THREAD_MESSAGE_KIND:
+        return None
+
+    job_id = data.get("job_id")
+    if not isinstance(job_id, str) or not job_id.strip():
+        _LOG.warning("skipping unparseable job %s: invalid job_id", path.name)
+        return None
+    try:
+        asset_id = int(data.get("asset_id"))
+    except (TypeError, ValueError):
+        _LOG.warning("skipping unparseable job %s: invalid asset_id", path.name)
+        return None
+
+    body_raw = data.get("body")
+    body = body_raw if isinstance(body_raw, str) else ""
+    images_raw = data.get("images")
+    image_filenames: list[str] = []
+    if isinstance(images_raw, list):
+        for item in images_raw:
+            if isinstance(item, str) and item.strip():
+                image_filenames.append(item.strip())
+
+    spoke_channel_id = data.get("spoke_channel_id")
+    spoke_thread_ts = data.get("spoke_thread_ts")
+    return ThreadMessageJob(
+        job_id=job_id.strip(),
+        asset_id=asset_id,
+        body=body,
+        image_filenames=tuple(image_filenames),
+        spoke_channel_id=spoke_channel_id.strip() if isinstance(spoke_channel_id, str) else "",
+        spoke_thread_ts=spoke_thread_ts.strip() if isinstance(spoke_thread_ts, str) else "",
+    )
+
+
+def parse_cl_job(path: Path) -> SlackClJob | None:
+    """Parse a legacy Post CL job JSON file into a SlackClJob object."""
     if not path.is_file():
         return None
     try:
@@ -132,8 +220,8 @@ def sent_has(root: Path, asset_id: str, cl: int) -> bool:
     return False
 
 
-def stamp_sent(root: Path, asset_id: str, cls: Sequence[int]) -> None:
-    """Record the given asset_id as sent for the specified cls."""
+def _append_sent(root: Path, asset_key: str, values: Sequence[str]) -> None:
+    """Append unique string values under sent.json[asset_key]."""
     sent_path = root / "slack_jobs" / "sent.json"
     sent_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -147,12 +235,11 @@ def stamp_sent(root: Path, asset_id: str, cls: Sequence[int]) -> None:
             except json.JSONDecodeError:
                 pass
 
-        cl_strs = [str(c) for c in cls]
-        if asset_id not in data:
-            data[asset_id] = []
-        for c in cl_strs:
-            if c not in data[asset_id]:
-                data[asset_id].append(c)
+        if asset_key not in data:
+            data[asset_key] = []
+        for value in values:
+            if value not in data[asset_key]:
+                data[asset_key].append(value)
 
         tmp = sent_path.with_suffix(".json.tmp")
         tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
@@ -162,6 +249,22 @@ def stamp_sent(root: Path, asset_id: str, cls: Sequence[int]) -> None:
         _read_and_patch()
     except OSError:
         _read_and_patch()
+
+
+def stamp_sent(root: Path, asset_id: int, job_id: str) -> None:
+    """Append this job_id under sent.json[str(asset_id)].
+
+    Args:
+        root: ReviewPrep external links root.
+        asset_id: ShotGrid asset entity id.
+        job_id: ReviewPrep thread_message job id.
+    """
+    _append_sent(root, str(asset_id), (job_id,))
+
+
+def stamp_sent_cls(root: Path, asset_id: str, cls: Sequence[int]) -> None:
+    """Record the given asset_id as sent for the specified cls."""
+    _append_sent(root, asset_id, tuple(str(c) for c in cls))
 
 
 def write_failed(root: Path, job_id: str, asset_id: str, error: str) -> None:
@@ -240,32 +343,54 @@ def resolve_channel(gateway: SlackGateway, raw: str) -> str:
 
 
 def move_to_done(root: Path, job_json_path: Path) -> None:
-    """Move a processed job JSON and its associated image to the done directory."""
+    """Move a job JSON plus image copies and leftover sidecars to done/.
+
+    Args:
+        root: ReviewPrep external links root.
+        job_json_path: inbox JSON path for this job.
+    """
     done_dir = root / "slack_jobs" / "done"
     done_dir.mkdir(parents=True, exist_ok=True)
 
     if not job_json_path.is_file():
         return
 
+    inbox = job_json_path.parent
+    data: dict[str, Any] = {}
     try:
-        data = json.loads(job_json_path.read_text(encoding="utf-8"))
-        job_id = data.get("job_id")
-        image_filename = data.get("image_filename")
+        raw = json.loads(job_json_path.read_text(encoding="utf-8"))
+        if isinstance(raw, dict):
+            data = raw
     except (json.JSONDecodeError, OSError):
-        return
+        data = {}
 
-    target_json = done_dir / job_json_path.name
+    job_id = data.get("job_id")
+    filenames: list[str] = []
+    image_filename = data.get("image_filename")
+    if isinstance(image_filename, str) and image_filename.strip():
+        filenames.append(image_filename.strip())
+    images = data.get("images")
+    if isinstance(images, list):
+        for item in images:
+            if isinstance(item, str) and item.strip():
+                filenames.append(item.strip())
+
     with contextlib.suppress(OSError):
-        job_json_path.replace(target_json)
+        job_json_path.replace(done_dir / job_json_path.name)
 
-    if isinstance(image_filename, str) and image_filename:
-        image_path = job_json_path.parent / image_filename
-        if image_path.is_file():
+    moved: set[str] = set()
+    for name in filenames:
+        if name in moved:
+            continue
+        moved.add(name)
+        src = inbox / name
+        if src.is_file():
             with contextlib.suppress(OSError):
-                image_path.replace(done_dir / image_filename)
-    elif isinstance(job_id, str) and job_id:
-        for suffix in (".jpg", ".png"):
-            image_path = job_json_path.parent / f"{job_id}{suffix}"
-            if image_path.is_file():
-                with contextlib.suppress(OSError):
-                    image_path.replace(done_dir / f"{job_id}{suffix}")
+                src.replace(done_dir / name)
+
+    if isinstance(job_id, str) and job_id.strip():
+        for src in inbox.glob(f"{job_id.strip()}*"):
+            if not src.is_file() or src.suffix.lower() == ".json":
+                continue
+            with contextlib.suppress(OSError):
+                src.replace(done_dir / src.name)

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import json
 from typing import TYPE_CHECKING
 from unittest.mock import Mock
@@ -5,12 +7,62 @@ from unittest.mock import Mock
 import pytest
 
 from red_team_prop_threader._errors import NotFoundError, RetryableExternalServiceError
-from red_team_prop_threader.cl_jobs import sent_has, parse_job, list_inbox, stamp_sent, move_to_done, write_failed, resolve_channel
+from red_team_prop_threader.cl_jobs import (
+    sent_has,
+    parse_job,
+    list_inbox,
+    stamp_sent,
+    move_to_done,
+    parse_cl_job,
+    write_failed,
+    stamp_sent_cls,
+    resolve_channel,
+)
 from red_team_prop_threader.slack_gateway import SlackGateway
 
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+
+def test_parse_thread_message_job(tmp_path: Path) -> None:
+    """thread_message JSON parses into job_id, body, and images filenames."""
+    p = tmp_path / "j.json"
+    p.write_text(
+        json.dumps({
+            "kind": "thread_message",
+            "job_id": "j",
+            "asset_id": 38863,
+            "body": "hi",
+            "images": ["j_0.png"],
+            "spoke_channel_id": "C1",
+            "spoke_thread_ts": "1.2",
+        }),
+        encoding="utf-8",
+    )
+    job = parse_job(p)
+    assert job is not None
+    assert job.body == "hi"
+    assert job.image_filenames == ("j_0.png",)
+    assert job.job_id == "j"
+    assert job.asset_id == 38863
+    assert job.spoke_channel_id == "C1"
+    assert job.spoke_thread_ts == "1.2"
+
+
+def test_parse_old_post_cl_is_unsupported(tmp_path: Path) -> None:
+    """Post CL JSON without kind thread_message is not a thread message job."""
+    p = tmp_path / "old.json"
+    p.write_text(json.dumps({"job_id": "old", "asset_id": 1, "cls": [{"label": "WIP", "number": 99}]}), encoding="utf-8")
+    assert parse_job(p) is None
+
+
+def test_stamp_sent_appends_job_id(tmp_path: Path) -> None:
+    """Success stamps the job_id string under sent.json[str(asset_id)], not CL numbers."""
+    stamp_sent(tmp_path, 38864, "3ae76999-4c97-4d7c-9884-78348366d39e")
+    sent_path = tmp_path / "slack_jobs" / "sent.json"
+    data = json.loads(sent_path.read_text(encoding="utf-8"))
+    assert data["38864"] == ["3ae76999-4c97-4d7c-9884-78348366d39e"]
 
 
 def test_parse_job(tmp_path: "Path") -> None:
@@ -28,7 +80,7 @@ def test_parse_job(tmp_path: "Path") -> None:
         encoding="utf-8",
     )
 
-    job = parse_job(job_path)
+    job = parse_cl_job(job_path)
     assert job is not None
     assert job.job_id == "job_123"
     assert job.asset_id == "asset_123"
@@ -64,7 +116,7 @@ def test_parse_job_reviewprep_242_handles_not_ids(tmp_path: "Path") -> None:
         encoding="utf-8",
     )
 
-    job = parse_job(job_path)
+    job = parse_cl_job(job_path)
     assert job is not None
     assert job.creative_stakeholder == "@alice"
     assert job.additional_stakeholders == ("U012ABC",)
@@ -81,7 +133,7 @@ def test_parse_job_optional_ic_poc_handles(tmp_path: "Path") -> None:
         json.dumps({"job_id": "job_ic", "asset_id": "1", "creative_stakeholder": "", "ic_poc": "@alice", "additional_ics": ["bob"]}), encoding="utf-8"
     )
 
-    job = parse_job(job_path)
+    job = parse_cl_job(job_path)
     assert job is not None
     assert job.creative_stakeholder == ""
     assert job.ic_poc == "@alice"
@@ -122,9 +174,9 @@ def test_sent_has(tmp_path: "Path") -> None:
     assert sent_has(tmp_path, "asset_1", 99999) is False
 
 
-def test_stamp_sent(tmp_path: "Path") -> None:
-    """Test stamping an asset_id as sent."""
-    stamp_sent(tmp_path, "asset_1", [12345, 67890])
+def test_stamp_sent_cls(tmp_path: "Path") -> None:
+    """Test stamping an asset_id as sent for CL numbers."""
+    stamp_sent_cls(tmp_path, "asset_1", [12345, 67890])
 
     sent_path = tmp_path / "slack_jobs" / "sent.json"
     data = json.loads(sent_path.read_text(encoding="utf-8"))
@@ -132,7 +184,7 @@ def test_stamp_sent(tmp_path: "Path") -> None:
     assert "12345" in data["asset_1"]
     assert "67890" in data["asset_1"]
 
-    stamp_sent(tmp_path, "asset_2", [12345])
+    stamp_sent_cls(tmp_path, "asset_2", [12345])
     data = json.loads(sent_path.read_text(encoding="utf-8"))
     assert "asset_2" in data
     assert "12345" in data["asset_2"]
