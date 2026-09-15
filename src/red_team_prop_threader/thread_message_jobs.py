@@ -65,6 +65,7 @@ def process_thread_message_job(job: ThreadMessageJob, *, inbox: Path, slack: Sla
     except Exception as exc:
         _LOG.warning("thread_message job %s failed: %s", job.job_id, exc)
         write_failed(jobs_root, job.job_id, asset_key, str(exc))
+        move_to_done(jobs_root, json_path)
         return
 
     stamp_sent(jobs_root, job.asset_id, job.job_id)

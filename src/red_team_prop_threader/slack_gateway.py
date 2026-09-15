@@ -280,15 +280,10 @@ class SlackGateway:
             kwargs["thread_ts"] = thread_ts
         return self._call("chat_postMessage", **kwargs)
 
-    def upload_file(
-        self,
-        channel_id: str,
-        *,
-        file_path: Path,
-        thread_ts: str,
-        initial_comment: str | None = None,
-    ) -> dict[str, Any]:
+    def upload_file(self, channel_id: str, *, file_path: Path, thread_ts: str, initial_comment: str | None = None) -> dict[str, Any]:
         """Upload a file into a thread via files.upload v2.
+
+        Uses ``channel=``; ``channel_id=`` makes slack_sdk pass channel_id twice.
 
         Args:
             channel_id: destination channel id.
@@ -302,12 +297,7 @@ class SlackGateway:
         Raises:
             ExternalServiceError: on Slack API failure.
         """
-        kwargs: dict[str, Any] = {
-            "channel_id": channel_id,
-            "file": str(file_path),
-            "filename": file_path.name,
-            "thread_ts": thread_ts,
-        }
+        kwargs: dict[str, Any] = {"channel": channel_id, "file": str(file_path), "filename": file_path.name, "thread_ts": thread_ts}
         if initial_comment is not None:
             kwargs["initial_comment"] = initial_comment
         return self._call("files_upload_v2", **kwargs)

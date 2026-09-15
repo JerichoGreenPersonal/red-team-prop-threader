@@ -6,6 +6,7 @@ import json
 from typing import TYPE_CHECKING
 from unittest.mock import MagicMock, patch
 
+from red_team_prop_threader._errors import ExternalServiceError
 from red_team_prop_threader.cl_jobs import parse_job
 from red_team_prop_threader.thread_message_jobs import drain_thread_message_inbox, process_thread_message_job
 
@@ -85,6 +86,28 @@ def test_missing_spoke_writes_failed_and_zero_slack_calls(tmp_path: Path) -> Non
     slack.upload_file.assert_not_called()
     failed = json.loads((tmp_path / "slack_jobs" / "failed.json").read_text(encoding="utf-8"))
     assert failed[0]["error"] == "Missing Slack thread"
+    assert not (tmp_path / "slack_jobs" / "sent.json").exists()
+
+
+def test_upload_failure_moves_job_off_inbox(tmp_path: Path) -> None:
+    """Upload errors must not leave JSON in inbox or a later tick will spam the thread."""
+    inbox = tmp_path / "slack_jobs" / "inbox"
+    inbox.mkdir(parents=True)
+    _write_thread_job(inbox, images=["j_0.png"])
+    (inbox / "j_0.png").write_bytes(b"img")
+    slack = MagicMock()
+    slack.upload_file.side_effect = ExternalServiceError("upload failed")
+    job = parse_job(inbox / "j.json")
+    assert job is not None
+
+    process_thread_message_job(job, inbox=inbox, slack=slack, jobs_root=tmp_path)
+    drain_thread_message_inbox(tmp_path, slack)
+
+    slack.post_message.assert_called_once_with("C1", text="hi", thread_ts="1.2")
+    assert not (inbox / "j.json").exists()
+    assert (tmp_path / "slack_jobs" / "done" / "j.json").is_file()
+    failed = json.loads((tmp_path / "slack_jobs" / "failed.json").read_text(encoding="utf-8"))
+    assert failed[0]["error"] == "upload failed"
     assert not (tmp_path / "slack_jobs" / "sent.json").exists()
 
 
