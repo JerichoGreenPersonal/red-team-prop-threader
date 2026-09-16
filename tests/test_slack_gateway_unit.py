@@ -135,6 +135,19 @@ def test_upload_file(gateway: SlackGateway, client: MagicMock, tmp_path: Path) -
     )
 
 
+def test_upload_files_sends_one_v2_call_with_file_uploads(gateway: SlackGateway, client: MagicMock, tmp_path: Path) -> None:
+    """Multiple images share one files_upload_v2 call and optional initial_comment."""
+    client.files_upload_v2.return_value = _Resp({"ok": True, "files": [{"id": "F1"}, {"id": "F2"}]})
+    p0 = tmp_path / "a.png"
+    p1 = tmp_path / "b.png"
+    p0.write_bytes(b"a")
+    p1.write_bytes(b"b")
+    gateway.upload_files("C1", file_paths=[p0, p1], thread_ts="1.2", initial_comment="hi")
+    client.files_upload_v2.assert_called_once_with(
+        channel="C1", thread_ts="1.2", file_uploads=[{"file": str(p0), "filename": "a.png"}, {"file": str(p1), "filename": "b.png"}], initial_comment="hi"
+    )
+
+
 def test_conversation_history_paginates(gateway: SlackGateway, client: MagicMock) -> None:
     """Conversations.history walks next_cursor and keeps message dicts."""
     client.conversations_history.side_effect = [

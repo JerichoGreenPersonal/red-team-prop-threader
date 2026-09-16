@@ -41,7 +41,7 @@ def _write_thread_job(
 
 
 def test_body_and_two_files_posts_once_and_uploads_twice(tmp_path: Path) -> None:
-    """Non-empty body posts once, then each images[] file uploads in order."""
+    """Body plus images is one Slack post: files_upload_v2 with initial_comment, not a separate chat.postMessage."""
     inbox = tmp_path / "slack_jobs" / "inbox"
     inbox.mkdir(parents=True)
     images = ["j_0.png", "j_1.png"]
@@ -56,10 +56,8 @@ def test_body_and_two_files_posts_once_and_uploads_twice(tmp_path: Path) -> None
         process_thread_message_job(job, inbox=inbox, slack=slack, jobs_root=tmp_path)
         mint_job.assert_not_called()
 
-    slack.post_message.assert_called_once_with("C1", text="hi", thread_ts="1.2")
-    assert slack.upload_file.call_count == 2
-    slack.upload_file.assert_any_call("C1", file_path=inbox / "j_0.png", thread_ts="1.2")
-    slack.upload_file.assert_any_call("C1", file_path=inbox / "j_1.png", thread_ts="1.2")
+    slack.post_message.assert_not_called()
+    slack.upload_files.assert_called_once_with("C1", file_paths=[inbox / "j_0.png", inbox / "j_1.png"], thread_ts="1.2", initial_comment="hi")
     sent = json.loads((tmp_path / "slack_jobs" / "sent.json").read_text(encoding="utf-8"))
     assert sent["38864"] == ["j"]
     done = tmp_path / "slack_jobs" / "done"
@@ -96,14 +94,15 @@ def test_upload_failure_moves_job_off_inbox(tmp_path: Path) -> None:
     _write_thread_job(inbox, images=["j_0.png"])
     (inbox / "j_0.png").write_bytes(b"img")
     slack = MagicMock()
-    slack.upload_file.side_effect = ExternalServiceError("upload failed")
+    slack.upload_files.side_effect = ExternalServiceError("upload failed")
     job = parse_job(inbox / "j.json")
     assert job is not None
 
     process_thread_message_job(job, inbox=inbox, slack=slack, jobs_root=tmp_path)
     drain_thread_message_inbox(tmp_path, slack)
 
-    slack.post_message.assert_called_once_with("C1", text="hi", thread_ts="1.2")
+    slack.post_message.assert_not_called()
+    slack.upload_files.assert_called_once()
     assert not (inbox / "j.json").exists()
     assert (tmp_path / "slack_jobs" / "done" / "j.json").is_file()
     failed = json.loads((tmp_path / "slack_jobs" / "failed.json").read_text(encoding="utf-8"))
@@ -148,8 +147,44 @@ def test_drain_posts_thread_message_job_from_inbox(tmp_path: Path) -> None:
 
     slack.post_message.assert_called_once_with("C1", text="hello", thread_ts="1.2")
     slack.upload_file.assert_not_called()
+    slack.upload_files.assert_not_called()
     sent = json.loads((tmp_path / "slack_jobs" / "sent.json").read_text(encoding="utf-8"))
     assert sent["38864"] == ["j"]
+
+
+def test_at_handles_become_slack_mentions(tmp_path: Path) -> None:
+    """@username in the body is rewritten to <@U…> so Slack notifies those users."""
+    inbox = tmp_path / "slack_jobs" / "inbox"
+    inbox.mkdir(parents=True)
+    _write_thread_job(inbox, body="cc @ayeager and @jgreen2 please", images=[])
+    slack = MagicMock()
+    slack.get_conversation_members.return_value = ("Uaye", "Ujg")
+
+    def _info(user_id: str) -> dict[str, object]:
+        names = {"Uaye": "ayeager", "Ujg": "jgreen2"}
+        return {"id": user_id, "name": names[user_id], "profile": {"display_name": names[user_id]}}
+
+    slack.get_user_info.side_effect = _info
+    job = parse_job(inbox / "j.json")
+    assert job is not None
+    process_thread_message_job(job, inbox=inbox, slack=slack, jobs_root=tmp_path)
+    slack.post_message.assert_called_once_with("C1", text="cc <@Uaye> and <@Ujg> please", thread_ts="1.2")
+
+
+def test_at_handles_in_image_post_go_on_initial_comment(tmp_path: Path) -> None:
+    """Mentions on a text+image job live on the single upload comment, not a second post."""
+    inbox = tmp_path / "slack_jobs" / "inbox"
+    inbox.mkdir(parents=True)
+    _write_thread_job(inbox, body="thanks @ayeager", images=["j_0.png"])
+    (inbox / "j_0.png").write_bytes(b"img")
+    slack = MagicMock()
+    slack.get_conversation_members.return_value = ("Uaye",)
+    slack.get_user_info.return_value = {"id": "Uaye", "name": "ayeager", "profile": {}}
+    job = parse_job(inbox / "j.json")
+    assert job is not None
+    process_thread_message_job(job, inbox=inbox, slack=slack, jobs_root=tmp_path)
+    slack.post_message.assert_not_called()
+    slack.upload_files.assert_called_once_with("C1", file_paths=[inbox / "j_0.png"], thread_ts="1.2", initial_comment="thanks <@Uaye>")
 
 
 def test_worker_tick_drains_thread_message_and_does_not_mint() -> None:

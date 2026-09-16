@@ -16,6 +16,7 @@ from red_team_prop_threader._errors import ConflictError, NotFoundError, Externa
 
 if TYPE_CHECKING:
     from pathlib import Path
+    from collections.abc import Sequence
 
     from red_team_prop_threader.config import Settings
 
@@ -298,6 +299,30 @@ class SlackGateway:
             ExternalServiceError: on Slack API failure.
         """
         kwargs: dict[str, Any] = {"channel": channel_id, "file": str(file_path), "filename": file_path.name, "thread_ts": thread_ts}
+        if initial_comment is not None:
+            kwargs["initial_comment"] = initial_comment
+        return self._call("files_upload_v2", **kwargs)
+
+    def upload_files(self, channel_id: str, *, file_paths: Sequence[Path], thread_ts: str, initial_comment: str | None = None) -> dict[str, Any]:
+        """Upload one or more files as a single thread reply.
+
+        Args:
+            channel_id: destination channel id.
+            file_paths: local files in upload order.
+            thread_ts: parent thread timestamp.
+            initial_comment: optional message text on the same Slack post.
+
+        Returns:
+            dict[str, Any]: files.upload v2 response body.
+
+        Raises:
+            ValueError: if file_paths is empty.
+            ExternalServiceError: on Slack API failure.
+        """
+        paths = tuple(file_paths)
+        if not paths:
+            raise ValueError("file_paths must not be empty")
+        kwargs: dict[str, Any] = {"channel": channel_id, "thread_ts": thread_ts, "file_uploads": [{"file": str(path), "filename": path.name} for path in paths]}
         if initial_comment is not None:
             kwargs["initial_comment"] = initial_comment
         return self._call("files_upload_v2", **kwargs)
