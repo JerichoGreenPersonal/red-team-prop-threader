@@ -323,11 +323,13 @@ class BatchExecutor:
         try:
             result = self._dispatch(batch, operation, payload)
         except RetryableExternalServiceError as exc:
+            _logger.warning("batch %s operation %s retryable failure: %s", batch.id, operation.kind, exc)
             self._repos.operations.transition(
                 operation.id, OperationStatus.RUNNING, OperationStatus.FAILED, attempts=operation.attempts + 1, safe_error=str(exc), now=self._clock.now()
             )
             return self._repos.operations.get(operation.id)
         except (PermissionDeniedError, ExternalServiceError, ValueError, LookupError) as exc:
+            _logger.warning("batch %s operation %s failed: %s", batch.id, operation.kind, exc)
             self._repos.operations.transition(
                 operation.id, OperationStatus.RUNNING, OperationStatus.FAILED, attempts=operation.attempts + 1, safe_error=str(exc), now=self._clock.now()
             )
@@ -670,6 +672,7 @@ class BatchExecutor:
             else:
                 self._slack.update_message(str(progress["channel_id"]), str(progress["ts"]), text=text)
         except ExternalServiceError:
+            _logger.warning("progress dm failed for batch %s", batch.id)
             return
         payload["progress"] = progress
         self._repos.batches.update_payload(batch.id, payload)

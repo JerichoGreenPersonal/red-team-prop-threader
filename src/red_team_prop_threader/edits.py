@@ -47,6 +47,8 @@ CALLBACK_GROUP_EDIT = "group_edit_submit"
 _BID_ANIMATOR = "edit_animator"
 _BID_ADDITIONAL = "edit_additional"
 _BID_LINKS = "edit_links"
+_UNASSIGNED_VALUE = "__none__"
+_UNASSIGNED_LABEL = "Unassigned"
 
 
 class Clock(Protocol):
@@ -285,8 +287,11 @@ class EditService:
                 logging.getLogger(__name__).warning("primary asset index update failed", exc_info=True)
 
     def _open_editor(self, ref: MessageRef, *, expected_kind: MessageKind, callback_id: str, title: str) -> EditOpenResult:
-        """Shared open path for asset/group editors."""
-        self._require_channel_member(ref.channel_id, ref.user_id)
+        """Shared open path for asset/group editors.
+
+        Database lookup runs before Slack member hydration so a historical click
+        or missing row does not spend the views.open trigger_id on users.info.
+        """
         message = self._repos.history.get_by_channel_ts(workspace_id=ref.workspace_id, channel_id=ref.channel_id, slack_ts=ref.message_ts)
         if message is None:
             raise LookupError("tracked message not found")
@@ -300,8 +305,11 @@ class EditService:
                 text = f"{text}\n<{permalink}|Open latest>"
             return EditOpenResult(refused=True, latest_permalink=permalink, ephemeral_text=text)
 
+        member_ids = self._slack.get_conversation_members(message.channel_id)
+        if ref.user_id not in set(member_ids):
+            raise ValidationError("only channel members may edit prop threads")
         snapshot = _edit_snapshot(message)
-        members = self._channel_member_options(message.channel_id)
+        members = self._channel_member_options(message.channel_id, member_ids=member_ids)
         view = _render_edit_view(
             callback_id=callback_id,
             title=title,
@@ -356,10 +364,20 @@ class EditService:
                 return value.strip()
         return user_id
 
-    def _channel_member_options(self, channel_id: str) -> tuple[tuple[str, str], ...]:
-        """Return (user_id, verbose_label) pairs for human channel members."""
+    def _channel_member_options(self, channel_id: str, member_ids: tuple[str, ...] | None = None) -> tuple[tuple[str, str], ...]:
+        """Return (user_id, verbose_label) pairs for human channel members.
+
+        Args:
+            channel_id: slack channel id.
+            member_ids: optional prefetched member ids so open-editor does not
+                call conversations.members twice.
+
+        Returns:
+            tuple[tuple[str, str], ...]: user id and verbose label pairs.
+        """
         options: list[tuple[str, str]] = []
-        for user_id in self._slack.get_conversation_members(channel_id):
+        ids = member_ids if member_ids is not None else self._slack.get_conversation_members(channel_id)
+        for user_id in ids:
             if len(options) >= 100:
                 break
             label = self._verbose_member_label(user_id)
@@ -473,12 +491,13 @@ def _render_edit_view(
         animator = str(snapshot.get("group_animator_id") or "").strip()
         additional = tuple(str(item) for item in snapshot.get("group_additional_ids") or () if str(item).strip())
         links = _links_text(snapshot.get("group_links"))
-    options = _member_option_objects(members)
+    member_opts = _member_option_objects(members)[:99]
+    additional_opts = member_opts or [_unassigned_option()]
     animator_element: dict[str, Any] = {
         "type": "static_select",
         "action_id": _BID_ANIMATOR,
-        "placeholder": {"type": "plain_text", "text": "Select a channel member"},
-        "options": options,
+        "placeholder": {"type": "plain_text", "text": "Select an AD or Feature Owner" if not is_asset else "Animator or Concept Artist"},
+        "options": [_unassigned_option(), *member_opts],
     }
     initial_animator = _member_option_object(members, animator)
     if initial_animator is not None:
@@ -487,7 +506,7 @@ def _render_edit_view(
         "type": "multi_static_select",
         "action_id": _BID_ADDITIONAL,
         "placeholder": {"type": "plain_text", "text": "Select channel members"},
-        "options": options,
+        "options": additional_opts,
     }
     initial_additional = [option for user_id in additional if (option := _member_option_object(members, user_id)) is not None]
     if initial_additional:
@@ -504,7 +523,7 @@ def _render_edit_view(
                 "type": "input",
                 "block_id": _BID_ANIMATOR,
                 "optional": True,
-                "label": {"type": "plain_text", "text": "Requestor" if is_asset else "Creative Stakeholder"},
+                "label": {"type": "plain_text", "text": "IC POC" if is_asset else "Creative Stakeholder"},
                 "hint": {"type": "plain_text", "text": "Only people already in this channel are listed."},
                 "element": animator_element,
             },
@@ -520,17 +539,31 @@ def _render_edit_view(
                 "type": "input",
                 "block_id": _BID_LINKS,
                 "optional": True,
-                "label": {"type": "plain_text", "text": "Links" if is_asset else "Group links"},
-                "element": _links_input_element(links),
+                "label": {"type": "plain_text", "text": "Asset Links" if is_asset else "Group links"},
+                "element": _links_input_element(
+                    links,
+                    "Ex: Area in Miro, SyncSketch, Reverence Folder, etc (Format: Label: https://...)"
+                    if is_asset
+                    else "Ex: Map Miro, Season Deck, etc (Format: Label: https://...)",
+                ),
             },
         ],
     }
 
 
+def _unassigned_option() -> dict[str, Any]:
+    """Return the explicit clear option for single-person pickers.
+
+    Slack static_select cannot deselect an initial_option. An Unassigned value
+    is the only way to remove a POC after it was saved.
+    """
+    return {"text": {"type": "plain_text", "text": _UNASSIGNED_LABEL}, "value": _UNASSIGNED_VALUE}
+
+
 def _member_option_objects(members: tuple[tuple[str, str], ...]) -> list[dict[str, Any]]:
     """Build Slack option objects for edit-modal people pickers."""
     if not members:
-        return [{"text": {"type": "plain_text", "text": "No channel members available"}, "value": "__none__"}]
+        return []
     return [{"text": {"type": "plain_text", "text": label[:75]}, "value": user_id} for user_id, label in members[:100]]
 
 
@@ -544,13 +577,21 @@ def _member_option_object(members: tuple[tuple[str, str], ...], user_id: str) ->
     return None
 
 
-def _links_input_element(links: str) -> dict[str, Any]:
-    """Build the supporting-links plain_text_input, omitting empty initial_value."""
+def _links_input_element(links: str, placeholder: str) -> dict[str, Any]:
+    """Build the supporting-links plain_text_input, omitting empty initial_value.
+
+    Args:
+        links: multiline ``Label: URL`` text to prefill, or empty.
+        placeholder: placeholder shown when the field is empty.
+
+    Returns:
+        dict[str, Any]: Slack plain_text_input element.
+    """
     element: dict[str, Any] = {
         "type": "plain_text_input",
         "action_id": _BID_LINKS,
         "multiline": True,
-        "placeholder": {"type": "plain_text", "text": "Label: https://..."},
+        "placeholder": {"type": "plain_text", "text": placeholder},
     }
     if links:
         element["initial_value"] = links
@@ -605,7 +646,7 @@ def decode_edit_submission(view: dict[str, Any]) -> tuple[str, str, str, tuple[s
             animator_id = str(selected_option.get("value") or "").strip()
         else:
             animator_id = str(animator_field.get("selected_user") or "").strip()
-    if animator_id == "__none__":
+    if animator_id == _UNASSIGNED_VALUE:
         animator_id = ""
     additional_block = values.get(_BID_ADDITIONAL) if isinstance(values, dict) else {}
     additional_field = additional_block.get(_BID_ADDITIONAL) if isinstance(additional_block, dict) else {}
@@ -616,7 +657,7 @@ def decode_edit_submission(view: dict[str, Any]) -> tuple[str, str, str, tuple[s
             additional_ids = tuple(
                 str(option.get("value") or "").strip()
                 for option in selected_options
-                if isinstance(option, dict) and str(option.get("value") or "").strip() and str(option.get("value") or "").strip() != "__none__"
+                if isinstance(option, dict) and str(option.get("value") or "").strip() and str(option.get("value") or "").strip() != _UNASSIGNED_VALUE
             )
         else:
             selected = additional_field.get("selected_users")

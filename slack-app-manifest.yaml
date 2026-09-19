@@ -10,14 +10,21 @@ features:
       description: Create prop-request threads from a ShotGrid page
       usage_hint: "[ShotGrid page URL]"
       should_escape: false
+    - command: /adopt-prop-threads
+      description: Write official Slack thread links for ReviewPrep from this channel INDEX
+      usage_hint: ""
+      should_escape: false
 oauth_config:
   scopes:
     bot:
       - commands
       - channels:read
+      - channels:history
       - chat:write
       - files:read
+      - files:write
       - groups:read
+      - groups:history
       - im:write
       - users:read
       - canvases:read

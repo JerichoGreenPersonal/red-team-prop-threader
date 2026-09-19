@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from typing import Any
-from unittest.mock import MagicMock
+from typing import TYPE_CHECKING, Any
+import urllib.error
+from unittest.mock import MagicMock, patch
 
 import pytest
 from slack_sdk.errors import SlackApiError
@@ -11,6 +12,10 @@ from slack_sdk.errors import SlackApiError
 from red_team_prop_threader.config import Settings
 from red_team_prop_threader._errors import ConflictError, NotFoundError, ExternalServiceError, PermissionDeniedError, RetryableExternalServiceError
 from red_team_prop_threader.slack_gateway import SlackGateway
+
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 class _Resp:
@@ -108,6 +113,52 @@ def test_message_and_view_helpers(gateway: SlackGateway, client: MagicMock) -> N
     assert gateway.get_permalink("C1", "1.1") == "https://slack.example/p"
 
 
+def test_upload_file(gateway: SlackGateway, client: MagicMock, tmp_path: Path) -> None:
+    """upload_file forwards files_upload_v2 with channel, not channel_id.
+
+    slack_sdk files_upload_v2 takes channel=; passing channel_id= is forwarded
+    into files_completeUploadExternal and raises TypeError.
+    """
+    client.files_upload_v2.return_value = _Resp({"ok": True, "file": {"id": "Fupload"}})
+    file_path = tmp_path / "submission.jpg"
+    file_path.write_bytes(b"image-bytes")
+
+    result = gateway.upload_file("C1", file_path=file_path, thread_ts="1234.5678")
+    assert result["file"]["id"] == "Fupload"
+    client.files_upload_v2.assert_called_once_with(channel="C1", file=str(file_path), filename="submission.jpg", thread_ts="1234.5678")
+
+    client.files_upload_v2.reset_mock()
+    client.files_upload_v2.return_value = _Resp({"ok": True, "file": {"id": "Fupload2"}})
+    gateway.upload_file("C1", file_path=file_path, thread_ts="1234.5678", initial_comment="Post CL")
+    client.files_upload_v2.assert_called_once_with(
+        channel="C1", file=str(file_path), filename="submission.jpg", thread_ts="1234.5678", initial_comment="Post CL"
+    )
+
+
+def test_upload_files_sends_one_v2_call_with_file_uploads(gateway: SlackGateway, client: MagicMock, tmp_path: Path) -> None:
+    """Multiple images share one files_upload_v2 call and optional initial_comment."""
+    client.files_upload_v2.return_value = _Resp({"ok": True, "files": [{"id": "F1"}, {"id": "F2"}]})
+    p0 = tmp_path / "a.png"
+    p1 = tmp_path / "b.png"
+    p0.write_bytes(b"a")
+    p1.write_bytes(b"b")
+    gateway.upload_files("C1", file_paths=[p0, p1], thread_ts="1.2", initial_comment="hi")
+    client.files_upload_v2.assert_called_once_with(
+        channel="C1", thread_ts="1.2", file_uploads=[{"file": str(p0), "filename": "a.png"}, {"file": str(p1), "filename": "b.png"}], initial_comment="hi"
+    )
+
+
+def test_conversation_history_paginates(gateway: SlackGateway, client: MagicMock) -> None:
+    """Conversations.history walks next_cursor and keeps message dicts."""
+    client.conversations_history.side_effect = [
+        _Resp({"ok": True, "messages": [{"ts": "1.0"}, "bad"], "response_metadata": {"next_cursor": "c2"}}),
+        _Resp({"ok": True, "messages": [{"ts": "2.0"}], "response_metadata": {"next_cursor": ""}}),
+    ]
+    messages = gateway.get_conversation_history("C1")
+    assert messages == ({"ts": "1.0"}, {"ts": "2.0"})
+    assert client.conversations_history.call_count == 2
+
+
 def test_canvas_helpers(gateway: SlackGateway, client: MagicMock) -> None:
     """Canvas create/lookup/edit/rename helpers."""
     client.conversations_canvases_create.return_value = _Resp({"ok": True, "canvas_id": "Fcanvas"})
@@ -173,3 +224,64 @@ def test_invalid_payloads_raise(gateway: SlackGateway, client: MagicMock) -> Non
     client.auth_test.return_value = _Resp({"ok": False, "error": "x"})
     with pytest.raises(ExternalServiceError):
         gateway.auth_test()
+
+
+def test_get_canvas_document_downloads_url_private(gateway: SlackGateway, client: MagicMock) -> None:
+    """files.info url_private_download is fetched with the bot Bearer token."""
+    client.token = "xoxb-test"
+    client.files_info.return_value = _Resp({
+        "ok": True,
+        "file": {"id": "Fcanvas", "url_private_download": "https://files.slack.com/files-pri/T/F/download/canvas"},
+    })
+    fake_cm = MagicMock()
+    fake_cm.read.return_value = b'{"markdown": "hello"}'
+    fake_cm.__enter__.return_value = fake_cm
+    fake_cm.__exit__.return_value = False
+    fake_resp = fake_cm
+    fake_resp.status = 200
+    with patch("red_team_prop_threader.slack_gateway.urllib.request.urlopen", return_value=fake_cm) as opener:
+        text = gateway.get_canvas_document("Fcanvas")
+    assert "hello" in text
+    request = opener.call_args.args[0]
+    header_blob = " ".join(f"{k}: {v}" for k, v in request.header_items())
+    assert "xoxb-test" in header_blob
+
+
+def test_get_canvas_document_missing_download_url(gateway: SlackGateway, client: MagicMock) -> None:
+    """files.info without url_private_download is INDEX unread, not empty success."""
+    client.files_info.return_value = _Resp({"ok": True, "file": {"id": "Fcanvas", "title": "INDEX"}})
+    with pytest.raises(ExternalServiceError, match="url_private_download"):
+        gateway.get_canvas_document("Fcanvas")
+
+
+def test_download_private_file_rejects_non_https(gateway: SlackGateway) -> None:
+    """Canvas download URLs must be HTTPS."""
+    with pytest.raises(ExternalServiceError, match="HTTPS"):
+        gateway.download_private_file("http://files.slack.com/x")
+
+
+def test_download_private_file_http_error(gateway: SlackGateway, client: MagicMock) -> None:
+    """HTTP errors from urlopen become ExternalServiceError."""
+    client.token = "xoxb-test"
+    err = urllib.error.HTTPError("https://files.slack.com/x", 404, "nope", hdrs=None, fp=None)
+    with (
+        patch("red_team_prop_threader.slack_gateway.urllib.request.urlopen", side_effect=err),
+        pytest.raises(ExternalServiceError, match="canvas download failed"),
+    ):
+        gateway.download_private_file("https://files.slack.com/x")
+
+
+def test_get_canvas_document_empty_body(gateway: SlackGateway, client: MagicMock) -> None:
+    """Empty download body is INDEX unread."""
+    client.token = "xoxb-test"
+    client.files_info.return_value = _Resp({
+        "ok": True,
+        "file": {"id": "Fcanvas", "url_private_download": "https://files.slack.com/files-pri/T/F/download/canvas"},
+    })
+    fake_cm = MagicMock()
+    fake_cm.read.return_value = b""
+    fake_cm.__enter__.return_value = fake_cm
+    fake_cm.__exit__.return_value = False
+    fake_cm.status = 200
+    with patch("red_team_prop_threader.slack_gateway.urllib.request.urlopen", return_value=fake_cm), pytest.raises(ExternalServiceError, match="empty body"):
+        gateway.get_canvas_document("Fcanvas")

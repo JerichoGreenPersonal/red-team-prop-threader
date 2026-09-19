@@ -289,7 +289,11 @@ def test_infer_group_title_multiple_seasons_in_one_name() -> None:
     assert infer_group_title(assets) == ""
 
 
-def test_infer_group_title_single_asset() -> None:
+def test_infer_group_title_dotted_season_patch() -> None:
+    """S31.1 tokens are distinct from S31 and from S31.2."""
+    assert infer_group_title(["S31.1_prop_a", "S31.1_prop_b"]) == "SEASON 31.1 PROP REQUEST THREADS:"
+    assert infer_group_title(["S31.1_prop_a", "S31.2_prop_b"]) == ""
+    assert infer_group_title(["S31.1_prop_a", "S31_prop_b"]) == ""
     """Single asset with one season token returns the canonical title."""
     assert infer_group_title(["S10_hero_prop"]) == "SEASON 10 PROP REQUEST THREADS:"
 

@@ -4,14 +4,20 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 import logging
+import urllib.error
+import urllib.request
 
 from slack_sdk import WebClient
 from slack_sdk.errors import SlackApiError
 
+from red_team_prop_threader.spokes import decode_canvas_body
 from red_team_prop_threader._errors import ConflictError, NotFoundError, ExternalServiceError, PermissionDeniedError, RetryableExternalServiceError
 
 
 if TYPE_CHECKING:
+    from pathlib import Path
+    from collections.abc import Sequence
+
     from red_team_prop_threader.config import Settings
 
 
@@ -20,6 +26,7 @@ __all__ = ("SlackGateway",)
 _LOG = logging.getLogger(__name__)
 
 _PERMISSION_ERRORS = frozenset({
+    "team_access_not_granted",
     "not_in_channel",
     "missing_scope",
     "not_allowed_token_type",
@@ -135,6 +142,39 @@ class SlackGateway:
             raise ExternalServiceError("files.info returned invalid file")
         return file_obj
 
+    def download_private_file(self, url: str) -> bytes:
+        """GET a Slack private file URL with the bot token. HTTPS only."""
+        target = str(url or "").strip()
+        if not target.lower().startswith("https://"):
+            raise ExternalServiceError("canvas download URL must be HTTPS")
+        token = str(getattr(self._client, "token", "") or "")
+        request = urllib.request.Request(target, headers={"Authorization": f"Bearer {token}"})
+        try:
+            with urllib.request.urlopen(request, timeout=30) as response:
+                status = int(getattr(response, "status", 200) or 200)
+                if status != 200:
+                    raise ExternalServiceError("canvas download failed")
+                body = response.read()
+        except urllib.error.HTTPError as exc:
+            raise ExternalServiceError("canvas download failed") from exc
+        except urllib.error.URLError as exc:
+            raise ExternalServiceError("canvas download failed") from exc
+        if not body:
+            raise ExternalServiceError("canvas download returned empty body")
+        return bytes(body)
+
+    def get_canvas_document(self, canvas_id: str) -> str:
+        """Return INDEX canvas text from files.info + url_private_download."""
+        info = self.get_file_info(canvas_id)
+        download_url = info.get("url_private_download")
+        if not isinstance(download_url, str) or not download_url.strip():
+            raise ExternalServiceError("files.info missing url_private_download")
+        raw = self.download_private_file(download_url.strip())
+        text = decode_canvas_body(raw)
+        if not text.strip():
+            raise ExternalServiceError("canvas download returned empty body")
+        return text
+
     def open_view(self, trigger_id: str, view: dict[str, Any]) -> dict[str, Any]:
         """Open a modal via views.open.
 
@@ -241,6 +281,52 @@ class SlackGateway:
             kwargs["thread_ts"] = thread_ts
         return self._call("chat_postMessage", **kwargs)
 
+    def upload_file(self, channel_id: str, *, file_path: Path, thread_ts: str, initial_comment: str | None = None) -> dict[str, Any]:
+        """Upload a file into a thread via files.upload v2.
+
+        Uses ``channel=``; ``channel_id=`` makes slack_sdk pass channel_id twice.
+
+        Args:
+            channel_id: destination channel id.
+            file_path: local path to the file to upload.
+            thread_ts: parent thread timestamp.
+            initial_comment: optional message text posted with the file.
+
+        Returns:
+            dict[str, Any]: files.upload v2 response body.
+
+        Raises:
+            ExternalServiceError: on Slack API failure.
+        """
+        kwargs: dict[str, Any] = {"channel": channel_id, "file": str(file_path), "filename": file_path.name, "thread_ts": thread_ts}
+        if initial_comment is not None:
+            kwargs["initial_comment"] = initial_comment
+        return self._call("files_upload_v2", **kwargs)
+
+    def upload_files(self, channel_id: str, *, file_paths: Sequence[Path], thread_ts: str, initial_comment: str | None = None) -> dict[str, Any]:
+        """Upload one or more files as a single thread reply.
+
+        Args:
+            channel_id: destination channel id.
+            file_paths: local files in upload order.
+            thread_ts: parent thread timestamp.
+            initial_comment: optional message text on the same Slack post.
+
+        Returns:
+            dict[str, Any]: files.upload v2 response body.
+
+        Raises:
+            ValueError: if file_paths is empty.
+            ExternalServiceError: on Slack API failure.
+        """
+        paths = tuple(file_paths)
+        if not paths:
+            raise ValueError("file_paths must not be empty")
+        kwargs: dict[str, Any] = {"channel": channel_id, "thread_ts": thread_ts, "file_uploads": [{"file": str(path), "filename": path.name} for path in paths]}
+        if initial_comment is not None:
+            kwargs["initial_comment"] = initial_comment
+        return self._call("files_upload_v2", **kwargs)
+
     def update_message(self, channel_id: str, ts: str, *, text: str, blocks: list[dict[str, Any]] | None = None) -> dict[str, Any]:
         """Update a bot message via chat.update.
 
@@ -260,6 +346,36 @@ class SlackGateway:
         if blocks is not None:
             kwargs["blocks"] = blocks
         return self._call("chat_update", **kwargs)
+
+    def get_conversation_history(self, channel_id: str) -> tuple[dict[str, Any], ...]:
+        """List channel messages via conversations.history with cursor pagination.
+
+        Args:
+            channel_id: slack channel id.
+
+        Returns:
+            tuple[dict[str, Any], ...]: message objects in api page order.
+
+        Raises:
+            ExternalServiceError: on Slack API failure.
+        """
+        messages: list[dict[str, Any]] = []
+        cursor: str | None = None
+        while True:
+            kwargs: dict[str, Any] = {"channel": channel_id, "limit": 200}
+            if cursor:
+                kwargs["cursor"] = cursor
+            response = self._call("conversations_history", **kwargs)
+            page = response.get("messages") or []
+            if not isinstance(page, list):
+                raise ExternalServiceError("conversations.history returned invalid messages")
+            messages.extend(item for item in page if isinstance(item, dict))
+            metadata = response.get("response_metadata") or {}
+            next_cursor = metadata.get("next_cursor") if isinstance(metadata, dict) else None
+            if not next_cursor:
+                break
+            cursor = str(next_cursor)
+        return tuple(messages)
 
     def get_permalink(self, channel_id: str, message_ts: str) -> str:
         """Resolve a message permalink via chat.getPermalink.

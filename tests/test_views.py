@@ -32,8 +32,11 @@ from red_team_prop_threader.views import (
     CanvasPreflightContext,
     render_asset_page,
     render_import_view,
+    render_working_view,
     decode_asset_page_state,
     render_confirmation_view,
+    render_canvas_loading_view,
+    constrain_asset_page_errors,
     render_canvas_preflight_view,
 )
 from red_team_prop_threader.domain import ImportedAsset
@@ -138,7 +141,20 @@ def test_asset_page_never_exceeds_fifteen_assets_or_one_hundred_blocks() -> None
 # ---------------------------------------------------------------------------
 
 
-def test_canvas_preflight_action_ids_present() -> None:
+def test_working_view_has_no_submit_and_keeps_draft_id() -> None:
+    """Loading views must not be submittable; they only hold the modal open."""
+    view = render_working_view("draft-001", title="Assets", message="Saving and checking names…")
+    assert view["type"] == "modal"
+    assert view["private_metadata"] == "draft-001"
+    assert "submit" not in view
+    assert "Saving and checking names" in json.dumps(view)
+
+
+def test_canvas_loading_view_keeps_preflight_copy() -> None:
+    """Canvas preflight still uses the original loading copy."""
+    view = render_canvas_loading_view("draft-001")
+    assert view["title"]["text"] == "Canvas Check"
+    assert "Checking the channel canvas" in json.dumps(view)
     """Canvas preflight view includes create, rename, and decline action IDs."""
     ctx = CanvasPreflightContext(draft_id="d1", canvas_name="Season 31 Prop Threads", channel_id="C_ABC")
     view = render_canvas_preflight_view(ctx)
@@ -654,14 +670,30 @@ def test_asset_page_asset_url_visible_in_view() -> None:
     assert "unique-url-42" in rendered
 
 
-def test_asset_page_group_title_escaped_in_view() -> None:
-    """Group title with special chars is mrkdwn-escaped in the view."""
-    draft = sample_draft(asset_count=1, group_title="Title & <stuff>")
-    view = render_asset_page(draft, page_index=0)
-    rendered = json.dumps(view)
-    assert "&amp;" in rendered
-    assert "&lt;" in rendered
-    assert "&gt;" in rendered
+def test_asset_page_intro_uses_imported_asset_count() -> None:
+    """Asset page intro reports how many assets were imported, not page index."""
+    view = render_asset_page(sample_draft(asset_count=1), page_index=0)
+    intro = next(b for b in view["blocks"] if b.get("block_id") == "page_intro")  # type: ignore[union-attr]
+    assert intro["text"]["text"] == "Creating threads for 1 asset"  # type: ignore[index]
+    view_many = render_asset_page(sample_draft(asset_count=16), page_index=1)
+    intro_many = next(b for b in view_many["blocks"] if b.get("block_id") == "page_intro")  # type: ignore[union-attr]
+    assert intro_many["text"]["text"] == "Creating threads for 16 assets"  # type: ignore[index]
+    assert "Page " not in intro_many["text"]["text"]  # type: ignore[index]
+
+
+def test_asset_page_copy_matches_pilot_feedback() -> None:
+    """Group and asset inputs use the requested labels and placeholders."""
+    view = render_asset_page(sample_draft(asset_count=1), page_index=0)
+    blocks = {b["block_id"]: b for b in view["blocks"] if isinstance(b, dict) and "block_id" in b}  # type: ignore[index]
+    assert blocks[BID_GROUP_TITLE]["element"]["placeholder"]["text"] == "ex: Season or Map Name"
+    assert blocks[BID_GROUP_ANIMATOR]["element"]["placeholder"]["text"] == "Select an AD or Feature Owner"
+    assert blocks[BID_GROUP_LINKS]["element"]["placeholder"]["text"] == "Ex: Map Miro, Season Deck, etc (Format: Label: https://...)"
+    assert blocks["asset_100_animator"]["label"]["text"] == "IC POC"
+    assert blocks["asset_100_animator"]["element"]["placeholder"]["text"] == "Animator or Concept Artist"
+    assert blocks["asset_100_links"]["label"]["text"] == "Asset Links"
+    assert blocks["asset_100_links"]["element"]["placeholder"]["text"] == ("Ex: Area in Miro, SyncSketch, Reverence Folder, etc (Format: Label: https://...)")
+    assert not any(isinstance(b, dict) and b.get("block_id") == "form_errors" for b in view["blocks"])  # type: ignore[union-attr]
+    assert not any(isinstance(b, dict) and b.get("label", {}).get("text") == "Notice" for b in view["blocks"])  # type: ignore[union-attr]
 
 
 def test_asset_page_json_serializable() -> None:
@@ -681,13 +713,22 @@ def test_decode_user_select_empty_string_is_none() -> None:
     assert decoded.group_animator_id is None
 
 
-def test_asset_and_confirm_views_include_form_errors_notice_sink() -> None:
-    """Trailing Notice input exists so validation can surface off-screen errors."""
-    from red_team_prop_threader.views import BID_FORM_ERRORS, FORM_ERRORS_NOTICE, ConfirmationContext, with_form_error_notice, render_confirmation_view
+def test_constrain_asset_page_errors_moves_offscreen_keys_to_group_title() -> None:
+    """Off-page asset errors are remapped so Slack will accept the ack."""
+    entity_ids = tuple(range(100, 116))
+    errors = {"asset_115_animator": "must be a member of this channel", "group_title": "group title is required"}
+    constrained = constrain_asset_page_errors(errors, page_index=0, entity_ids=entity_ids)
+    assert "asset_115_animator" not in constrained
+    assert "group title is required" in constrained["group_title"]
+    assert "must be a member of this channel" in constrained["group_title"]
+    on_page = constrain_asset_page_errors({"asset_100_links": "line 1: Supporting links require a label (label: link)"}, page_index=0, entity_ids=entity_ids)
+    assert on_page == {"asset_100_links": "line 1: Supporting links require a label (label: link)"}
 
-    draft = sample_draft(asset_count=1)
-    asset_view = render_asset_page(draft, 0)
-    assert any(isinstance(b, dict) and b.get("block_id") == BID_FORM_ERRORS for b in asset_view["blocks"])  # type: ignore[union-attr]
+
+def test_confirm_view_omits_notice_and_keeps_field_errors() -> None:
+    """Confirmation modal has no Notice sink; field errors pass through unchanged."""
+    from red_team_prop_threader.views import with_form_error_notice
+
     confirm = render_confirmation_view(
         ConfirmationContext(
             draft_id="d1",
@@ -700,10 +741,11 @@ def test_asset_and_confirm_views_include_form_errors_notice_sink() -> None:
             warnings=(),
         )
     )
-    assert any(isinstance(b, dict) and b.get("block_id") == BID_FORM_ERRORS for b in confirm["blocks"])  # type: ignore[union-attr]
+    assert not any(isinstance(b, dict) and b.get("block_id") == "form_errors" for b in confirm["blocks"])  # type: ignore[union-attr]
+    title_block = next(b for b in confirm["blocks"] if b.get("block_id") == BID_CONFIRM_GROUP_TITLE)  # type: ignore[union-attr]
+    assert title_block["element"]["placeholder"]["text"] == "ex: Season or Map Name"  # type: ignore[index]
     noticed = with_form_error_notice({"group_animator": "nope"})
-    assert noticed[BID_FORM_ERRORS] == FORM_ERRORS_NOTICE
-    assert noticed["group_animator"] == "nope"
+    assert noticed == {"group_animator": "nope"}
 
 
 def test_decode_asset_page_strict_roundtrip() -> None:
