@@ -6,6 +6,21 @@ Use the `/bumpversion` skill to update this file and the version.toml file and m
 /bumpversion <major|minor|patch> include all updates in the branch.
 ```
 
+## [1.1.0] - 2026-09-18
+
+drain ReviewPrep thread_message inbox jobs and reply in the existing slack thread as one post: body plus images, with @mentions. no mint. leftover post cl json is failed and moved off the inbox.
+
+### added
+- worker: drain `kind: thread_message` inbox jobs and reply in the existing spoke without minting.
+- worker: post body and images together on one slack message and rewrite `@username` to channel-member mentions.
+
+### changed
+- worker: `sent.json` stores job id strings for thread_message jobs.
+
+### fixed
+- slack gateway: `files_upload_v2` uses `channel=` so uploads do not fail and retry-spam the thread.
+- worker: fail leftover post cl json with `unsupported job; send thread message`.
+
 ## [0.0.3] - 2026-09-10
 
 drain ReviewPrep slack_jobs inbox on the worker: mint a spoke when missing, reply with the canned cl body, and upload the submission image. first numbered release of this app (version.toml was 0.0.0).
