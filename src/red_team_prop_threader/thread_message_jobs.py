@@ -1,4 +1,4 @@
-"""drain ReviewPrep thread_message inbox jobs without minting."""
+"""drain ReviewPrep inbox jobs: thread_message replies and mint_group routing."""
 
 from __future__ import annotations
 
@@ -8,13 +8,14 @@ from typing import TYPE_CHECKING, Any
 import logging
 
 from red_team_prop_threader._errors import ExternalServiceError
-from red_team_prop_threader.cl_jobs import parse_job, list_inbox, stamp_sent, move_to_done, write_failed
+from red_team_prop_threader.cl_jobs import parse_job, list_inbox, stamp_sent, move_to_done, write_failed, is_mint_group_file, parse_mint_group_job
 
 
 if TYPE_CHECKING:
     from pathlib import Path
+    from collections.abc import Callable
 
-    from red_team_prop_threader.cl_jobs import ThreadMessageJob
+    from red_team_prop_threader.cl_jobs import MintGroupJob, ThreadMessageJob
     from red_team_prop_threader.slack_gateway import SlackGateway
 
 
@@ -23,6 +24,7 @@ __all__ = ("drain_thread_message_inbox", "process_thread_message_job")
 _LOG = logging.getLogger(__name__)
 
 _UNSUPPORTED_JOB = "Unsupported job; send Thread Message"
+_INVALID_MINT_GROUP = "Invalid mint_group job"
 _MISSING_THREAD = "Missing Slack thread"
 # do not match emails (foo@bar.com) or existing <@U…> tokens
 _HANDLE_RE = re.compile(r"(?<![<A-Za-z0-9._])@([A-Za-z0-9._-]+)")
@@ -79,18 +81,31 @@ def process_thread_message_job(job: ThreadMessageJob, *, inbox: Path, slack: Sla
     move_to_done(jobs_root, json_path)
 
 
-def drain_thread_message_inbox(jobs_root: Path, slack: SlackGateway) -> None:
-    """Process each inbox JSON as thread_message, or fail unsupported jobs.
+def drain_thread_message_inbox(jobs_root: Path, slack: SlackGateway, *, mint_handler: Callable[[Path, MintGroupJob], None] | None = None) -> None:
+    """Process each inbox JSON: thread_message replies, mint_group via handler, else fail.
 
     Args:
         jobs_root: ReviewPrep external links root (parent of slack_jobs/).
         slack: slack gateway used for replies and uploads.
+        mint_handler: called for mint_group jobs; when None they stay in the inbox.
 
     Returns:
         None: each inbox JSON is posted, failed, or moved as a side effect.
     """
     inbox = jobs_root / "slack_jobs" / "inbox"
     for job_path in list_inbox(jobs_root):
+        if is_mint_group_file(job_path):
+            if mint_handler is None:
+                _LOG.info("leaving mint_group job %s for a worker with mint support", job_path.name)
+                continue
+            mint_job = parse_mint_group_job(job_path)
+            if mint_job is None:
+                job_id, _asset_id = _ids_from_job_file(job_path)
+                write_failed(jobs_root, job_id, "", _INVALID_MINT_GROUP)
+                move_to_done(jobs_root, job_path)
+                continue
+            mint_handler(job_path, mint_job)
+            continue
         job = parse_job(job_path)
         if job is None:
             job_id, asset_id = _ids_from_job_file(job_path)

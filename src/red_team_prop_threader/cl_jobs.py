@@ -20,12 +20,17 @@ if TYPE_CHECKING:
 
 
 __all__ = (
+    "MintGroupAsset",
+    "MintGroupJob",
+    "MintGroupPerson",
     "SlackClJob",
     "ThreadMessageJob",
+    "is_mint_group_file",
     "list_inbox",
     "move_to_done",
     "parse_cl_job",
     "parse_job",
+    "parse_mint_group_job",
     "resolve_channel",
     "sent_has",
     "stamp_sent",
@@ -36,6 +41,8 @@ __all__ = (
 _LOG = logging.getLogger(__name__)
 
 _THREAD_MESSAGE_KIND = "thread_message"
+_MINT_GROUP_KIND = "mint_group"
+_MINT_GROUP_MODES = frozenset({"live", "test", "dry_run"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -190,6 +197,135 @@ def parse_cl_job(path: Path) -> SlackClJob | None:
         additional_ics=additional_ics,
         spoke_channel_id=data.get("spoke_channel_id"),
         spoke_thread_ts=data.get("spoke_thread_ts"),
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class MintGroupPerson:
+    """Sheet person chip: display name and email."""
+
+    name: str
+    email: str
+
+
+@dataclass(frozen=True, slots=True)
+class MintGroupAsset:
+    """One asset row from a mint_group job."""
+
+    asset_id: int
+    name: str
+    sg_url: str
+    ic_poc: tuple[MintGroupPerson, ...]
+    additional_ics: tuple[MintGroupPerson, ...]
+    shared_thread_with: int | None
+
+
+@dataclass(frozen=True, slots=True)
+class MintGroupJob:
+    """Flightdeck mint_group inbox job (one Request Form tab)."""
+
+    job_id: str
+    mode: str
+    test_channel_id: str
+    tab_title: str
+    season_id: str
+    sent_by: str
+    group_title: str
+    channel_id: str
+    creative_stakeholder: MintGroupPerson | None
+    additional_stakeholders: tuple[MintGroupPerson, ...]
+    assets: tuple[MintGroupAsset, ...]
+
+
+def _mint_person(raw: object) -> MintGroupPerson | None:
+    if not isinstance(raw, dict):
+        return None
+    name = str(raw.get("name") or "").strip()
+    email = str(raw.get("email") or "").strip()
+    return MintGroupPerson(name=name, email=email) if (name or email) else None
+
+
+def _mint_people(raw: object) -> tuple[MintGroupPerson, ...]:
+    if not isinstance(raw, list):
+        return ()
+    return tuple(p for p in (_mint_person(item) for item in raw) if p is not None)
+
+
+def is_mint_group_file(path: Path) -> bool:
+    """Return True when the JSON file declares ``kind: mint_group``.
+
+    Args:
+        path: inbox JSON path.
+
+    Returns:
+        bool: True for mint_group jobs, including ones that fail full parsing.
+    """
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return False
+    return isinstance(data, dict) and data.get("kind") == _MINT_GROUP_KIND
+
+
+def parse_mint_group_job(path: Path) -> MintGroupJob | None:
+    """Parse a mint_group inbox JSON file.
+
+    Args:
+        path: path to a job JSON file.
+
+    Returns:
+        MintGroupJob | None: parsed job, or None when invalid or another kind.
+    """
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return None
+    if not isinstance(data, dict) or data.get("kind") != _MINT_GROUP_KIND:
+        return None
+    job_id = str(data.get("job_id") or "").strip()
+    mode = str(data.get("mode") or "").strip()
+    group = data.get("group")
+    if not job_id or mode not in _MINT_GROUP_MODES or not isinstance(group, dict):
+        return None
+    title = str(group.get("title") or "").strip()
+    channel_id = str(group.get("channel_id") or "").strip()
+    if not title or not channel_id:
+        return None
+    assets: list[MintGroupAsset] = []
+    for raw in data.get("assets") or []:
+        if not isinstance(raw, dict):
+            return None
+        try:
+            asset_id = int(raw.get("asset_id"))
+        except (TypeError, ValueError):
+            return None
+        shared_raw = raw.get("shared_thread_with")
+        try:
+            shared = int(shared_raw) if shared_raw is not None else None
+        except (TypeError, ValueError):
+            shared = None
+        assets.append(
+            MintGroupAsset(
+                asset_id=asset_id,
+                name=str(raw.get("name") or f"Asset {asset_id}").strip(),
+                sg_url=str(raw.get("sg_url") or f"https://respawn.shotgunstudio.com/detail/Asset/{asset_id}").strip(),
+                ic_poc=_mint_people(raw.get("ic_poc")),
+                additional_ics=_mint_people(raw.get("additional_ics")),
+                shared_thread_with=shared,
+            )
+        )
+    return MintGroupJob(
+        job_id=job_id,
+        mode=mode,
+        test_channel_id=str(data.get("test_channel_id") or "").strip(),
+        tab_title=str(data.get("tab_title") or "").strip(),
+        season_id=str(data.get("season_id") or "").strip(),
+        sent_by=str(data.get("sent_by") or "").strip(),
+        group_title=title,
+        channel_id=channel_id,
+        creative_stakeholder=_mint_person(group.get("creative_stakeholder")),
+        additional_stakeholders=_mint_people(group.get("additional_stakeholders")),
+        assets=tuple(assets),
     )
 
 

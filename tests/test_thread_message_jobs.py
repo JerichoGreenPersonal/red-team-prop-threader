@@ -237,3 +237,43 @@ def test_worker_tick_drains_thread_message_and_does_not_mint() -> None:
 
     assert Path(drain.call_args.args[0]) == Path(settings.reviewprep_external_links_root)
     assert drain.call_args.args[1] is not None
+
+
+def test_drain_routes_mint_group_to_handler(tmp_path: Path) -> None:
+    """mint_group jobs go to the handler instead of the unsupported-job failure."""
+    inbox = tmp_path / "slack_jobs" / "inbox"
+    inbox.mkdir(parents=True)
+    job_path = inbox / "m1.json"
+    job_path.write_text(
+        json.dumps({"kind": "mint_group", "job_id": "m1", "mode": "dry_run", "group": {"title": "G", "channel_id": "C1"}, "assets": []}), encoding="utf-8"
+    )
+    seen: list[tuple[str, str]] = []
+    drain_thread_message_inbox(tmp_path, MagicMock(), mint_handler=lambda path, job: seen.append((path.name, job.job_id)))
+    assert seen == [("m1.json", "m1")]
+    assert not (tmp_path / "slack_jobs" / "failed.json").exists()
+
+
+def test_drain_leaves_mint_group_without_handler(tmp_path: Path) -> None:
+    """Without a handler, mint_group jobs stay in the inbox untouched."""
+    inbox = tmp_path / "slack_jobs" / "inbox"
+    inbox.mkdir(parents=True)
+    job_path = inbox / "m2.json"
+    job_path.write_text(
+        json.dumps({"kind": "mint_group", "job_id": "m2", "mode": "live", "group": {"title": "G", "channel_id": "C1"}, "assets": []}), encoding="utf-8"
+    )
+    drain_thread_message_inbox(tmp_path, MagicMock())
+    assert job_path.is_file()
+    assert not (tmp_path / "slack_jobs" / "failed.json").exists()
+
+
+def test_drain_fails_invalid_mint_group(tmp_path: Path) -> None:
+    """A mint_group job missing its group is failed and moved to done."""
+    inbox = tmp_path / "slack_jobs" / "inbox"
+    inbox.mkdir(parents=True)
+    job_path = inbox / "m3.json"
+    job_path.write_text(json.dumps({"kind": "mint_group", "job_id": "m3", "mode": "live", "assets": []}), encoding="utf-8")
+    drain_thread_message_inbox(tmp_path, MagicMock(), mint_handler=lambda path, job: None)
+    failed = json.loads((tmp_path / "slack_jobs" / "failed.json").read_text(encoding="utf-8"))
+    assert failed[0]["job_id"] == "m3"
+    assert failed[0]["error"] == "Invalid mint_group job"
+    assert (tmp_path / "slack_jobs" / "done" / "m3.json").is_file()
