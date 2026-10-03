@@ -75,7 +75,8 @@ class PeopleResolver:
                 if user.get("deleted") or user.get("is_bot"):
                     continue
                 user_id = str(user.get("id") or "")
-                profile = user.get("profile") if isinstance(user.get("profile"), dict) else {}
+                raw_profile = user.get("profile")
+                profile: dict[str, Any] = raw_profile if isinstance(raw_profile, dict) else {}
                 names = {str(user.get("real_name") or ""), str(profile.get("real_name") or ""), str(profile.get("display_name") or "")}
                 for name in names:
                     key = normalize_person_name(name)
