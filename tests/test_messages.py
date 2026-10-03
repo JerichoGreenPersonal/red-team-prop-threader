@@ -253,16 +253,17 @@ def test_asset_root_has_blocks() -> None:
     assert len(message["blocks"]) > 0  # type: ignore[arg-type]
 
 
-def test_asset_root_threadparrot_bookends_title_line() -> None:
-    """Asset title line is bookended with :threadparrot: for visibility."""
+def test_asset_root_threadparrot_leads_title_line_only() -> None:
+    """Asset title line starts with one :threadparrot: and has no trailing one."""
     ctx = sample_asset_context(is_latest=True, has_prior_thread=True)
     message = render_asset_root(ctx)
-    rendered = json.dumps(message)
-    assert rendered.count(":threadparrot:") >= 2
-    assert ":threadparrot: *Asset:*" in rendered
-    assert "(latest thread) :threadparrot:" in rendered
+    header = next(block for block in message["blocks"] if block.get("block_id") == "ar_header")  # type: ignore[union-attr]
+    title = header["text"]["text"].split("\n")[0]  # type: ignore[index]
+    assert title.startswith(":threadparrot: *Asset:*")
+    assert title.count(":threadparrot:") == 1
+    assert title.endswith("(latest thread)")
     assert str(message["text"]).startswith(":threadparrot:")
-    assert str(message["text"]).endswith(":threadparrot:")
+    assert str(message["text"]).count(":threadparrot:") == 1
 
 
 def test_asset_root_includes_shotgrid_emoji_and_threadparrot() -> None:

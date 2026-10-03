@@ -345,7 +345,7 @@ def render_asset_root(context: AssetRootContext) -> dict[str, object]:
         dict[str, object]: Slack message payload with ``text`` and ``blocks``.
     """
     escaped_name = _escape(context.asset_name)
-    fallback = f":threadparrot: Asset: {context.asset_name} \u2014 {context.group_title} :threadparrot:"
+    fallback = f":threadparrot: Asset: {context.asset_name} \u2014 {context.group_title}"
     blocks: list[dict[str, object]] = []
 
     # Asset / Group / Requestor / Group POCs share one section so Slack does not
@@ -354,7 +354,6 @@ def render_asset_root(context: AssetRootContext) -> dict[str, object]:
     asset_line = f":threadparrot: *Asset:* {asset_link} (ShotGrid ID: {context.asset_entity_id})"
     if context.is_latest and context.has_prior_thread:
         asset_line += " (latest thread)"
-    asset_line += " :threadparrot:"
 
     label = _escape(context.requestor_label or "Requestor")
     asset_animator_id = (context.asset_animator_id or "").strip()
