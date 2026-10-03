@@ -6,6 +6,20 @@ Use the `/bumpversion` skill to update this file and the version.toml file and m
 /bumpversion <major|minor|patch> include all updates in the branch.
 ```
 
+## [1.2.0] - 2026-10-02
+
+drain flightdeck mint_group inbox jobs: create or join the slack group post and mint one thread per request form asset, with live, test-channel, and dry-run modes. people are resolved from sheet chips to slack users by email, then by unique exact name.
+
+### added
+- worker: process `kind: mint_group` jobs from the slack_jobs inbox and write `done/{job_id}.result.json` with per-asset outcomes.
+- worker: test mode posts to a test channel with plain-text names instead of mentions and records threads under `slack_threads_test`; dry run records posts in `done/{job_id}.preview.json` without writing.
+- worker: shared-thread assets get an "also tracked here" reply in the target asset's thread instead of a new thread.
+- people: resolve request form people to slack users by email, falling back to a unique exact name match when the email scope is missing.
+- config: `SLACK_PEOPLE_TEAM_ID` sets the enterprise grid team used for user lookups.
+
+### changed
+- messages: asset thread roots can label the requestor line; mint_group roots use "ic poc".
+
 ## [1.1.0] - 2026-09-18
 
 drain ReviewPrep thread_message inbox jobs and reply in the existing slack thread as one post: body plus images, with @mentions. no mint. leftover post cl json is failed and moved off the inbox.
