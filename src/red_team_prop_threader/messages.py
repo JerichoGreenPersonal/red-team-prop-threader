@@ -85,6 +85,7 @@ class AssetRootContext:
         has_prior_thread: whether an older thread exists for this asset (drives the latest label).
         last_editor_display: display name of the last editor, or None.
         updated_ts: unix timestamp of the last edit, or None.
+        requestor_label: label for the asset people line; mint_group jobs use "IC POC".
     """
 
     asset_entity_id: int
@@ -103,6 +104,7 @@ class AssetRootContext:
     has_prior_thread: bool = False
     last_editor_display: str | None = None
     updated_ts: int | None = None
+    requestor_label: str = "Requestor"
 
 
 # ---------------------------------------------------------------------------
@@ -354,15 +356,16 @@ def render_asset_root(context: AssetRootContext) -> dict[str, object]:
         asset_line += " (latest thread)"
     asset_line += " :threadparrot:"
 
+    label = _escape(context.requestor_label or "Requestor")
     asset_animator_id = (context.asset_animator_id or "").strip()
     requestor_parts: list[str] = []
     if asset_animator_id:
-        requestor_parts.append(f"*Requestor:* {_mention(asset_animator_id)}")
+        requestor_parts.append(f"*{label}:* {_mention(asset_animator_id)}")
     if context.asset_additional_ids:
         add_str = " ".join(_mention(uid) for uid in context.asset_additional_ids if uid)
         if add_str:
             requestor_parts.append(f"*Additional:* {add_str}")
-    requestor_line = "*Requestor:* unassigned" if not requestor_parts else "  ".join(requestor_parts)
+    requestor_line = f"*{label}:* unassigned" if not requestor_parts else "  ".join(requestor_parts)
 
     pocs: list[str] = []
     if (context.group_animator_display or "").strip():

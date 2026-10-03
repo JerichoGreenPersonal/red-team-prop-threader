@@ -525,3 +525,27 @@ def test_asset_root_unassigned_people_when_empty() -> None:
     rendered = json.dumps(render_asset_root(ctx))
     assert "unassigned" in rendered
     assert "<@" not in rendered
+
+
+def test_asset_root_ic_poc_label_is_opt_in() -> None:
+    """IC POC replaces Requestor only when the context asks for it."""
+    base = {
+        "asset_entity_id": 1,
+        "asset_name": "a",
+        "asset_url": "https://respawn.shotgunstudio.com/detail/Asset/1",
+        "group_title": "G",
+        "created_ts": 0,
+        "asset_animator_id": "U1",
+        "asset_additional_ids": (),
+        "group_animator_display": "",
+        "group_additional_displays": (),
+        "group_links": (),
+        "asset_links": (),
+        "message_identity": "g:1",
+    }
+    default_text = json.dumps(render_asset_root(AssetRootContext(**base))["blocks"])
+    ic_text = json.dumps(render_asset_root(AssetRootContext(**base, requestor_label="IC POC"))["blocks"])
+    assert "*Requestor:* <@U1>" in default_text
+    assert "*IC POC:* <@U1>" in ic_text
+    empty = json.dumps(render_asset_root(AssetRootContext(**{**base, "asset_animator_id": ""}, requestor_label="IC POC"))["blocks"])
+    assert "*IC POC:* unassigned" in empty
