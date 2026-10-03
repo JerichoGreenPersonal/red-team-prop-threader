@@ -37,7 +37,15 @@ _PERMISSION_ERRORS = frozenset({
     "paid_teams_only",
     "not_allowed",
 })
-_NOT_FOUND_ERRORS = frozenset({"channel_not_found", "canvas_not_found", "file_not_found", "message_not_found", "user_not_found", "not_found"})
+_NOT_FOUND_ERRORS = frozenset({
+    "channel_not_found",
+    "canvas_not_found",
+    "file_not_found",
+    "message_not_found",
+    "user_not_found",
+    "users_not_found",
+    "not_found",
+})
 _CONFLICT_ERRORS = frozenset({"channel_canvas_already_exists", "conflict", "cant_update_message"})
 _RETRYABLE_ERRORS = frozenset({"ratelimited", "rate_limited", "service_unavailable", "internal_error", "fatal_error", "request_timeout"})
 
@@ -240,6 +248,57 @@ class SlackGateway:
         if not isinstance(user, dict):
             raise ExternalServiceError("users.info returned invalid user")
         return user
+
+    def list_users(self, *, team_id: str) -> tuple[dict[str, Any], ...]:
+        """List workspace users via users.list (Enterprise Grid needs ``team_id``).
+
+        Args:
+            team_id: workspace id, e.g. ``T0297NTAU`` (Respawn).
+
+        Returns:
+            tuple[dict[str, Any], ...]: raw user objects in API order.
+
+        Raises:
+            ExternalServiceError: on Slack API failure.
+        """
+        users: list[dict[str, Any]] = []
+        cursor: str | None = None
+        while True:
+            kwargs: dict[str, Any] = {"team_id": team_id, "limit": 200}
+            if cursor:
+                kwargs["cursor"] = cursor
+            response = self._call("users_list", **kwargs)
+            page = response.get("members") or []
+            if not isinstance(page, list):
+                raise ExternalServiceError("users.list returned invalid members")
+            users.extend(item for item in page if isinstance(item, dict))
+            metadata = response.get("response_metadata") or {}
+            next_cursor = metadata.get("next_cursor") if isinstance(metadata, dict) else None
+            if not next_cursor:
+                return tuple(users)
+            cursor = str(next_cursor)
+
+    def lookup_user_by_email(self, email: str) -> str | None:
+        """Return the user id for an email, or None when no user has it.
+
+        Args:
+            email: email address from the Request Form people chip.
+
+        Returns:
+            str | None: slack user id, or None when Slack has no user with that email.
+
+        Raises:
+            PermissionDeniedError: when the token lacks ``users:read.email``.
+            ExternalServiceError: on other Slack failures.
+        """
+        try:
+            response = self._call("users_lookupByEmail", email=email)
+        except NotFoundError:
+            return None
+        user = response.get("user")
+        if not isinstance(user, dict):
+            return None
+        return str(user.get("id") or "") or None
 
     def open_dm(self, user_id: str) -> str:
         """Open a DM channel with a user via conversations.open.
