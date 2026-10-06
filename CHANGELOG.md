@@ -6,6 +6,13 @@ Use the `/bumpversion` skill to update this file and the version.toml file and m
 /bumpversion <major|minor|patch> include all updates in the branch.
 ```
 
+## [1.2.1] - 2026-10-06
+
+a mint_group job that fails no longer leaves a partial post in slack.
+
+### fixed
+- worker: the new group row is saved before the first slack post. messages posted by an attempt that then fails are deleted.
+
 ## [1.2.0] - 2026-10-02
 
 drain flightdeck mint_group inbox jobs: create or join the slack group post and mint one thread per request form asset, with live, test-channel, and dry-run modes. people are resolved from sheet chips to slack users by email, then by unique exact name.
