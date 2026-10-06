@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from typing import TYPE_CHECKING, Any
 from datetime import datetime, timezone
 from unittest.mock import MagicMock
@@ -88,6 +89,10 @@ class FakeSlack:
         """Record a chat.update."""
         self.updates.append({"channel": channel_id, "ts": ts, "text": text, "blocks": blocks})
         return {"ts": ts}
+
+    def delete_message(self, channel_id: str, ts: str) -> None:
+        """Remove a recorded post, as chat.delete would."""
+        self.posts = [post for post in self.posts if not (post["channel"] == channel_id and post["ts"] == ts)]
 
     def get_permalink(self, channel_id: str, message_ts: str) -> str:
         """Build a Slack archive permalink."""
@@ -217,6 +222,29 @@ def test_shared_only_job_posts_no_top_post(tmp_path: Path, engine: Engine, monke
     assert slack.posts == []
     assert result["assets"][0]["outcome"] == "failed"
     assert result["assets"][0]["error"] == "Shared thread target not found"
+
+
+def test_database_lock_after_group_post_removes_it(tmp_path: Path, engine: Engine, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A database failure after the group header deletes that header and posts no threads."""
+    from red_team_prop_threader.repositories import HistoryRepository
+
+    original = HistoryRepository.record
+    calls = {"n": 0}
+
+    def _record(self: HistoryRepository, inp: object) -> object:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise sqlite3.OperationalError("database is locked")
+        return original(self, inp)
+
+    monkeypatch.setattr(HistoryRepository, "record", _record)
+    slack = FakeSlack()
+    result = _run(tmp_path, engine, slack, _job(), monkeypatch)
+    assert result["status"] == "failed"
+    assert "database is locked" in result["error"]
+    assert slack.posts == []
+    assert result["group"]["permalink"] == ""
+    assert all(asset["outcome"] == "" for asset in result["assets"])
 
 
 def test_bot_not_in_channel_fails_job(tmp_path: Path, engine: Engine, monkeypatch: pytest.MonkeyPatch) -> None:

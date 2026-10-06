@@ -340,6 +340,18 @@ class SlackGateway:
             kwargs["thread_ts"] = thread_ts
         return self._call("chat_postMessage", **kwargs)
 
+    def delete_message(self, channel_id: str, ts: str) -> None:
+        """Delete one message this job posted, via chat.delete.
+
+        Args:
+            channel_id: channel that holds the message.
+            ts: message timestamp returned by chat.postMessage.
+
+        Raises:
+            ExternalServiceError: on Slack API failure.
+        """
+        self._call("chat_delete", channel=channel_id, ts=ts)
+
     def upload_file(self, channel_id: str, *, file_path: Path, thread_ts: str, initial_comment: str | None = None) -> dict[str, Any]:
         """Upload a file into a thread via files.upload v2.
 

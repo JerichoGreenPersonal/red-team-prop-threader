@@ -57,6 +57,7 @@ class PreviewSlack:
         self._real = real
         self.posts: list[dict[str, Any]] = []
         self.updates: list[dict[str, Any]] = []
+        self.deleted: list[dict[str, str]] = []
 
     def get_conversation_info(self, channel_id: str) -> dict[str, Any]:
         """Forward conversations.info."""
@@ -88,6 +89,11 @@ class PreviewSlack:
         """Record an update instead of sending it."""
         self.updates.append({"channel": channel_id, "ts": ts, "text": text, "blocks": blocks})
         return {"ts": ts}
+
+    def delete_message(self, channel_id: str, ts: str) -> None:
+        """Drop a recorded preview post."""
+        self.deleted.append({"channel": channel_id, "ts": ts})
+        self.posts = [post for post in self.posts if not (post["channel"] == channel_id and post["ts"] == ts)]
 
     def get_permalink(self, channel_id: str, message_ts: str) -> str:
         """Return a placeholder permalink."""
@@ -174,6 +180,7 @@ class _Run:
         self.group_outcome = ""
         self.group_permalink = ""
         self.outcomes = [_AssetOutcome(a.asset_id, a.name) for a in job.assets]
+        self._posted: list[dict[str, Any]] = []
 
     # people --------------------------------------------------------------
     def person_ids(self, people: tuple[MintGroupPerson, ...], outcome: _AssetOutcome | None) -> tuple[str, ...]:
@@ -253,6 +260,7 @@ class _Run:
                     group_id = repos.groups.create(
                         workspace_id=self.workspace_id, channel_id=self.destination, display_title=job.group_title, normalized_title=norm, now=self.now
                     ).id
+                    session.flush()
                 summary_snapshot = {
                     "kind": "group_summary",
                     "group_title": job.group_title,
@@ -267,7 +275,7 @@ class _Run:
                     "shared_assets": [],
                 }
                 text, blocks = self.render(render_group_summary(self._summary_context(summary_snapshot)))
-                ts = str(self.slack.post_message(self.destination, text=text, blocks=blocks)["ts"])
+                ts = str(self._post(self.destination, text=text, blocks=blocks, group=True)["ts"])
                 self.group_permalink = self.slack.get_permalink(self.destination, ts)
                 if self.persist:
                     summary = repos.history.record(
@@ -315,7 +323,7 @@ class _Run:
                         "requestor_label": "IC POC",
                     }
                     text, blocks = self.render(render_asset_root(self._root_context(snapshot)))
-                    ts = str(self.slack.post_message(self.destination, text=text, blocks=blocks)["ts"])
+                    ts = str(self._post(self.destination, text=text, blocks=blocks, asset_id=asset.asset_id)["ts"])
                     permalink = self.slack.get_permalink(self.destination, ts)
                 except Exception as exc:
                     outcome.outcome, outcome.error = "failed", str(exc)
@@ -354,7 +362,12 @@ class _Run:
                     target_link = spoke.get("permalink", "")
                     target_channel = spoke.get("channel_id") or self.destination
                 try:
-                    self.slack.post_message(target_channel, text=f"Also tracked here: {asset.name} (ShotGrid ID: {asset.asset_id})", thread_ts=target_ts)
+                    self._post(
+                        target_channel,
+                        text=f"Also tracked here: {asset.name} (ShotGrid ID: {asset.asset_id})",
+                        thread_ts=target_ts,
+                        asset_id=asset.asset_id,
+                    )
                 except Exception as exc:
                     outcome.outcome, outcome.error = "failed", str(exc)
                     continue
@@ -369,6 +382,7 @@ class _Run:
                 if self.persist:
                     self._spoke(asset.asset_id, target_link, target_ts, channel_id=target_channel)
 
+            self._abort_if_partial()
             new_roots = len(roots)
             if self.group_outcome == "joined" and summary is not None and (new_roots or shared_entries):
                 summary_snapshot["included_asset_count"] = int(summary_snapshot.get("included_asset_count") or 0) + new_roots
@@ -395,6 +409,46 @@ class _Run:
             for outcome in self.outcomes:
                 if outcome.outcome in {"created", "shared"}:
                     stamp_sent(self.jobs_root, outcome.asset_id, job.job_id)
+
+    def _post(
+        self,
+        channel_id: str,
+        *,
+        text: str,
+        blocks: list[dict[str, Any]] | None = None,
+        thread_ts: str | None = None,
+        asset_id: int | None = None,
+        group: bool = False,
+    ) -> dict[str, Any]:
+        """Post one message and remember it so a failed job can delete it."""
+        response = self.slack.post_message(channel_id, text=text, blocks=blocks, thread_ts=thread_ts)
+        self._posted.append({"channel": channel_id, "ts": str(response["ts"]), "asset_id": asset_id, "group": group})
+        return response
+
+    def discard_posts(self) -> None:
+        """Delete every Slack message this attempt posted."""
+        posted_assets = {item["asset_id"] for item in self._posted if item["asset_id"] is not None}
+        removed_group = any(item["group"] for item in self._posted)
+        for item in reversed(self._posted):
+            try:
+                self.slack.delete_message(item["channel"], item["ts"])
+            except Exception:
+                _LOG.exception("could not delete partial mint post %s %s", item["channel"], item["ts"])
+        for outcome in self.outcomes:
+            if outcome.asset_id in posted_assets:
+                outcome.outcome = ""
+                outcome.permalink = ""
+                outcome.error = ""
+        if removed_group:
+            self.group_outcome = ""
+            self.group_permalink = ""
+        self._posted.clear()
+
+    def _abort_if_partial(self) -> None:
+        """A job that posted anything and then failed a thread leaves nothing in Slack."""
+        if self._posted and any(outcome.outcome == "failed" for outcome in self.outcomes):
+            self.discard_posts()
+            raise _JobFailedError("job did not finish; removed the messages it had posted")
 
     def _spoke(self, asset_id: int, permalink: str, ts: str, *, channel_id: str | None = None) -> None:
         if not self.job.season_id:
@@ -532,9 +586,11 @@ def process_mint_group_job(
         run.run()
     except _JobFailedError as exc:
         error = str(exc)
+        run.discard_posts()
     except Exception as exc:
         _LOG.exception("mint_group job %s failed", job.job_id)
         error = f"mint failed: {exc}"
+        run.discard_posts()
 
     status = _status(run, error)
     result = {
