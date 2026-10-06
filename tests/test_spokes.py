@@ -327,3 +327,28 @@ def test_decode_canvas_body_invalid_json_returns_text() -> None:
     """A JSON-looking blob that does not parse is returned as text."""
     raw = b"{not json"
     assert decode_canvas_body(raw) == "{not json"
+
+
+def test_spokes_folder_argument(tmp_path: Path) -> None:
+    """Test-mode spokes live in their own folder and never touch slack_threads/."""
+    from red_team_prop_threader.spokes import find_spoke
+
+    assert upsert_season_spoke(
+        tmp_path,
+        season_id="S32",
+        asset_id=7,
+        permalink="p",
+        channel_id="C1",
+        thread_ts="1.2",
+        source="mint",
+        updated_at="t",
+        folder="slack_threads_test",
+    )
+    assert (tmp_path / "slack_threads_test" / "S32.json").is_file()
+    assert not (tmp_path / "slack_threads").exists()
+    assert occupied_asset_ids(tmp_path, folder="slack_threads_test") == frozenset({7})
+    assert occupied_asset_ids(tmp_path) == frozenset()
+    spoke = find_spoke(tmp_path, 7, folder="slack_threads_test")
+    assert spoke is not None
+    assert spoke["thread_ts"] == "1.2"
+    assert find_spoke(tmp_path, 7) is None

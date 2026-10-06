@@ -14,6 +14,7 @@ __all__ = ("Settings",)
 _REQUIRED_SHOTGRID_HOST = "respawn.shotgunstudio.com"
 _DEFAULT_SHOTGRID_URL = "https://respawn.shotgunstudio.com"
 _DEFAULT_REVIEWPREP_EXTERNAL_LINKS_ROOT = r"R:\Departments\Artists\R5_RED\RED_Team_ReviewPrep\SyncedData\SG_Card_Links"
+_DEFAULT_SLACK_PEOPLE_TEAM_ID = "T0297NTAU"
 
 
 @dataclass(frozen=True, slots=True)
@@ -42,6 +43,7 @@ class Settings:
     primary_asset_index_channel_id: str
     primary_asset_index_canvas_id: str | None
     reviewprep_external_links_root: str = _DEFAULT_REVIEWPREP_EXTERNAL_LINKS_ROOT
+    slack_people_team_id: str = _DEFAULT_SLACK_PEOPLE_TEAM_ID
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -78,7 +80,10 @@ class Settings:
             primary_asset_index_canvas_id: str | None = "F0BKLFG5S0M"
         else:
             primary_asset_index_canvas_id = _optional_str("PRIMARY_ASSET_INDEX_CANVAS_ID")
-        reviewprep_external_links_root = os.environ.get("REVIEWPREP_EXTERNAL_LINKS_ROOT", _DEFAULT_REVIEWPREP_EXTERNAL_LINKS_ROOT).strip() or _DEFAULT_REVIEWPREP_EXTERNAL_LINKS_ROOT
+        reviewprep_external_links_root = (
+            os.environ.get("REVIEWPREP_EXTERNAL_LINKS_ROOT", _DEFAULT_REVIEWPREP_EXTERNAL_LINKS_ROOT).strip() or _DEFAULT_REVIEWPREP_EXTERNAL_LINKS_ROOT
+        )
+        slack_people_team_id = os.environ.get("SLACK_PEOPLE_TEAM_ID", "").strip() or _DEFAULT_SLACK_PEOPLE_TEAM_ID
 
         return cls(
             slack_bot_token=slack_bot_token,
@@ -100,6 +105,7 @@ class Settings:
             primary_asset_index_channel_id=primary_asset_index_channel_id,
             primary_asset_index_canvas_id=primary_asset_index_canvas_id,
             reviewprep_external_links_root=reviewprep_external_links_root,
+            slack_people_team_id=slack_people_team_id,
         )
 
 

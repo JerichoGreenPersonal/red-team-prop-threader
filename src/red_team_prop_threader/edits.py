@@ -460,6 +460,7 @@ def _asset_context_from_snapshot(snapshot: dict[str, Any], message: MessageRecor
         has_prior_thread=bool(snapshot.get("has_prior_thread")),
         last_editor_display=editor_display,
         updated_ts=updated_ts,
+        requestor_label=str(snapshot.get("requestor_label") or "Requestor"),
     )
 
 

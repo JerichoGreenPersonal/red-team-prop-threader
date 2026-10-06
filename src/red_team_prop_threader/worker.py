@@ -13,6 +13,7 @@ from red_team_prop_threader.config import Settings
 from red_team_prop_threader.leases import ChannelLeaseRepository
 from red_team_prop_threader.repositories import Repositories
 from red_team_prop_threader.slack_gateway import SlackGateway
+from red_team_prop_threader.mint_group_jobs import make_mint_group_handler
 from red_team_prop_threader.thread_message_jobs import drain_thread_message_inbox
 
 
@@ -34,10 +35,10 @@ class UtcClock:
 
 
 def run_forever(*, settings: Settings | None = None, once: bool = False) -> None:
-    """Poll for PENDING batches and drain thread_message inbox jobs.
+    """Poll for PENDING batches and drain inbox jobs (thread_message and mint_group).
 
-    Inbox drain replies in existing spokes and never mints. Laptop stacks
-    must stay off while EAV1089717 is live.
+    mint_group jobs create Slack groups and threads; thread_message jobs only
+    reply. Laptop stacks must stay off while EAV1089717 is live.
 
     Args:
         settings: optional settings override; loads from the environment when omitted.
@@ -47,6 +48,8 @@ def run_forever(*, settings: Settings | None = None, once: bool = False) -> None
     engine = build_engine(cfg.database_url)
     slack = SlackGateway.from_settings(cfg)
     clock = UtcClock()
+    jobs_root = Path(cfg.reviewprep_external_links_root)
+    mint_handler = make_mint_group_handler(slack=slack, engine=engine, jobs_root=jobs_root, team_id=cfg.slack_people_team_id)
 
     while True:
         worked = False
@@ -60,7 +63,7 @@ def run_forever(*, settings: Settings | None = None, once: bool = False) -> None
                 _LOG.info("batch %s finished with status %s", result.batch_id, result.status.value)
 
         try:
-            drain_thread_message_inbox(Path(cfg.reviewprep_external_links_root), slack)
+            drain_thread_message_inbox(jobs_root, slack, mint_handler=mint_handler)
         except Exception:
             _LOG.exception("drain_thread_message_inbox failed")
 

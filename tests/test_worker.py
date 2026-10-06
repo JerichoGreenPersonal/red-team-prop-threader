@@ -90,3 +90,27 @@ def test_main_invokes_run_forever() -> None:
     with patch("red_team_prop_threader.worker.run_forever") as run:
         main()
     run.assert_called_once_with()
+
+
+def test_run_forever_passes_mint_handler() -> None:
+    """The worker hands mint_group jobs to the mint handler."""
+    settings = _settings()
+    executor = MagicMock()
+    executor.run_once.return_value = None
+    handler = MagicMock()
+    with (
+        patch("red_team_prop_threader.worker.build_engine", return_value=MagicMock()),
+        patch("red_team_prop_threader.worker.session_scope") as session_scope,
+        patch("red_team_prop_threader.worker.SlackGateway.from_settings"),
+        patch("red_team_prop_threader.worker.BatchExecutor", return_value=executor),
+        patch("red_team_prop_threader.worker.Repositories.from_session"),
+        patch("red_team_prop_threader.worker.ChannelLeaseRepository"),
+        patch("red_team_prop_threader.worker.make_mint_group_handler", return_value=handler) as make_handler,
+        patch("red_team_prop_threader.worker.drain_thread_message_inbox") as drain,
+    ):
+        session_scope.return_value.__enter__.return_value = MagicMock()
+        session_scope.return_value.__exit__.return_value = None
+        run_forever(settings=settings, once=True)
+
+    assert make_handler.call_args.kwargs["team_id"] == "T0297NTAU"
+    assert drain.call_args.kwargs["mint_handler"] is handler

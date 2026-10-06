@@ -253,16 +253,17 @@ def test_asset_root_has_blocks() -> None:
     assert len(message["blocks"]) > 0  # type: ignore[arg-type]
 
 
-def test_asset_root_threadparrot_bookends_title_line() -> None:
-    """Asset title line is bookended with :threadparrot: for visibility."""
+def test_asset_root_threadparrot_leads_title_line_only() -> None:
+    """Asset title line starts with one :threadparrot: and has no trailing one."""
     ctx = sample_asset_context(is_latest=True, has_prior_thread=True)
     message = render_asset_root(ctx)
-    rendered = json.dumps(message)
-    assert rendered.count(":threadparrot:") >= 2
-    assert ":threadparrot: *Asset:*" in rendered
-    assert "(latest thread) :threadparrot:" in rendered
+    header = next(block for block in message["blocks"] if block.get("block_id") == "ar_header")  # type: ignore[union-attr]
+    title = header["text"]["text"].split("\n")[0]  # type: ignore[index]
+    assert title.startswith(":threadparrot: *Asset:*")
+    assert title.count(":threadparrot:") == 1
+    assert title.endswith("(latest thread)")
     assert str(message["text"]).startswith(":threadparrot:")
-    assert str(message["text"]).endswith(":threadparrot:")
+    assert str(message["text"]).count(":threadparrot:") == 1
 
 
 def test_asset_root_includes_shotgrid_emoji_and_threadparrot() -> None:
@@ -525,3 +526,27 @@ def test_asset_root_unassigned_people_when_empty() -> None:
     rendered = json.dumps(render_asset_root(ctx))
     assert "unassigned" in rendered
     assert "<@" not in rendered
+
+
+def test_asset_root_ic_poc_label_is_opt_in() -> None:
+    """IC POC replaces Requestor only when the context asks for it."""
+    base = {
+        "asset_entity_id": 1,
+        "asset_name": "a",
+        "asset_url": "https://respawn.shotgunstudio.com/detail/Asset/1",
+        "group_title": "G",
+        "created_ts": 0,
+        "asset_animator_id": "U1",
+        "asset_additional_ids": (),
+        "group_animator_display": "",
+        "group_additional_displays": (),
+        "group_links": (),
+        "asset_links": (),
+        "message_identity": "g:1",
+    }
+    default_text = json.dumps(render_asset_root(AssetRootContext(**base))["blocks"])
+    ic_text = json.dumps(render_asset_root(AssetRootContext(**base, requestor_label="IC POC"))["blocks"])
+    assert "*Requestor:* <@U1>" in default_text
+    assert "*IC POC:* <@U1>" in ic_text
+    empty = json.dumps(render_asset_root(AssetRootContext(**{**base, "asset_animator_id": ""}, requestor_label="IC POC"))["blocks"])
+    assert "*IC POC:* unassigned" in empty

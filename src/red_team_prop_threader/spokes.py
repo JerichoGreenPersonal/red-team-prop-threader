@@ -169,12 +169,13 @@ def upsert_season_spoke(
     thread_ts: str,
     source: str,
     updated_at: str,
+    folder: str = "slack_threads",
 ) -> bool:
-    """Upsert one asset key in ``slack_threads/{season}.json``. skip corrupt files."""
+    """Upsert one asset key in ``{folder}/{season}.json``. skip corrupt files."""
     season = str(season_id or "").strip()
     if not season:
         return False
-    path = Path(share_root) / "slack_threads" / f"{season}.json"
+    path = Path(share_root) / folder / f"{season}.json"
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
     except OSError:
@@ -227,13 +228,13 @@ def upsert_season_spoke(
     return False
 
 
-def occupied_asset_ids(share_root: Path) -> frozenset[int]:
-    """Return Asset ids already present in any slack_threads/*.json."""
-    folder = Path(share_root) / "slack_threads"
+def occupied_asset_ids(share_root: Path, *, folder: str = "slack_threads") -> frozenset[int]:
+    """Return Asset ids already present in any ``{folder}/*.json``."""
+    folder_path = Path(share_root) / folder
     found: set[int] = set()
-    if not folder.is_dir():
+    if not folder_path.is_dir():
         return frozenset()
-    for path in folder.glob("*.json"):
+    for path in folder_path.glob("*.json"):
         try:
             data: Any = json.loads(path.read_text(encoding="utf-8-sig"))
         except (OSError, UnicodeDecodeError, json.JSONDecodeError):
@@ -249,6 +250,23 @@ def occupied_asset_ids(share_root: Path) -> frozenset[int]:
             except ValueError:
                 continue
     return frozenset(found)
+
+
+def find_spoke(share_root: Path, asset_id: int, *, folder: str = "slack_threads") -> dict[str, str] | None:
+    """Return the first spoke entry for ``asset_id`` across ``{folder}/*.json``."""
+    folder_path = Path(share_root) / folder
+    if not folder_path.is_dir():
+        return None
+    for path in sorted(folder_path.glob("*.json"), key=lambda p: p.name):
+        try:
+            data: Any = json.loads(path.read_text(encoding="utf-8-sig"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            continue
+        assets = data.get("assets") if isinstance(data, dict) else None
+        entry = assets.get(str(int(asset_id))) if isinstance(assets, dict) else None
+        if isinstance(entry, dict):
+            return {str(k): str(v) for k, v in entry.items()}
+    return None
 
 
 def decode_canvas_body(raw: bytes) -> str:
