@@ -6,6 +6,13 @@ Use the `/bumpversion` skill to update this file and the version.toml file and m
 /bumpversion <major|minor|patch> include all updates in the branch.
 ```
 
+## [1.2.2] - 2026-10-07
+
+a multi-name asset cell keeps a clickable shotgrid link on each name.
+
+### fixed
+- messages: each line of an asset name is its own shotgrid link, so a newline in the cell no longer leaves the url as plain text.
+
 ## [1.2.1] - 2026-10-06
 
 a mint_group job that fails no longer leaves a partial post in slack.

@@ -275,6 +275,17 @@ def test_asset_root_includes_shotgrid_emoji_and_threadparrot() -> None:
     assert ":shotgrid: <https://sg.example.com/12345|Prop A>" in rendered
 
 
+def test_asset_root_multiline_name_is_one_shotgrid_link_per_line() -> None:
+    """Each line of a multi-name asset cell is its own ShotGrid link."""
+    ctx = sample_asset_context(asset_name="floorpanel_a\n\nfloorpanel_b", asset_url="https://sg.example.com/40223", asset_entity_id=40223)
+    message = render_asset_root(ctx)
+    header = next(block for block in message["blocks"] if block.get("block_id") == "ar_header")  # type: ignore[union-attr]
+    text = header["text"]["text"]  # type: ignore[index]
+    assert ":shotgrid: <https://sg.example.com/40223|floorpanel_a>" in text
+    assert ":shotgrid: <https://sg.example.com/40223|floorpanel_b>" in text
+    assert "<https://sg.example.com/40223|floorpanel_a\n" not in text
+
+
 def test_asset_root_header_fields_are_single_section() -> None:
     """Asset/Group/Requestor/Group POCs share one section (tight four-line block)."""
     message = render_asset_root(sample_asset_context())

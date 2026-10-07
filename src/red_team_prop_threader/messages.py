@@ -149,6 +149,18 @@ def _link(url: str, label: str) -> str:
     return f"<{url}|{_escape(label)}>"
 
 
+def _shotgrid_name_links(url: str, name: str) -> str:
+    """One Slack link per line of an asset name, all pointing at the same URL.
+
+    Slack mrkdwn ignores a link whose label contains a newline, so a multi-name
+    Asset Name cell has to be split before it is wrapped in ``<url|label>``.
+    """
+    lines = [part.strip() for part in (name or "").splitlines() if part.strip()]
+    if not lines:
+        lines = ["asset"]
+    return "\n".join(f":shotgrid: {_link(url, line)}" for line in lines)
+
+
 def _slack_date(ts: int) -> str:
     """Return a Slack viewer-localized date markup string with a fallback.
 
@@ -344,16 +356,18 @@ def render_asset_root(context: AssetRootContext) -> dict[str, object]:
     Returns:
         dict[str, object]: Slack message payload with ``text`` and ``blocks``.
     """
-    escaped_name = _escape(context.asset_name)
     fallback = f":threadparrot: Asset: {context.asset_name} \u2014 {context.group_title}"
     blocks: list[dict[str, object]] = []
 
     # Asset / Group / Requestor / Group POCs share one section so Slack does not
-    # insert section padding between them (reads as four tight lines).
-    asset_link = f":shotgrid: <{context.asset_url}|{escaped_name}>"
-    asset_line = f":threadparrot: *Asset:* {asset_link} (ShotGrid ID: {context.asset_entity_id})"
+    # insert section padding between them (reads as four tight lines). Extra
+    # name lines stay inside that section, each as its own ShotGrid link.
+    first_link, _newline, more_links = _shotgrid_name_links(context.asset_url, context.asset_name).partition("\n")
+    asset_line = f":threadparrot: *Asset:* {first_link} (ShotGrid ID: {context.asset_entity_id})"
     if context.is_latest and context.has_prior_thread:
         asset_line += " (latest thread)"
+    if more_links:
+        asset_line = f"{asset_line}\n{more_links}"
 
     label = _escape(context.requestor_label or "Requestor")
     asset_animator_id = (context.asset_animator_id or "").strip()
