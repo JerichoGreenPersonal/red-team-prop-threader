@@ -32,15 +32,15 @@ Get-Content VERSION
 .\bin\run-local.ps1
 ```
 
-`HEAD` must be `64401e2`. `VERSION` must be `1.2.2`.
+`VERSION` must be `1.2.2`. `git merge-base --is-ancestor 64401e2 HEAD` must succeed. `64401e2` is the link fix. Later handoff commits on `main` are fine.
 
 2. One `run-local.ps1` is already web plus worker. Do not start Threader on the other PC while EAV is running.
 3. The next multi-name asset send gets one clickable ShotGrid link per name. The TAAL posts already in `C02PR101SGH` stay as they were sent. Assets 40217 (signs), 40218 (pipes), 40223 (floorpanels), and 40224 (Cambodia) are the rows with this shape.
 
 ## Active branch & repo state
 
-- Worktree: `C:\Users\jgreen2\Documents\CURSOR\RED_Team_ReviewPrep\.worktrees\threader-mint-group-jobs` on `main` at `64401e2`.
-- `origin/main` is `64401e2`. PR #6 is MERGED.
+- Worktree: `C:\Users\jgreen2\Documents\CURSOR\RED_Team_ReviewPrep\.worktrees\threader-mint-group-jobs` on `main`.
+- Link fix: PR #6, squash `64401e2`. This handoff follows it on `main`.
 - Main clone on this PC: `C:\Users\jgreen2\Documents\GitHub\red-team-prop-threader` was left on `feature/red-team-prop-threader`. EAV uses `C:\users\jgreen2\documents\github\red-team-prop-threader`.
 - `.env` is gitignored. Do not print it or commit it.
 - `uv.exe` in the worktree is gitignored and required by `bin/run-local.ps1`.
