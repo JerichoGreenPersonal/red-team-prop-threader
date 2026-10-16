@@ -372,6 +372,26 @@ def sent_has_job(root: Path, asset_id: int, job_id: str) -> bool:
     return isinstance(asset_entry, list) and job_id in asset_entry
 
 
+def _write_json_file(path: Path, data: object) -> None:
+    """Write ``data`` as JSON to ``path`` through a temp file.
+
+    The ReviewPrep share can deny renaming a temp file over an existing file
+    while still allowing that file to be rewritten, so a denied replace falls
+    back to writing the existing file in place.
+    """
+    text = json.dumps(data, indent=2)
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(text, encoding="utf-8")
+    try:
+        tmp.replace(path)
+    except PermissionError:
+        with path.open("r+", encoding="utf-8") as handle:
+            handle.write(text)
+            handle.truncate()
+        with contextlib.suppress(OSError):
+            tmp.unlink()
+
+
 def _append_sent(root: Path, asset_key: str, values: Sequence[str]) -> None:
     """Append unique string values under sent.json[asset_key]."""
     sent_path = root / "slack_jobs" / "sent.json"
@@ -393,9 +413,7 @@ def _append_sent(root: Path, asset_key: str, values: Sequence[str]) -> None:
             if value not in data[asset_key]:
                 data[asset_key].append(value)
 
-        tmp = sent_path.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
-        tmp.replace(sent_path)
+        _write_json_file(sent_path, data)
 
     try:
         _read_and_patch()
@@ -444,9 +462,7 @@ def write_failed(root: Path, job_id: str, asset_id: str, error: str) -> None:
     if not replaced:
         data.append(entry)
 
-    tmp = failed_path.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
-    tmp.replace(failed_path)
+    _write_json_file(failed_path, data)
 
 
 def resolve_channel(gateway: SlackGateway, raw: str) -> str:

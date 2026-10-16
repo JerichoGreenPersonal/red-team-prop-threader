@@ -408,7 +408,10 @@ class _Run:
         if self.mode == "live":
             for outcome in self.outcomes:
                 if outcome.outcome in {"created", "shared"}:
-                    stamp_sent(self.jobs_root, outcome.asset_id, job.job_id)
+                    try:
+                        stamp_sent(self.jobs_root, outcome.asset_id, job.job_id)
+                    except OSError as exc:
+                        self.issues.append(f"sent.json not updated for {outcome.asset_id}: {exc}")
 
     def _post(
         self,
