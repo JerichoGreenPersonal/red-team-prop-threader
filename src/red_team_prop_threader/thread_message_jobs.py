@@ -5,10 +5,12 @@ from __future__ import annotations
 import re
 import json
 from typing import TYPE_CHECKING, Any
+import hashlib
 import logging
+from datetime import datetime, timezone
 
 from red_team_prop_threader._errors import ExternalServiceError
-from red_team_prop_threader.cl_jobs import parse_job, list_inbox, stamp_sent, move_to_done, write_failed, is_mint_group_file, parse_mint_group_job
+from red_team_prop_threader.cl_jobs import parse_job, list_inbox, stamp_sent, move_to_done, sent_has_job, write_failed, is_mint_group_file, parse_mint_group_job
 
 
 if TYPE_CHECKING:
@@ -64,6 +66,26 @@ def process_thread_message_job(job: ThreadMessageJob, *, inbox: Path, slack: Sla
             return
         image_paths.append(path)
 
+    if sent_has_job(jobs_root, job.asset_id, job.job_id):
+        _LOG.warning("suppressing already-sent thread_message job %s", job.job_id)
+        move_to_done(jobs_root, json_path)
+        return
+
+    try:
+        receipt_path, claimed = _claim_delivery(job, image_paths=image_paths, jobs_root=jobs_root)
+    except OSError as exc:
+        _LOG.warning("could not claim thread_message job %s: %s", job.job_id, exc)
+        write_failed(jobs_root, job.job_id, asset_key, f"Could not create delivery guard: {exc}")
+        move_to_done(jobs_root, json_path)
+        return
+    if not claimed:
+        _LOG.warning("suppressing duplicate thread_message job %s", job.job_id)
+        status = _receipt_status(receipt_path)
+        if status != "sent":
+            write_failed(jobs_root, job.job_id, asset_key, f"Duplicate suppressed; prior delivery status is {status}")
+        move_to_done(jobs_root, json_path)
+        return
+
     try:
         body = _link_user_mentions(job.body, slack=slack, channel_id=job.spoke_channel_id)
         if image_paths:
@@ -73,11 +95,16 @@ def process_thread_message_job(job: ThreadMessageJob, *, inbox: Path, slack: Sla
             slack.post_message(job.spoke_channel_id, text=body, thread_ts=job.spoke_thread_ts)
     except Exception as exc:
         _LOG.warning("thread_message job %s failed: %s", job.job_id, exc)
+        _finish_delivery(receipt_path, status="failed", error=str(exc))
         write_failed(jobs_root, job.job_id, asset_key, str(exc))
         move_to_done(jobs_root, json_path)
         return
 
-    stamp_sent(jobs_root, job.asset_id, job.job_id)
+    _finish_delivery(receipt_path, status="sent")
+    try:
+        stamp_sent(jobs_root, job.asset_id, job.job_id)
+    except OSError:
+        _LOG.exception("thread_message job %s posted but sent.json was not updated", job.job_id)
     move_to_done(jobs_root, json_path)
 
 
@@ -191,3 +218,78 @@ def _ids_from_job_file(path: Path) -> tuple[str, str]:
     job_id_str = job_id.strip() if isinstance(job_id, str) and job_id.strip() else path.stem
     asset_id_str = str(asset_id) if asset_id is not None else ""
     return job_id_str, asset_id_str
+
+
+def _claim_delivery(job: ThreadMessageJob, *, image_paths: list[Path], jobs_root: Path) -> tuple[Path, bool]:
+    """Atomically claim a message fingerprint before making a Slack write.
+
+    A retained claim means an uncertain delivery is never retried. This gives
+    thread messages at-most-once semantics across duplicate confirms, multiple
+    workers, and process crashes after Slack accepted a request.
+    """
+    image_digests = [_sha256_file(path) for path in image_paths]
+    fingerprint_payload = {"version": 1, "channel_id": job.spoke_channel_id, "thread_ts": job.spoke_thread_ts, "body": job.body, "images": image_digests}
+    encoded = json.dumps(fingerprint_payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode()
+    fingerprint = hashlib.sha256(encoded).hexdigest()
+    receipt_dir = jobs_root / "slack_jobs" / "delivery_receipts"
+    receipt_dir.mkdir(parents=True, exist_ok=True)
+    receipt_path = receipt_dir / f"{fingerprint}.json"
+    receipt = {
+        "fingerprint": fingerprint,
+        "job_id": job.job_id,
+        "asset_id": job.asset_id,
+        "channel_id": job.spoke_channel_id,
+        "thread_ts": job.spoke_thread_ts,
+        "status": "claimed",
+        "claimed_at": datetime.now(timezone.utc).isoformat(),
+    }
+    try:
+        with receipt_path.open("x", encoding="utf-8") as handle:
+            json.dump(receipt, handle, indent=2)
+    except FileExistsError:
+        return receipt_path, False
+    return receipt_path, True
+
+
+def _finish_delivery(receipt_path: Path, *, status: str, error: str | None = None) -> None:
+    """Update an existing delivery claim without ever removing the guard."""
+    try:
+        raw = json.loads(receipt_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        _LOG.exception("could not read delivery receipt %s", receipt_path)
+        return
+    if not isinstance(raw, dict):
+        _LOG.error("delivery receipt %s is not a JSON object", receipt_path)
+        return
+    receipt = raw
+    receipt["status"] = status
+    receipt["finished_at"] = datetime.now(timezone.utc).isoformat()
+    if error is not None:
+        receipt["error"] = error
+    tmp = receipt_path.with_suffix(".json.tmp")
+    try:
+        tmp.write_text(json.dumps(receipt, indent=2), encoding="utf-8")
+        tmp.replace(receipt_path)
+    except OSError:
+        _LOG.exception("could not update delivery receipt %s", receipt_path)
+
+
+def _receipt_status(receipt_path: Path) -> str:
+    """Read a receipt status, treating unreadable receipts as unknown."""
+    try:
+        raw = json.loads(receipt_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return "unknown"
+    if not isinstance(raw, dict):
+        return "unknown"
+    status = raw.get("status")
+    return status if isinstance(status, str) and status else "unknown"
+
+
+def _sha256_file(path: Path) -> str:
+    """Return a content digest without loading a ReviewPrep image into memory."""
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()

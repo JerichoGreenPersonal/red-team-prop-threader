@@ -33,6 +33,7 @@ __all__ = (
     "parse_mint_group_job",
     "resolve_channel",
     "sent_has",
+    "sent_has_job",
     "stamp_sent",
     "stamp_sent_cls",
     "write_failed",
@@ -354,6 +355,21 @@ def sent_has(root: Path, asset_id: str, cl: int) -> bool:
     if isinstance(asset_entry, list):
         return str(cl) in asset_entry
     return False
+
+
+def sent_has_job(root: Path, asset_id: int, job_id: str) -> bool:
+    """Check whether a thread_message job id is already marked as sent."""
+    sent_path = root / "slack_jobs" / "sent.json"
+    if not sent_path.is_file():
+        return False
+    try:
+        data = json.loads(sent_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return False
+    if not isinstance(data, dict):
+        return False
+    asset_entry = data.get(str(asset_id), [])
+    return isinstance(asset_entry, list) and job_id in asset_entry
 
 
 def _append_sent(root: Path, asset_key: str, values: Sequence[str]) -> None:
