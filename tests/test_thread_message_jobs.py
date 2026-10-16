@@ -6,6 +6,8 @@ import json
 from typing import TYPE_CHECKING
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from red_team_prop_threader._errors import ExternalServiceError
 from red_team_prop_threader.cl_jobs import parse_job
 from red_team_prop_threader.thread_message_jobs import drain_thread_message_inbox, process_thread_message_job
@@ -150,6 +152,116 @@ def test_drain_posts_thread_message_job_from_inbox(tmp_path: Path) -> None:
     slack.upload_files.assert_not_called()
     sent = json.loads((tmp_path / "slack_jobs" / "sent.json").read_text(encoding="utf-8"))
     assert sent["38864"] == ["j"]
+
+
+def test_previously_sent_job_id_is_archived_without_posting(tmp_path: Path) -> None:
+    """Replaying an already-sent job id never calls Slack again."""
+    inbox = tmp_path / "slack_jobs" / "inbox"
+    inbox.mkdir(parents=True)
+    _write_thread_job(inbox, job_id="same-job", body="hello")
+    (tmp_path / "slack_jobs" / "sent.json").write_text(json.dumps({"38864": ["same-job"]}), encoding="utf-8")
+    slack = MagicMock()
+
+    drain_thread_message_inbox(tmp_path, slack)
+
+    slack.post_message.assert_not_called()
+    slack.upload_files.assert_not_called()
+    assert not (inbox / "same-job.json").exists()
+    assert (tmp_path / "slack_jobs" / "done" / "same-job.json").is_file()
+
+
+def test_same_message_with_different_job_ids_posts_only_once(tmp_path: Path) -> None:
+    """Double-confirming identical content cannot create a duplicate Slack reply."""
+    inbox = tmp_path / "slack_jobs" / "inbox"
+    inbox.mkdir(parents=True)
+    _write_thread_job(inbox, job_id="first", body="hello")
+    _write_thread_job(inbox, job_id="second", body="hello")
+    slack = MagicMock()
+
+    drain_thread_message_inbox(tmp_path, slack)
+
+    slack.post_message.assert_called_once_with("C1", text="hello", thread_ts="1.2")
+    receipts = tuple((tmp_path / "slack_jobs" / "delivery_receipts").glob("*.json"))
+    assert len(receipts) == 1
+    receipt = json.loads(receipts[0].read_text(encoding="utf-8"))
+    assert receipt["status"] == "sent"
+    assert receipt["job_id"] == "first"
+    assert (tmp_path / "slack_jobs" / "done" / "first.json").is_file()
+    assert (tmp_path / "slack_jobs" / "done" / "second.json").is_file()
+
+
+def test_same_body_in_different_threads_is_not_a_duplicate(tmp_path: Path) -> None:
+    """Content deduplication is scoped to the destination channel and thread."""
+    inbox = tmp_path / "slack_jobs" / "inbox"
+    inbox.mkdir(parents=True)
+    _write_thread_job(inbox, job_id="first", body="hello", spoke_thread_ts="1.2")
+    _write_thread_job(inbox, job_id="second", body="hello", spoke_thread_ts="2.3")
+    slack = MagicMock()
+
+    drain_thread_message_inbox(tmp_path, slack)
+
+    assert slack.post_message.call_count == 2
+
+
+def test_failed_delivery_claim_suppresses_identical_retry(tmp_path: Path) -> None:
+    """An uncertain Slack failure is at-most-once: identical jobs are not retried."""
+    inbox = tmp_path / "slack_jobs" / "inbox"
+    inbox.mkdir(parents=True)
+    _write_thread_job(inbox, job_id="first", body="hello")
+    _write_thread_job(inbox, job_id="second", body="hello")
+    slack = MagicMock()
+    slack.post_message.side_effect = ExternalServiceError("timeout after send")
+
+    drain_thread_message_inbox(tmp_path, slack)
+
+    slack.post_message.assert_called_once()
+    receipts = tuple((tmp_path / "slack_jobs" / "delivery_receipts").glob("*.json"))
+    assert len(receipts) == 1
+    receipt = json.loads(receipts[0].read_text(encoding="utf-8"))
+    assert receipt["status"] == "failed"
+    assert receipt["job_id"] == "first"
+
+
+def test_crash_after_claim_is_reported_and_never_retried(tmp_path: Path) -> None:
+    """An interrupted Slack call leaves a claim that suppresses uncertain replay."""
+    inbox = tmp_path / "slack_jobs" / "inbox"
+    inbox.mkdir(parents=True)
+    _write_thread_job(inbox, job_id="interrupted", body="hello")
+    slack = MagicMock()
+    slack.post_message.side_effect = SystemExit("worker stopped")
+    job = parse_job(inbox / "interrupted.json")
+    assert job is not None
+
+    with pytest.raises(SystemExit):
+        process_thread_message_job(job, inbox=inbox, slack=slack, jobs_root=tmp_path)
+
+    slack.post_message.side_effect = None
+    drain_thread_message_inbox(tmp_path, slack)
+
+    slack.post_message.assert_called_once()
+    failed = json.loads((tmp_path / "slack_jobs" / "failed.json").read_text(encoding="utf-8"))
+    assert failed[0]["job_id"] == "interrupted"
+    assert failed[0]["error"] == "Duplicate suppressed; prior delivery status is claimed"
+    assert (tmp_path / "slack_jobs" / "done" / "interrupted.json").is_file()
+
+
+def test_sent_ledger_failure_still_moves_the_job(tmp_path: Path) -> None:
+    """A sent.json replace failure must not leave the posted job in the inbox."""
+    inbox = tmp_path / "slack_jobs" / "inbox"
+    inbox.mkdir(parents=True)
+    _write_thread_job(inbox, body="hello")
+    slack = MagicMock()
+    job = parse_job(inbox / "j.json")
+    assert job is not None
+
+    with patch("red_team_prop_threader.thread_message_jobs.stamp_sent", side_effect=OSError("sharing violation")):
+        process_thread_message_job(job, inbox=inbox, slack=slack, jobs_root=tmp_path)
+
+    slack.post_message.assert_called_once()
+    assert not (inbox / "j.json").exists()
+    assert (tmp_path / "slack_jobs" / "done" / "j.json").is_file()
+    drain_thread_message_inbox(tmp_path, slack)
+    slack.post_message.assert_called_once()
 
 
 def test_at_handles_become_slack_mentions(tmp_path: Path) -> None:

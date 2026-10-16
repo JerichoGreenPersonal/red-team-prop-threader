@@ -6,6 +6,14 @@ Use the `/bumpversion` skill to update this file and the version.toml file and m
 /bumpversion <major|minor|patch> include all updates in the branch.
 ```
 
+## [1.2.3] - 2026-10-15
+
+a thread message is posted at most once. restarting the worker no longer repeats a message whose sent ledger failed to save.
+
+### fixed
+- worker: claim the thread message before calling slack. the same job id, or the same body and images in the same thread, is not posted again.
+- worker: if sent.json cannot be replaced after a successful post, the job still leaves the inbox.
+
 ## [1.2.2] - 2026-10-07
 
 a multi-name asset cell keeps a clickable shotgrid link on each name.
