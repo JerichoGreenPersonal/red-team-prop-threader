@@ -6,6 +6,14 @@ Use the `/bumpversion` skill to update this file and the version.toml file and m
 /bumpversion <major|minor|patch> include all updates in the branch.
 ```
 
+## [1.2.4] - 2026-10-16
+
+a mint group job keeps its slack posts when the share will not let sent.json or failed.json be replaced.
+
+### fixed
+- jobs: sent.json and failed.json are rewritten in place when the share denies replacing them with the temp file. no .tmp file is left behind.
+- mint group: a sent.json write error is reported as an issue. it no longer fails the job and deletes the group message and asset threads it just posted.
+
 ## [1.2.3] - 2026-10-15
 
 a thread message is posted at most once. restarting the worker no longer repeats a message whose sent ledger failed to save.
