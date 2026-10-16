@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 from typing import TYPE_CHECKING, Any
+import sqlite3
 from datetime import datetime, timezone
 from unittest.mock import MagicMock
 
@@ -245,6 +245,22 @@ def test_database_lock_after_group_post_removes_it(tmp_path: Path, engine: Engin
     assert slack.posts == []
     assert result["group"]["permalink"] == ""
     assert all(asset["outcome"] == "" for asset in result["assets"])
+
+
+def test_sent_json_failure_keeps_posts(tmp_path: Path, engine: Engine, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A sent.json write error is an issue; the group and asset thread stay in Slack."""
+
+    def _deny(*_args: object) -> None:
+        raise PermissionError(5, "Access is denied")
+
+    monkeypatch.setattr("red_team_prop_threader.mint_group_jobs.stamp_sent", _deny)
+    slack = FakeSlack()
+    result = _run(tmp_path, engine, slack, _job(assets=(MintGroupAsset(1, "a", f"{URL}1", (JB,), (), None),)), monkeypatch)
+    assert result["status"] == "done_with_issues"
+    assert result["error"] == ""
+    assert result["assets"][0]["outcome"] == "created"
+    assert len(slack.posts) == 2
+    assert any("sent.json not updated for 1" in issue for issue in result["issues"])
 
 
 def test_bot_not_in_channel_fails_job(tmp_path: Path, engine: Engine, monkeypatch: pytest.MonkeyPatch) -> None:

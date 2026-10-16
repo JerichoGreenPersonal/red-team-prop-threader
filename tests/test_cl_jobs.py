@@ -205,6 +205,40 @@ def test_write_failed(tmp_path: "Path") -> None:
     assert "at" in entry
 
 
+def _deny_replace_onto_existing(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make Path.replace fail like the ReviewPrep share does when the target exists."""
+    from pathlib import Path as PathCls
+
+    original = PathCls.replace
+
+    def _replace(self: PathCls, target: PathCls) -> PathCls:
+        if PathCls(target).exists():
+            raise PermissionError(5, "Access is denied")
+        return original(self, target)
+
+    monkeypatch.setattr(PathCls, "replace", _replace)
+
+
+def test_stamp_sent_rewrites_in_place_when_share_denies_replace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """sent.json is still updated, and no temp file is left, when replacing it is denied."""
+    stamp_sent(tmp_path, 1, "first")
+    _deny_replace_onto_existing(monkeypatch)
+    stamp_sent(tmp_path, 2, "second")
+    data = json.loads((tmp_path / "slack_jobs" / "sent.json").read_text(encoding="utf-8"))
+    assert data == {"1": ["first"], "2": ["second"]}
+    assert not (tmp_path / "slack_jobs" / "sent.json.tmp").exists()
+
+
+def test_write_failed_rewrites_in_place_when_share_denies_replace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """failed.json gets the new entry, and no temp file is left, when replacing it is denied."""
+    write_failed(tmp_path, "a", "", "first")
+    _deny_replace_onto_existing(monkeypatch)
+    write_failed(tmp_path, "b", "", "second")
+    data = json.loads((tmp_path / "slack_jobs" / "failed.json").read_text(encoding="utf-8"))
+    assert [entry["error"] for entry in data] == ["first", "second"]
+    assert not (tmp_path / "slack_jobs" / "failed.json.tmp").exists()
+
+
 def test_resolve_channel() -> None:
     """Test resolving channel identifier via slack gateway."""
     gateway = Mock(spec=SlackGateway)
