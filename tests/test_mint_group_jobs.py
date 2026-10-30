@@ -125,7 +125,7 @@ def _run(tmp_path: Path, engine: Engine | None, slack: FakeSlack, job: MintGroup
     job_path = inbox / f"{job.job_id}.json"
     job_path.write_text(json.dumps({"kind": "mint_group", "job_id": job.job_id}), encoding="utf-8")
     monkeypatch.setattr("red_team_prop_threader.mint_group_jobs.CanvasService", lambda _slack: slack.canvas)
-    slack.canvas.ensure_canvas.return_value = "F1"
+    slack.canvas.ensure_index_canvas.return_value = "F1"
     return process_mint_group_job(
         job_path,
         job,
@@ -159,6 +159,7 @@ def test_live_creates_group_root_and_shared_reply(tmp_path: Path, engine: Engine
     season = json.loads((tmp_path / "slack_threads" / "S32.json").read_text(encoding="utf-8"))
     assert season["assets"]["39302"]["thread_ts"] == root["ts"]
     assert season["assets"]["38885"]["source"] == "mint"
+    slack.canvas.ensure_index_canvas.assert_called_with("C02PR101SGH")
     slack.canvas.index_batch.assert_called_once()
     indexed = slack.canvas.index_batch.call_args.args[0]
     assert sorted(a.entity_id for a in indexed.assets) == [38885, 39302]
@@ -183,6 +184,50 @@ def test_live_join_updates_count_and_skips_threaded(tmp_path: Path, engine: Engi
     assert {a["asset_id"]: a["outcome"] for a in result["assets"]} == {1: "skipped", 2: "created"}
     assert slack.updates[-1]["ts"] == first_top_ts
     assert "*2* asset(s) included." in json.dumps(slack.updates[-1]["blocks"])
+
+
+def test_live_reindexes_when_every_asset_is_already_threaded(tmp_path: Path, engine: Engine, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A repeat live job posts nothing and still rewrites the channel canvas."""
+    slack = FakeSlack()
+    asset = MintGroupAsset(1, "a", f"{URL}1", (JB,), (), None)
+    _run(tmp_path, engine, slack, _job(assets=(asset,)), monkeypatch)
+    slack.posts.clear()
+    slack.canvas.index_batch.reset_mock()
+    result = _run(tmp_path, engine, slack, _job(assets=(asset,), job_id="j2"), monkeypatch)
+    assert result["group"]["outcome"] == "joined"
+    assert result["assets"][0]["outcome"] == "skipped"
+    assert slack.posts == []
+    slack.canvas.ensure_index_canvas.assert_called_with("C02PR101SGH")
+    slack.canvas.index_batch.assert_called_once()
+
+
+def test_live_indexes_existing_spokes_without_posting(tmp_path: Path, engine: Engine, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Spokes in the destination channel are indexed when this database has no group."""
+    season = tmp_path / "slack_threads"
+    season.mkdir()
+    (season / "S32.json").write_text(
+        json.dumps({
+            "season_id": "S32",
+            "assets": {
+                "1": {
+                    "permalink": "https://slack.example/archives/C02PR101SGH/p9",
+                    "channel_id": "C02PR101SGH",
+                    "thread_ts": "1793388395.315559",
+                    "source": "mint",
+                    "updated_at": "2026-10-30T19:26:30+00:00",
+                }
+            },
+        }),
+        encoding="utf-8",
+    )
+    slack = FakeSlack()
+    result = _run(tmp_path, engine, slack, _job(assets=(MintGroupAsset(1, "a", f"{URL}1", (JB,), (), None),)), monkeypatch)
+    assert result["group"]["outcome"] == "not_needed"
+    assert result["assets"][0]["outcome"] == "skipped"
+    assert slack.posts == []
+    slack.canvas.ensure_index_canvas.assert_called_once_with("C02PR101SGH")
+    indexed = slack.canvas.index_batch.call_args.args[0]
+    assert [(asset.entity_id, asset.name, asset.permalink) for asset in indexed.assets] == [(1, "a", "https://slack.example/archives/C02PR101SGH/p9")]
 
 
 def test_test_mode_plain_names_and_test_folder(tmp_path: Path, engine: Engine, monkeypatch: pytest.MonkeyPatch) -> None:

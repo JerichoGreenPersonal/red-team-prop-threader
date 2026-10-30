@@ -11,6 +11,7 @@ import pytest
 from red_team_prop_threader.canvas import (
     CANVAS_TITLE,
     PRIMARY_CANVAS_TITLE,
+    OS_REQUESTS_CANVAS_TITLE,
     IndexedAsset,
     CanvasService,
     PreflightState,
@@ -44,6 +45,8 @@ class FakeSlackGateway:
     channel_canvas_id: str | None = "Fcanvas"
     canvas_title: str = CANVAS_TITLE
     create_canvas_id: str = "Fnew"
+    listed_canvases: list[dict[str, object]] = field(default_factory=list)
+    created_tabs: list[str] = field(default_factory=list)
     permission_blocked: bool = False
     plan_tier_blocked: bool = False
 
@@ -68,8 +71,20 @@ class FakeSlackGateway:
 
     def create_channel_canvas(self, channel_id: str, *, title: str) -> str:
         """Create a fake channel canvas and return its id."""
+        del channel_id
         self.channel_canvas_id = self.create_canvas_id
         self.canvas_title = title
+        return self.create_canvas_id
+
+    def list_canvases(self, channel_id: str) -> list[dict[str, object]]:
+        """Return configured canvas files for the channel."""
+        del channel_id
+        return list(self.listed_canvases)
+
+    def create_canvas_tab(self, channel_id: str, *, title: str) -> str:
+        """Record a new canvas tab and return its id."""
+        del channel_id
+        self.created_tabs.append(title)
         return self.create_canvas_id
 
     def rename_canvas(self, canvas_id: str, *, title: str) -> None:
@@ -164,6 +179,7 @@ def test_render_group_markdown_uses_h3_asset_name_and_emoji_links() -> None:
     assert ":slack3:" in md
     assert ":Slack:" not in md
     assert "### [Prop A]" not in md
+    assert "Latest" not in md
 
 
 def test_render_group_markdown_primary_matches_ledger_layout() -> None:
@@ -180,6 +196,7 @@ def test_render_group_markdown_primary_matches_ledger_layout() -> None:
     assert "* SG Link -" in md
     assert "* Thread -" in md
     assert "https://slack.example/archives/C/p1" in md
+    assert "Latest" not in md
 
 
 def test_group_markdown_starts_with_title_and_separates_groups() -> None:
@@ -193,7 +210,7 @@ def test_group_markdown_starts_with_title_and_separates_groups() -> None:
 
 
 def test_group_markdown_includes_prior_thread_under_asset() -> None:
-    """Re-indexed assets keep the prior thread link below the Latest line."""
+    """Re-indexed assets keep the prior thread link and omit the Latest label."""
     from red_team_prop_threader.canvas import render_group_markdown
 
     asset = IndexedAsset(
@@ -208,7 +225,7 @@ def test_group_markdown_includes_prior_thread_under_asset() -> None:
     )
     md = render_group_markdown(sample_new_group(assets=(asset,)))
     assert "https://slack.example/archives/C/p2" in md
-    assert "— Latest" in md
+    assert "Latest" not in md
     assert "https://slack.example/archives/C/p1" in md
     assert md.index("p2") < md.index("p1")
 
@@ -322,6 +339,45 @@ def test_duplicate_clears_prior_latest_when_section_found(fake_slack: FakeSlackG
     assert result.manual_cleanup_required is False
     assert any(edit.operation == "replace" for edit in fake_slack.canvas_edits)
     assert any(edit.operation == "insert_at_end" or edit.operation == "insert_after" for edit in fake_slack.canvas_edits)
+
+
+def test_ensure_index_canvas_uses_legacy_channel_canvas(fake_slack: FakeSlackGateway) -> None:
+    """A channel canvas titled INDEX OF PROP REQUESTS is indexed in place."""
+    canvas_id = CanvasService(fake_slack).ensure_index_canvas("C0BEEE6AYRL")
+    assert canvas_id == "Fcanvas"
+    assert fake_slack.created_tabs == []
+    assert fake_slack.channel_canvas_id == "Fcanvas"
+
+
+def test_ensure_index_canvas_prefers_os_requests_tab(fake_slack: FakeSlackGateway) -> None:
+    """An OS Requests tab wins over a legacy channel canvas and other canvases."""
+    fake_slack.canvas_title = CANVAS_TITLE
+    fake_slack.listed_canvases = [{"id": "Fnotes", "title": "Notes"}, {"id": "Fos", "title": "os requests:"}]
+    canvas_id = CanvasService(fake_slack).ensure_index_canvas("C0BEEE6AYRL")
+    assert canvas_id == "Fos"
+    assert fake_slack.created_tabs == []
+    assert fake_slack.canvas_edits == []
+
+
+def test_ensure_index_canvas_creates_tab_when_neither_title_exists(fake_slack: FakeSlackGateway) -> None:
+    """Other canvases stay put. A new OS Requests tab is created."""
+    fake_slack.canvas_title = "Notes"
+    fake_slack.listed_canvases = [{"id": "Fnotes", "title": "Notes"}]
+    canvas_id = CanvasService(fake_slack).ensure_index_canvas("C0BEEE6AYRL")
+    assert canvas_id == "Fnew"
+    assert fake_slack.created_tabs == [OS_REQUESTS_CANVAS_TITLE]
+    assert fake_slack.channel_canvas_id == "Fcanvas"
+    assert fake_slack.canvas_title == "Notes"
+
+
+def test_ensure_index_canvas_creates_channel_canvas_when_missing(fake_slack: FakeSlackGateway) -> None:
+    """A channel with no canvas gets a channel canvas titled OS Requests."""
+    fake_slack.channel_canvas_id = None
+    canvas_id = CanvasService(fake_slack).ensure_index_canvas("C0BEEE6AYRL")
+    assert canvas_id == "Fnew"
+    assert fake_slack.channel_canvas_id == "Fnew"
+    assert fake_slack.canvas_title == OS_REQUESTS_CANVAS_TITLE
+    assert fake_slack.created_tabs == []
 
 
 def test_group_markdown_unassigned_when_no_people() -> None:
