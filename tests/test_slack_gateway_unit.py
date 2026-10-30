@@ -166,6 +166,12 @@ def test_canvas_helpers(gateway: SlackGateway, client: MagicMock) -> None:
     client.canvases_edit.return_value = _Resp({"ok": True})
 
     assert gateway.create_channel_canvas("C1", title="INDEX OF PROP REQUESTS") == "Fcanvas"
+    client.files_list.return_value = _Resp({"ok": True, "files": [{"id": "Fos", "title": "OS Requests"}], "paging": {"pages": 1}})
+    client.canvases_create.return_value = _Resp({"ok": True, "canvas_id": "Ftab"})
+    assert gateway.list_canvases("C1") == [{"id": "Fos", "title": "OS Requests"}]
+    client.files_list.assert_called_with(channel="C1", types="canvas", count=100, page=1)
+    assert gateway.create_canvas_tab("C1", title="OS Requests") == "Ftab"
+    client.canvases_create.assert_called_with(channel_id="C1", title="OS Requests", document_content={"type": "markdown", "markdown": ""})
     sections = gateway.lookup_sections("Fcanvas", contains_text="Latest", section_types=("any_header",))
     assert sections == [{"id": "S1"}]
     client.canvases_sections_lookup.assert_called_with(canvas_id="Fcanvas", criteria={"section_types": ["any_header"], "contains_text": "Latest"})

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from enum import StrEnum
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Protocol, cast
 from zoneinfo import ZoneInfo
 from dataclasses import dataclass
 
@@ -20,6 +20,7 @@ if TYPE_CHECKING:
 
 __all__ = (
     "CANVAS_TITLE",
+    "OS_REQUESTS_CANVAS_TITLE",
     "PRIMARY_CANVAS_TITLE",
     "SLACK_THREAD_EMOJI",
     "CanvasService",
@@ -35,6 +36,7 @@ __all__ = (
 )
 
 CANVAS_TITLE = "INDEX OF PROP REQUESTS"
+OS_REQUESTS_CANVAS_TITLE = "OS Requests"
 PRIMARY_CANVAS_TITLE = "PRIMARY ASSET INDEX"
 SLACK_THREAD_EMOJI = ":slack3:"
 _CANVAS_TZ = ZoneInfo("America/Los_Angeles")
@@ -134,6 +136,25 @@ class CanvasGateway(Protocol):
         """Apply one canvas edit operation."""
 
 
+class _IndexCanvasGateway(Protocol):
+    """canvas lookup and create methods used when indexing a prop-request canvas."""
+
+    def get_conversation_info(self, channel_id: str) -> dict[str, object]:
+        """Return channel info including canvas properties."""
+
+    def get_file_info(self, file_id: str) -> dict[str, object]:
+        """Return file/canvas metadata including title."""
+
+    def list_canvases(self, channel_id: str) -> list[dict[str, object]]:
+        """Return canvas files visible in the channel."""
+
+    def create_channel_canvas(self, channel_id: str, *, title: str) -> str:
+        """Create the channel canvas and return its id."""
+
+    def create_canvas_tab(self, channel_id: str, *, title: str) -> str:
+        """Create a new canvas tab and return its id."""
+
+
 class CanvasService:
     """preflight and narrow edits for INDEX OF PROP REQUESTS."""
 
@@ -203,6 +224,35 @@ class CanvasService:
             return result.canvas_id
         raise ExternalServiceError("canvas is not ready for indexing")
 
+    def ensure_index_canvas(self, channel_id: str) -> str:
+        """Use an OS Requests or INDEX OF PROP REQUESTS canvas, or create OS Requests.
+
+        An unrelated canvas is left alone. When neither accepted title is present,
+        a channel with no canvas gets a channel canvas, and a channel that already
+        has other canvases gets a new OS Requests tab.
+
+        Args:
+            channel_id: slack channel id.
+
+        Returns:
+            str: canvas id ready for indexing.
+
+        Raises:
+            ExternalServiceError: when Slack cannot be read or the canvas cannot be created.
+            PermissionDeniedError: when the bot cannot read the channel or its files.
+        """
+        slack = cast("_IndexCanvasGateway", self._slack)
+        channel = slack.get_conversation_info(channel_id)
+        channel_canvas_id = _extract_canvas_id(channel)
+        listed = _listed_canvas_candidates(slack.list_canvases(channel_id))
+        channel_candidate = _canvas_candidate(channel_canvas_id, _file_title(slack, channel_canvas_id))
+        match = _best_index_canvas(channel_candidate, *listed)
+        if match is not None:
+            return match
+        if channel_canvas_id is None:
+            return slack.create_channel_canvas(channel_id, title=OS_REQUESTS_CANVAS_TITLE)
+        return slack.create_canvas_tab(channel_id, title=OS_REQUESTS_CANVAS_TITLE)
+
     def ensure_primary_canvas(self, channel_id: str) -> str:
         """Ensure the primary channel has a canvas titled PRIMARY ASSET INDEX.
 
@@ -268,6 +318,62 @@ class CanvasService:
             markdown=(f"### [{_escape_md(request.asset_name)}]({request.asset_url})\n- {new_line}\n"),
         )
         return DuplicateThreadResult(manual_cleanup_required=False)
+
+
+def _index_title_rank(title: str) -> int | None:
+    """Rank an accepted index title. OS Requests wins over the legacy title."""
+    if titles_match(title, OS_REQUESTS_CANVAS_TITLE):
+        return 0
+    if titles_match(title, CANVAS_TITLE):
+        return 1
+    return None
+
+
+def _file_title(slack: _IndexCanvasGateway, file_id: str | None) -> str:
+    """Return a canvas title from files.info, or an empty string when there is no file."""
+    if not file_id:
+        return ""
+    info = slack.get_file_info(file_id)
+    return str(info.get("title") or info.get("name") or "")
+
+
+def _canvas_candidate(file_id: str | None, title: str) -> tuple[str, str] | None:
+    """Return a canvas id and title when the id is present."""
+    if not file_id:
+        return None
+    return file_id, title
+
+
+def _listed_canvas_candidates(files: list[dict[str, object]]) -> tuple[tuple[str, str], ...]:
+    """Return canvas id and title pairs from a files.list payload."""
+    found: list[tuple[str, str]] = []
+    for item in files:
+        file_id = item.get("id")
+        if not isinstance(file_id, str) or not file_id:
+            continue
+        found.append((file_id, str(item.get("title") or item.get("name") or "")))
+    return tuple(found)
+
+
+def _best_index_canvas(*candidates: tuple[str, str] | None) -> str | None:
+    """Return the best matching index canvas id, preferring OS Requests."""
+    ranked: list[tuple[int, str]] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        if candidate is None:
+            continue
+        file_id, title = candidate
+        if not file_id or file_id in seen:
+            continue
+        seen.add(file_id)
+        rank = _index_title_rank(title)
+        if rank is None:
+            continue
+        ranked.append((rank, file_id))
+    if not ranked:
+        return None
+    ranked.sort()
+    return ranked[0][1]
 
 
 def titles_match(actual: str, expected: str) -> bool:
@@ -351,8 +457,7 @@ def _render_primary_group_markdown(request: GroupIndexRequest) -> str:
         lines = [
             f"{SLACK_THREAD_EMOJI} {_escape_md(asset.name)}",
             f"* SG Link - [{_escape_md(sg_label)}]({asset.asset_url})",
-            f"* Thread - [{format_canvas_timestamp(asset.created_at)}]({asset.permalink})"
-            + (" — Latest" if asset.is_latest else ""),
+            f"* Thread - [{format_canvas_timestamp(asset.created_at)}]({asset.permalink})",
         ]
         if asset.prior_permalink and asset.prior_created_at is not None:
             lines.append(f"* Thread - [{format_canvas_timestamp(asset.prior_created_at)}]({asset.prior_permalink})")
@@ -375,10 +480,22 @@ def _sg_link_label(asset: IndexedAsset) -> str:
 
 
 def _asset_thread_line(permalink: str, created_at: datetime, *, is_latest: bool) -> str:
-    """Render one timestamped thread link line for satellite canvases."""
+    """Render one timestamped thread link line for satellite canvases.
+
+    ``is_latest`` stays on the signature so indexing callers are unchanged.
+    Canvas text does not include a Latest label.
+
+    Args:
+        permalink: slack thread permalink.
+        created_at: thread creation time.
+        is_latest: retained for callers; not rendered.
+
+    Returns:
+        str: one canvas thread line.
+    """
+    del is_latest
     stamp = format_canvas_timestamp(created_at)
-    latest = " — Latest" if is_latest else ""
-    return f"{SLACK_THREAD_EMOJI} [{stamp}]({permalink}){latest}"
+    return f"{SLACK_THREAD_EMOJI} [{stamp}]({permalink})"
 
 
 def _normalize_title(value: str) -> str:

@@ -150,6 +150,37 @@ class SlackGateway:
             raise ExternalServiceError("files.info returned invalid file")
         return file_obj
 
+    def list_canvases(self, channel_id: str) -> list[dict[str, Any]]:
+        """List canvas files in a channel via files.list.
+
+        Args:
+            channel_id: slack channel id.
+
+        Returns:
+            list[dict[str, Any]]: canvas file objects.
+
+        Raises:
+            ExternalServiceError: on Slack API failure.
+        """
+        found: list[dict[str, Any]] = []
+        for page in range(1, 6):
+            response = self._call("files_list", channel=channel_id, types="canvas", count=100, page=page)
+            files = response.get("files") or []
+            if not isinstance(files, list):
+                raise ExternalServiceError("files.list returned invalid files")
+            found.extend(item for item in files if isinstance(item, dict))
+            paging = response.get("paging")
+            pages = 1
+            if isinstance(paging, dict):
+                raw_pages = paging.get("pages") or 1
+                try:
+                    pages = int(raw_pages)
+                except (TypeError, ValueError):
+                    pages = 1
+            if page >= pages or not files:
+                break
+        return found
+
     def download_private_file(self, url: str) -> bytes:
         """GET a Slack private file URL with the bot token. HTTPS only."""
         target = str(url or "").strip()
@@ -484,6 +515,25 @@ class SlackGateway:
         canvas_id = response.get("canvas_id")
         if not isinstance(canvas_id, str) or not canvas_id:
             raise ExternalServiceError("conversations.canvases.create returned invalid canvas_id")
+        return canvas_id
+
+    def create_canvas_tab(self, channel_id: str, *, title: str) -> str:
+        """Create a standalone canvas and add it as a channel tab.
+
+        Args:
+            channel_id: slack channel id.
+            title: canvas title.
+
+        Returns:
+            str: created canvas/file id.
+
+        Raises:
+            ExternalServiceError: on Slack API failure.
+        """
+        response = self._call("canvases_create", channel_id=channel_id, title=title, document_content={"type": "markdown", "markdown": ""})
+        canvas_id = response.get("canvas_id")
+        if not isinstance(canvas_id, str) or not canvas_id:
+            raise ExternalServiceError("canvases.create returned invalid canvas_id")
         return canvas_id
 
     def lookup_sections(self, canvas_id: str, *, contains_text: str | None = None, section_types: tuple[str, ...] = ("any_header",)) -> list[dict[str, Any]]:

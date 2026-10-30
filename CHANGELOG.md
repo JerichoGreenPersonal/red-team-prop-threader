@@ -6,6 +6,17 @@ Use the `/bumpversion` skill to update this file and the version.toml file and m
 /bumpversion <major|minor|patch> include all updates in the branch.
 ```
 
+## [1.2.5] - 2026-10-30
+
+canvas indexing no longer writes the latest marker, and mint jobs index into an os requests canvas.
+
+### changed
+- canvas: thread lines no longer carry the latest label on the satellite or primary canvas. the database latest flag is unchanged.
+- mint group: a repeat live job that posts nothing still rewrites the channel index. assets already threaded in the channel are indexed from their spoke records when the local database has no group.
+
+### fixed
+- mint group: indexing uses an existing os requests or legacy index canvas, or creates an os requests tab when neither exists. other channel canvases are left alone.
+
 ## [1.2.4] - 2026-10-16
 
 a mint group job keeps its slack posts when the share will not let sent.json or failed.json be replaced.

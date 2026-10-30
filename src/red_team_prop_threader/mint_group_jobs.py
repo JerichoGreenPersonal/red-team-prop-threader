@@ -363,10 +363,7 @@ class _Run:
                     target_channel = spoke.get("channel_id") or self.destination
                 try:
                     self._post(
-                        target_channel,
-                        text=f"Also tracked here: {asset.name} (ShotGrid ID: {asset.asset_id})",
-                        thread_ts=target_ts,
-                        asset_id=asset.asset_id,
+                        target_channel, text=f"Also tracked here: {asset.name} (ShotGrid ID: {asset.asset_id})", thread_ts=target_ts, asset_id=asset.asset_id
                     )
                 except Exception as exc:
                     outcome.outcome, outcome.error = "failed", str(exc)
@@ -399,9 +396,13 @@ class _Run:
                 metadata["edit"] = summary_snapshot
                 repos.history.touch_editor(summary.id, editor_id="mint_group", now=self.now, canvas_metadata=metadata)
 
-            if self.mode == "live" and group_id != "preview-group" and (new_roots or shared_entries):
+            spoke_assets = self._existing_spoke_assets() if not new_roots and not shared_entries else ()
+            refresh_index = bool(new_roots or shared_entries or spoke_assets)
+            if not refresh_index and self.group_outcome == "joined":
+                refresh_index = bool(repos.history.list_latest_asset_roots_for_group(group_id))
+            if self.mode == "live" and refresh_index and (group_id != "preview-group" or spoke_assets):
                 try:
-                    self._index(repos, group_id, summary_snapshot, creative_display, additional_displays)
+                    self._index(repos, group_id, summary_snapshot, creative_display, additional_displays, spoke_assets=spoke_assets)
                 except Exception as exc:
                     self.issues.append(f"Index not updated: {exc}")
 
@@ -498,19 +499,50 @@ class _Run:
             requestor_label=str(snapshot["requestor_label"]),
         )
 
-    def _index(self, repos: Repositories, group_id: str, snapshot: dict[str, Any], creative_display: str, additional_displays: tuple[str, ...]) -> None:
-        assets: list[IndexedAsset] = []
-        for root in repos.history.list_latest_asset_roots_for_group(group_id):
-            edit = (root.canvas_metadata or {}).get("edit") or {}
-            assets.append(
+    def _existing_spoke_assets(self) -> tuple[IndexedAsset, ...]:
+        """Canvas entries for assets already threaded in this channel."""
+        found: list[IndexedAsset] = []
+        if not all(outcome.outcome == "skipped" for outcome in self.outcomes):
+            return ()
+        for asset in self.job.assets:
+            spoke = find_spoke(self.jobs_root, asset.asset_id, folder=self.folder)
+            if not spoke or spoke.get("channel_id") != self.destination:
+                continue
+            permalink = spoke.get("permalink") or ""
+            if not permalink:
+                continue
+            found.append(
                 IndexedAsset(
-                    entity_id=int(root.asset_entity_id or 0),
-                    name=str(edit.get("asset_name") or f"Asset {root.asset_entity_id}"),
-                    asset_url=str(edit.get("asset_url") or ""),
-                    permalink=root.permalink,
-                    created_at=root.created_at,
+                    entity_id=asset.asset_id, name=asset.name, asset_url=asset.sg_url, permalink=permalink, created_at=_spoke_created_at(spoke, self.now)
                 )
             )
+        return tuple(found)
+
+    def _index(
+        self,
+        repos: Repositories,
+        group_id: str,
+        snapshot: dict[str, Any],
+        creative_display: str,
+        additional_displays: tuple[str, ...],
+        *,
+        spoke_assets: tuple[IndexedAsset, ...] = (),
+    ) -> None:
+        assets: list[IndexedAsset] = []
+        if group_id != "preview-group":
+            for root in repos.history.list_latest_asset_roots_for_group(group_id):
+                edit = (root.canvas_metadata or {}).get("edit") or {}
+                assets.append(
+                    IndexedAsset(
+                        entity_id=int(root.asset_entity_id or 0),
+                        name=str(edit.get("asset_name") or f"Asset {root.asset_entity_id}"),
+                        asset_url=str(edit.get("asset_url") or ""),
+                        permalink=root.permalink,
+                        created_at=root.created_at,
+                    )
+                )
+        if not assets:
+            assets.extend(spoke_assets)
         assets.extend(
             IndexedAsset(
                 entity_id=int(entry["entity_id"]),
@@ -522,7 +554,7 @@ class _Run:
             for entry in snapshot.get("shared_assets") or []
         )
         canvas = CanvasService(self.real_slack)
-        canvas_id = canvas.ensure_canvas(self.destination, create=True)
+        canvas_id = canvas.ensure_index_canvas(self.destination)
         canvas.index_batch(
             GroupIndexRequest(
                 channel_id=self.destination,
@@ -534,6 +566,23 @@ class _Run:
                 assets=tuple(assets),
             )
         )
+
+
+def _spoke_created_at(spoke: dict[str, str], fallback: datetime) -> datetime:
+    """Use the spoke thread timestamp, then its updated_at, then the job clock."""
+    raw_ts = spoke.get("thread_ts") or ""
+    try:
+        return datetime.fromtimestamp(float(raw_ts), tz=timezone.utc)
+    except ValueError:
+        pass
+    raw_updated = spoke.get("updated_at") or ""
+    try:
+        parsed = datetime.fromisoformat(raw_updated)
+    except ValueError:
+        return fallback
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed
 
 
 def _status(run: _Run, error: str) -> str:
